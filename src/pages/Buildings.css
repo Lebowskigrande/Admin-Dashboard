@@ -1,0 +1,68 @@
+.page-buildings {
+    padding: 1rem;
+}
+
+.buildings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+}
+
+.buildings-tabs {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+
+.repairs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.5rem;
+}
+
+.repair-card {
+    background: white;
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    border-left: 4px solid #ddd;
+}
+
+.repair-card.status-complaint {
+    border-left-color: #ff4757;
+}
+
+.repair-card.status-troubleshoot {
+    border-left-color: #ffa502;
+}
+
+.repair-card.status-repair {
+    border-left-color: #2ed573;
+}
+
+.repair-card.status-complete {
+    border-left-color: #57606f;
+}
+
+.repair-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+}
+
+.repair-status {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    background: #f1f2f6;
+    text-transform: uppercase;
+    font-weight: bold;
+}
+
+.vendors-table th,
+.vendors-table td {
+    padding: 1rem;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}

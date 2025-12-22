@@ -1,0 +1,226 @@
+.calendar-header-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-md);
+}
+
+.month-display h2 {
+    font-size: var(--font-size-2xl);
+    margin: 0;
+    color: var(--color-primary-dark);
+}
+
+.calendar-actions {
+    display: flex;
+    gap: var(--space-sm);
+}
+
+.btn-icon {
+    background: var(--color-surface);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: var(--radius-md);
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    transition: all 0.2s;
+    cursor: pointer;
+}
+
+.btn-icon:hover {
+    background: var(--color-bg);
+    color: var(--color-primary);
+}
+
+.btn-primary {
+    background: var(--color-primary);
+    color: white;
+    border: none;
+    border-radius: var(--radius-md);
+    padding: 0 var(--space-md);
+    height: 40px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    transition: background 0.2s;
+    cursor: pointer;
+}
+
+.btn-primary:hover {
+    background: var(--color-primary-light);
+}
+
+.btn-secondary {
+    background: transparent;
+    color: var(--color-text-secondary);
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: var(--radius-md);
+    padding: 0 var(--space-md);
+    height: 40px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-secondary:hover {
+    background: var(--color-bg);
+    color: var(--color-text-main);
+}
+
+/* Calendar Card overrides */
+.calendar-card {
+    padding: var(--space-sm);
+    min-height: 600px;
+}
+
+.days-row {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    margin-bottom: var(--space-sm);
+    border-bottom: 1px solid var(--color-bg);
+    padding-bottom: var(--space-xs);
+}
+
+.day-name {
+    text-align: center;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+}
+
+.calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    grid-auto-rows: minmax(100px, 1fr);
+    gap: 1px;
+    background: var(--color-bg);
+    /* Grid lines color */
+    border: 1px solid var(--color-bg);
+}
+
+.calendar-cell {
+    background: var(--color-surface);
+    padding: var(--space-xs);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    min-height: 120px;
+    transition: background 0.2s;
+    cursor: pointer;
+}
+
+.calendar-cell:hover {
+    background: #fdfafa;
+}
+
+.calendar-cell.disabled {
+    background: #f9fafb;
+    color: #d1d5db;
+    pointer-events: none;
+}
+
+.cell-header {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.day-number {
+    font-weight: 500;
+    font-size: 0.875rem;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+}
+
+.calendar-cell:not(.disabled):hover .day-number {
+    background: var(--color-bg);
+    color: var(--color-primary);
+}
+
+.cell-events {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.event-chip {
+    font-size: 0.75rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--color-primary-light);
+    color: white;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+
+.event-service {
+    background: #e0e7ff;
+    color: #4338ca;
+    border-left: 3px solid #4338ca;
+}
+
+.event-special {
+    background: #fef3c7;
+    color: #d97706;
+    border-left: 3px solid #d97706;
+}
+
+.event-meeting {
+    background: #dcfce7;
+    color: #15803d;
+    border-left: 3px solid #15803d;
+}
+
+/* Form Styles */
+.event-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+}
+
+.form-group label {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+}
+
+.form-group input,
+.form-group select {
+    padding: var(--space-sm);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: var(--radius-md);
+    font-family: inherit;
+    font-size: var(--font-size-base);
+    transition: border-color 0.2s;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 2px rgba(74, 20, 140, 0.1);
+}
+
+.form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+}

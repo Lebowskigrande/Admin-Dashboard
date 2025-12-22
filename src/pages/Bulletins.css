@@ -1,0 +1,132 @@
+.page-header-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-lg);
+}
+
+.kanban-board {
+    display: flex;
+    gap: var(--space-md);
+    overflow-x: auto;
+    padding-bottom: var(--space-md);
+    min-height: calc(100vh - 200px);
+}
+
+.kanban-column {
+    flex: 1;
+    min-width: 280px;
+    background: rgba(0, 0, 0, 0.02);
+    border-radius: var(--radius-lg);
+    padding: var(--space-sm);
+    display: flex;
+    flex-direction: column;
+}
+
+.column-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm);
+    margin-bottom: var(--space-sm);
+    border-radius: var(--radius-md);
+    background: white;
+    box-shadow: var(--shadow-sm);
+}
+
+.column-header.header-draft {
+    border-top: 3px solid #fbbf24;
+}
+
+.column-header.header-review {
+    border-top: 3px solid #60a5fa;
+}
+
+.column-header.header-ready {
+    border-top: 3px solid #a78bfa;
+}
+
+.column-header.header-printed {
+    border-top: 3px solid #34d399;
+}
+
+.column-header h3 {
+    font-size: 1rem;
+    margin: 0;
+    flex: 1;
+}
+
+.count {
+    background: var(--color-bg);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+.column-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    flex: 1;
+}
+
+.bulletin-card {
+    border-left: 3px solid transparent;
+}
+
+.bulletin-card:hover {
+    border-left-color: var(--color-primary);
+}
+
+.bulletin-info h4 {
+    margin: 0 0 var(--space-xs) 0;
+    font-size: 1rem;
+    color: var(--color-text-main);
+}
+
+.bulletin-info p {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--color-text-secondary);
+}
+
+.bulletin-actions {
+    margin-top: var(--space-md);
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.btn-move {
+    background: transparent;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    transition: all 0.2s;
+}
+
+.btn-move:hover {
+    background: var(--color-primary);
+    color: white;
+    border-color: var(--color-primary);
+}
+
+.btn-action-icon {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    font-size: 1rem;
+}
+
+.btn-action-icon:hover {
+    color: var(--color-primary);
+}

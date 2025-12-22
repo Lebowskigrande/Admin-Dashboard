@@ -1,0 +1,13 @@
+.app-layout {
+    display: flex;
+    min-height: 100vh;
+}
+
+.main-content {
+    flex: 1;
+    margin-left: 260px;
+    /* Match sidebar width */
+    padding: var(--space-xl);
+    background-color: var(--color-bg);
+    min-height: 100vh;
+}
