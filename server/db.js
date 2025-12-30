@@ -22,10 +22,6 @@ db.exec(`
 // Simple migration runner
 const runMigrations = () => {
     try {
-        const migrationsDir = join(__dirname, 'migrations');
-        // Ensure directory exists or create it
-        // (Assuming files already exist based on my tool calls)
-
         // Execute 001 if not already done (Google tokens)
         const migration1 = `
             CREATE TABLE IF NOT EXISTS google_tokens (

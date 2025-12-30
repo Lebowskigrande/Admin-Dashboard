@@ -24,7 +24,7 @@ const Buildings = () => {
     const [newNeed, setNewNeed] = useState('');
 
     // Vendors Data
-    const [vendors, setVendors] = useState([
+    const [vendors] = useState([
         { id: 1, name: 'Joe Plumber', service: 'Plumbing', phone: '555-0101', notes: 'Best for emergencies' },
         { id: 2, name: 'Sparky Electric', service: 'Electrician', phone: '555-0102', notes: 'Has keys' },
         { id: 3, name: 'Green Tree Care', service: 'Arborist', phone: '555-0103', notes: '' },
