@@ -1,4 +1,5 @@
-import { parseISO, isSameDay, isAfter, startOfDay, addWeeks, subWeeks } from 'date-fns';
+import { isSameDay, isAfter, startOfDay, addWeeks, subWeeks } from 'date-fns';
+import { createSundayFromApiDay } from '../models/sunday';
 
 const API_BASE = 'http://localhost:3001/api';
 
@@ -11,10 +12,7 @@ export const getAllEventsFromAPI = async () => {
     try {
         const response = await fetch(`${API_BASE}/events`);
         const data = await response.json();
-        cachedEvents = data.map(day => ({
-            ...day,
-            date: parseISO(day.date)
-        }));
+        cachedEvents = data.map(createSundayFromApiDay);
         return cachedEvents;
     } catch (error) {
         console.error('Error fetching events:', error);

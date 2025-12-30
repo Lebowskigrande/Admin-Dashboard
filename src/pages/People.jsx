@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { FaPlus, FaUserClock, FaPrayingHands, FaUsers, FaClock } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
+import { PEOPLE } from '../data/people';
+import { ROLE_DEFINITIONS } from '../models/roles';
 import './People.css';
 
 const People = () => {
@@ -16,34 +18,12 @@ const People = () => {
     ]);
     const [newTime, setNewTime] = useState({ date: '', name: '', hours: '', task: '' });
 
-    // Team Rosters (from user's data)
-    const lectors8am = ['Mary Beth', 'Betsy', 'David', 'Nancy', 'Bob M.'];
-    const lectors10am = [
-        { pair: 'Tori & Kimberly', week: 1 },
-        { pair: 'Tom & Pam', week: 2 },
-        { pair: 'Joel & Volunteer', week: 3 },
-        { pair: 'Karen & Diane', week: 4 }
-    ];
-    const acolyteTeams = [
-        { team: 'Angela, Veronica, Natalia', week: 1 },
-        { team: 'Kimberly, Tori, Amy', week: 2 },
-        { team: 'Eli, Carolyn, Peter', week: 3 },
-        { team: 'Jackson, Quinn, Angela', week: 4 }
-    ];
-    const lemTeams = [
-        { team: 'Angela, Veronica', week: 1 },
-        { team: 'Kimberly, Tori', week: 2 },
-        { team: 'Eli, Carolyn', week: 3 },
-        { team: 'Kimberly, Angela', week: 4 }
-    ];
-    const soundEngineer = 'Cristo Nava';
-
     // Ministry Mock
-    const [ministries, setMinistries] = useState([
+    const ministries = [
         { id: 1, name: 'Altar Guild', leader: 'Martha Stewart', email: 'martha@example.com' },
         { id: 2, name: 'Choir', leader: 'Bach', email: 'jsb@example.com' },
         { id: 3, name: 'Outreach', leader: 'Mother Teresa', email: 'mt@example.com' },
-    ]);
+    ];
 
     const handleTimeSubmit = (e) => {
         e.preventDefault();
@@ -77,56 +57,32 @@ const People = () => {
         </Card>
     );
 
-    const renderVolunteers = () => (
-        <div className="rosters-container">
-            <Card className="roster-card">
-                <h3 className="roster-title">8:00 AM - Rite I Lectors</h3>
-                <p className="roster-note">Weekly Rotation (5-week cycle)</p>
-                <ul className="roster-list">
-                    {lectors8am.map((name, idx) => (
-                        <li key={idx}><span className="week-badge">Week {idx + 1}</span> {name}</li>
-                    ))}
-                </ul>
-            </Card>
+    const renderVolunteerPools = () => {
+        const rosterRoles = ['lector', 'chaliceBearer', 'acolyte', 'usher', 'sound'];
 
-            <Card className="roster-card">
-                <h3 className="roster-title">10:00 AM - Rite II Lectors</h3>
-                <p className="roster-note">Weekly Rotation (4-week cycle)</p>
-                <ul className="roster-list">
-                    {lectors10am.map((item, idx) => (
-                        <li key={idx}><span className="week-badge">Week {item.week}</span> {item.pair}</li>
-                    ))}
-                </ul>
-            </Card>
+        return (
+            <div className="rosters-container">
+                {rosterRoles.map(roleKey => {
+                    const role = ROLE_DEFINITIONS.find(r => r.key === roleKey);
+                    const people = PEOPLE.filter(person => person.roles.includes(roleKey));
 
-            <Card className="roster-card">
-                <h3 className="roster-title">Acolytes (10:00 AM)</h3>
-                <p className="roster-note">Weekly Rotation (4-week cycle)</p>
-                <ul className="roster-list">
-                    {acolyteTeams.map((item, idx) => (
-                        <li key={idx}><span className="week-badge">Week {item.week}</span> {item.team}</li>
-                    ))}
-                </ul>
-            </Card>
-
-            <Card className="roster-card">
-                <h3 className="roster-title">LEMs / Chalice Bearers (10:00 AM)</h3>
-                <p className="roster-note">Weekly Rotation (4-week cycle)</p>
-                <ul className="roster-list">
-                    {lemTeams.map((item, idx) => (
-                        <li key={idx}><span className="week-badge">Week {item.week}</span> {item.team}</li>
-                    ))}
-                </ul>
-            </Card>
-
-            <Card className="roster-card">
-                <h3 className="roster-title">Sound Engineer (10:00 AM)</h3>
-                <div className="single-role">
-                    <span className="role-value">{soundEngineer}</span>
-                </div>
-            </Card>
-        </div>
-    );
+                    return (
+                        <Card key={roleKey} className="roster-card">
+                            <h3 className="roster-title">{role?.label || roleKey}</h3>
+                            <p className="roster-note">Eligible volunteers by role</p>
+                            <ul className="roster-list">
+                                {people.map(person => (
+                                    <li key={person.id}>
+                                        <span className="week-badge">{person.tags.join(', ') || 'volunteer'}</span> {person.displayName}
+                                    </li>
+                                ))}
+                            </ul>
+                        </Card>
+                    );
+                })}
+            </div>
+        );
+    };
 
     const renderMinistries = () => (
         <Card>
@@ -175,7 +131,7 @@ const People = () => {
             </div>
 
             {activeTab === 'timesheets' && renderTimesheets()}
-            {activeTab === 'volunteers' && renderVolunteers()}
+            {activeTab === 'volunteers' && renderVolunteerPools()}
             {activeTab === 'ministry' && renderMinistries()}
 
             <Modal
@@ -198,34 +154,35 @@ const People = () => {
                         <input
                             type="text"
                             required
-                            placeholder="e.g. Janet"
                             value={newTime.name}
                             onChange={(e) => setNewTime({ ...newTime, name: e.target.value })}
                         />
                     </div>
                     <div className="form-group">
-                        <label>Hours Worked</label>
+                        <label>Hours</label>
                         <input
                             type="number"
+                            min="0"
+                            step="0.25"
                             required
-                            step="0.5"
                             value={newTime.hours}
                             onChange={(e) => setNewTime({ ...newTime, hours: e.target.value })}
                         />
                     </div>
                     <div className="form-group">
-                        <label>Task Description</label>
+                        <label>Task</label>
                         <input
                             type="text"
                             required
-                            placeholder="e.g. Office Admin"
                             value={newTime.task}
                             onChange={(e) => setNewTime({ ...newTime, task: e.target.value })}
                         />
                     </div>
-                    <div className="form-actions">
+                    <div className="modal-actions">
                         <button type="button" className="btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-                        <button type="submit" className="btn-primary">Save Entry</button>
+                        <button type="submit" className="btn-primary">
+                            <FaClock /> Save Entry
+                        </button>
                     </div>
                 </form>
             </Modal>
