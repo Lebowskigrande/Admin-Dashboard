@@ -4,6 +4,7 @@ import { format } from 'date-fns';
 
 const EventsContext = createContext();
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useEvents = () => {
     const context = useContext(EventsContext);
     if (!context) throw new Error('useEvents must be used within an EventsProvider');

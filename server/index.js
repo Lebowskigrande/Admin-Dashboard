@@ -5,7 +5,7 @@ import db from './db.js';
 import { seedDatabase } from './seed.js';
 import { getAuthUrl, getTokensFromCode, setStoredCredentials } from './googleAuth.js';
 import { fetchGoogleCalendarEvents, fetchCalendarList } from './googleCalendar.js';
-import { categorizeGoogleEvent, getEventContext, syncGoogleEvents } from './eventEngine.js';
+import { syncGoogleEvents } from './eventEngine.js';
 
 dotenv.config({ path: './server/.env' });
 
@@ -124,12 +124,6 @@ app.get('/api/google/events', async (req, res) => {
             expiry_date: tokens.expiry_date
         });
 
-        // Get selected calendars
-        const selectedCalendars = db.prepare('SELECT calendar_id FROM selected_calendars').all();
-        const calendarIds = selectedCalendars.length > 0
-            ? selectedCalendars.map(c => c.calendar_id)
-            : ['primary'];
-
         // Return cached events from database
         let rows = db.prepare(`
             SELECT e.*, t.name as type_name, t.slug as type_slug, c.name as category_name, 
@@ -205,8 +199,6 @@ app.get('/api/event-types', (req, res) => {
 // Get all events (merged)
 app.get('/api/events', async (req, res) => {
     try {
-        const { categories, eventTypes } = getEventContext();
-
         // 1. Get liturgical events
         const days = db.prepare('SELECT * FROM liturgical_days ORDER BY date').all();
         const liturgicalEvents = days.map(day => {

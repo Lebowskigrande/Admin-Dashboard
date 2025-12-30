@@ -50,9 +50,9 @@ export const seedDatabase = () => {
         const insertMany = db.transaction(() => {
             Object.entries(grouped).forEach(([date, entries]) => {
                 entries.forEach((entry, index) => {
-                    // Logic: If 2 entries, first is 8am, second is 10am. 
-                    // If 1 entry, assume 10am (principal service) unless specified otherwise 
-                    // (User said "10am service... 8am..."). 
+                    // Logic: If 2 entries, first is 8am, second is 10am.
+                    // If 1 entry, assume 10am (principal service) unless specified otherwise
+                    // (User said "10am service... 8am...").
                     // Let's stick to the rotation logic: 1st=8am, 2nd=10am (if 2 exist).
 
                     let time = '10:00';
@@ -61,7 +61,7 @@ export const seedDatabase = () => {
                     }
 
                     insert.run({
-                        date: entry.date,
+                        date,
                         serviceTime: time,
                         lector: entry.roles.lector || '',
                         usher: entry.roles.usher || '',

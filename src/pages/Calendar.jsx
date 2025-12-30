@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
     format,
     startOfMonth,
@@ -38,11 +38,7 @@ const Calendar = () => {
         finalPaymentPaid: false
     });
 
-    useEffect(() => {
-        loadTypes();
-    }, []);
-
-    const loadTypes = async () => {
+    const loadTypes = useCallback(async () => {
         try {
             const types = await getEventTypes();
             setEventTypes(types);
@@ -52,7 +48,11 @@ const Calendar = () => {
         } catch (error) {
             console.error('Error loading types:', error);
         }
-    };
+    }, [newEvent.type_id]);
+
+    useEffect(() => {
+        loadTypes();
+    }, [loadTypes]);
 
     const handleDayClick = (dayItem) => {
         setNewEvent({ ...newEvent, date: format(dayItem, 'yyyy-MM-dd') });
