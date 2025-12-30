@@ -10,7 +10,7 @@ const Sidebar = () => {
         { path: '/finance', label: 'Finance', icon: <FaMoneyBillWave /> },
         { path: '/communications', label: 'Communications', icon: <FaEnvelope /> },
         { path: '/buildings', label: 'Buildings & Ops', icon: <FaBuilding /> },
-        { path: '/people', label: 'People & Ministry', icon: <FaUsers /> },
+        { path: '/people', label: 'People', icon: <FaUsers /> },
         { path: '/music', label: 'Music', icon: <FaMusic /> },
         { path: '/todo', label: 'To-Do List', icon: <FaList /> },
         { path: '/settings', label: 'Settings', icon: <FaCog /> },
