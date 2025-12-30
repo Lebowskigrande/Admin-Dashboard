@@ -1,191 +1,95 @@
-import { useState } from 'react';
-import { FaPlus, FaUserClock, FaPrayingHands, FaUsers, FaClock } from 'react-icons/fa';
+import { FaUserTie, FaUsers, FaHandsHelping } from 'react-icons/fa';
 import Card from '../components/Card';
-import Modal from '../components/Modal';
 import { PEOPLE } from '../data/people';
 import { ROLE_DEFINITIONS } from '../models/roles';
 import './People.css';
 
+const CATEGORY_CONFIG = [
+    {
+        key: 'clergy',
+        label: 'Clergy',
+        description: 'Ordained leaders who preside, preach, and provide sacramental care.',
+        icon: <FaUserTie />
+    },
+    {
+        key: 'staff',
+        label: 'Staff',
+        description: 'Paid and contract team members supporting parish operations and worship.',
+        icon: <FaUsers />
+    },
+    {
+        key: 'volunteer',
+        label: 'Volunteers',
+        description: 'Roster of trained parishioners available for liturgical and hospitality roles.',
+        icon: <FaHandsHelping />
+    }
+];
+
+const roleLabel = (key) => ROLE_DEFINITIONS.find((role) => role.key === key)?.label || key;
+
 const People = () => {
-    const [activeTab, setActiveTab] = useState('timesheets');
-    const [showModal, setShowModal] = useState(false);
-
-    // Timesheets Mock
-    const [timesheets, setTimesheets] = useState([
-        { id: 1, date: '2025-12-15', name: 'Janet (Admin)', hours: 8, task: 'Office Admin' },
-        { id: 2, date: '2025-12-16', name: 'Janet (Admin)', hours: 7.5, task: 'Bulletin Prep' },
-        { id: 3, date: '2025-12-15', name: 'Bob (Sexton)', hours: 4, task: 'Cleaning' },
-    ]);
-    const [newTime, setNewTime] = useState({ date: '', name: '', hours: '', task: '' });
-
-    // Ministry Mock
-    const ministries = [
-        { id: 1, name: 'Altar Guild', leader: 'Martha Stewart', email: 'martha@example.com' },
-        { id: 2, name: 'Choir', leader: 'Bach', email: 'jsb@example.com' },
-        { id: 3, name: 'Outreach', leader: 'Mother Teresa', email: 'mt@example.com' },
-    ];
-
-    const handleTimeSubmit = (e) => {
-        e.preventDefault();
-        setTimesheets([...timesheets, { ...newTime, id: Date.now(), hours: parseFloat(newTime.hours) }]);
-        setShowModal(false);
-        setNewTime({ date: '', name: '', hours: '', task: '' });
-    };
-
-    const renderTimesheets = () => (
-        <Card>
-            <table className="finance-table">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Staff Name</th>
-                        <th>Task</th>
-                        <th className="text-right">Hours</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {timesheets.map(t => (
-                        <tr key={t.id}>
-                            <td>{t.date}</td>
-                            <td>{t.name}</td>
-                            <td>{t.task}</td>
-                            <td className="text-right font-mono">{t.hours}</td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-        </Card>
-    );
-
-    const renderVolunteerPools = () => {
-        const rosterRoles = ['lector', 'chaliceBearer', 'acolyte', 'usher', 'sound'];
-
-        return (
-            <div className="rosters-container">
-                {rosterRoles.map(roleKey => {
-                    const role = ROLE_DEFINITIONS.find(r => r.key === roleKey);
-                    const people = PEOPLE.filter(person => person.roles.includes(roleKey));
-
-                    return (
-                        <Card key={roleKey} className="roster-card">
-                            <h3 className="roster-title">{role?.label || roleKey}</h3>
-                            <p className="roster-note">Eligible volunteers by role</p>
-                            <ul className="roster-list">
-                                {people.map(person => (
-                                    <li key={person.id}>
-                                        <span className="week-badge">{person.tags.join(', ') || 'volunteer'}</span> {person.displayName}
-                                    </li>
-                                ))}
-                            </ul>
-                        </Card>
-                    );
-                })}
+    const renderPersonCard = (person) => (
+        <Card key={person.id} className="person-card">
+            <div className="person-card__header">
+                <div>
+                    <div className="person-name">{person.displayName}</div>
+                    {person.tags?.length > 0 && (
+                        <div className="tag-row">
+                            {person.tags.map((tag) => (
+                                <span key={tag} className="tag-chip">{tag}</span>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                {person.email && <div className="contact">{person.email}</div>}
             </div>
-        );
-    };
-
-    const renderMinistries = () => (
-        <Card>
-            <table className="finance-table">
-                <thead>
-                    <tr>
-                        <th>Group Name</th>
-                        <th>Leader</th>
-                        <th>Contact</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {ministries.map(m => (
-                        <tr key={m.id}>
-                            <td><span className="category-tag">{m.name}</span></td>
-                            <td>{m.leader}</td>
-                            <td>{m.email}</td>
-                        </tr>
+            <div className="roles">
+                <span className="roles-label">Eligible roles</span>
+                <div className="role-chip-row">
+                    {person.roles.map((roleKey) => (
+                        <span key={roleKey} className="role-chip">{roleLabel(roleKey)}</span>
                     ))}
-                </tbody>
-            </table>
+                </div>
+            </div>
         </Card>
     );
 
     return (
         <div className="page-people">
             <header className="people-header">
-                <h1>People & Ministries</h1>
-                {activeTab === 'timesheets' && (
-                    <button className="btn-primary" onClick={() => setShowModal(true)}>
-                        <FaPlus /> Log Hours
-                    </button>
-                )}
+                <div>
+                    <p className="page-kicker">People database</p>
+                    <h1>People</h1>
+                    <p className="page-subtitle">
+                        Clergy, staff, and volunteer pools with their eligible liturgical and hospitality roles.
+                    </p>
+                </div>
             </header>
 
-            <div className="people-tabs">
-                <button className={`tab-btn ${activeTab === 'timesheets' ? 'active' : ''}`} onClick={() => setActiveTab('timesheets')}>
-                    <FaUserClock /> Timesheets
-                </button>
-                <button className={`tab-btn ${activeTab === 'volunteers' ? 'active' : ''}`} onClick={() => setActiveTab('volunteers')}>
-                    <FaPrayingHands /> Liturgical Roster
-                </button>
-                <button className={`tab-btn ${activeTab === 'ministry' ? 'active' : ''}`} onClick={() => setActiveTab('ministry')}>
-                    <FaUsers /> Ministry Groups
-                </button>
+            <div className="people-groups">
+                {CATEGORY_CONFIG.map((category) => {
+                    const people = PEOPLE.filter((person) => person.category === category.key);
+
+                    return (
+                        <section key={category.key} className="people-section">
+                            <div className="section-header">
+                                <div className="section-title">
+                                    <span className="section-icon">{category.icon}</span>
+                                    <div>
+                                        <h2>{category.label}</h2>
+                                        <p className="section-description">{category.description}</p>
+                                    </div>
+                                </div>
+                                <span className="section-count">{people.length} people</span>
+                            </div>
+
+                            <div className="person-grid">
+                                {people.map(renderPersonCard)}
+                            </div>
+                        </section>
+                    );
+                })}
             </div>
-
-            {activeTab === 'timesheets' && renderTimesheets()}
-            {activeTab === 'volunteers' && renderVolunteerPools()}
-            {activeTab === 'ministry' && renderMinistries()}
-
-            <Modal
-                isOpen={showModal}
-                onClose={() => setShowModal(false)}
-                title="Log Staff Hours"
-            >
-                <form className="event-form" onSubmit={handleTimeSubmit}>
-                    <div className="form-group">
-                        <label>Date</label>
-                        <input
-                            type="date"
-                            required
-                            value={newTime.date}
-                            onChange={(e) => setNewTime({ ...newTime, date: e.target.value })}
-                        />
-                    </div>
-                    <div className="form-group">
-                        <label>Staff Name</label>
-                        <input
-                            type="text"
-                            required
-                            value={newTime.name}
-                            onChange={(e) => setNewTime({ ...newTime, name: e.target.value })}
-                        />
-                    </div>
-                    <div className="form-group">
-                        <label>Hours</label>
-                        <input
-                            type="number"
-                            min="0"
-                            step="0.25"
-                            required
-                            value={newTime.hours}
-                            onChange={(e) => setNewTime({ ...newTime, hours: e.target.value })}
-                        />
-                    </div>
-                    <div className="form-group">
-                        <label>Task</label>
-                        <input
-                            type="text"
-                            required
-                            value={newTime.task}
-                            onChange={(e) => setNewTime({ ...newTime, task: e.target.value })}
-                        />
-                    </div>
-                    <div className="modal-actions">
-                        <button type="button" className="btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-                        <button type="submit" className="btn-primary">
-                            <FaClock /> Save Entry
-                        </button>
-                    </div>
-                </form>
-            </Modal>
         </div>
     );
 };
