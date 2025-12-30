@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
     format,
     startOfMonth,
@@ -14,30 +14,45 @@ import {
 import { FaChevronLeft, FaChevronRight, FaPlus } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
+import { getEventTypes } from '../services/eventService';
+import { useEvents } from '../context/EventsContext';
 import './Calendar.css';
 
+
+
 const Calendar = () => {
+    const { events, loading, refreshEvents, setEvents } = useEvents();
     const [currentDate, setCurrentDate] = useState(new Date());
-
-    // Mock Data
-    const [events, setEvents] = useState([
-        { id: 1, title: 'Sunday Service', date: new Date(2025, 11, 21), time: '10:00', type: 'service', location: 'Church', contractSigned: false, depositPaid: false, finalPaymentPaid: false, setupNeeds: 'Altar, Pews', staffingNeeds: 'Ushers, Acolytes' },
-        { id: 2, title: 'Christmas Eve', date: new Date(2025, 11, 24), time: '18:00', type: 'special', location: 'Church', contractSigned: true, depositPaid: true, finalPaymentPaid: true, setupNeeds: 'Trees, Candles', staffingNeeds: 'Full Staff' },
-    ]);
-
+    const [eventTypes, setEventTypes] = useState([]);
     const [showModal, setShowModal] = useState(false);
     const [newEvent, setNewEvent] = useState({
         title: '',
         date: '',
         time: '',
-        type: 'service',
-        location: 'Church',
+        location: '',
+        type_id: '',
+        setupNeeds: '',
+        staffingNeeds: '',
         contractSigned: false,
         depositPaid: false,
-        finalPaymentPaid: false,
-        setupNeeds: '',
-        staffingNeeds: ''
+        finalPaymentPaid: false
     });
+
+    useEffect(() => {
+        loadTypes();
+    }, []);
+
+    const loadTypes = async () => {
+        try {
+            const types = await getEventTypes();
+            setEventTypes(types);
+            if (types.length > 0 && !newEvent.type_id) {
+                setNewEvent(prev => ({ ...prev, type_id: types[0].id }));
+            }
+        } catch (error) {
+            console.error('Error loading types:', error);
+        }
+    };
 
     const handleDayClick = (dayItem) => {
         setNewEvent({ ...newEvent, date: format(dayItem, 'yyyy-MM-dd') });
@@ -49,27 +64,30 @@ const Calendar = () => {
         return new Date(y, m - 1, d);
     };
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
         if (!newEvent.title || !newEvent.date) return;
 
+        // In a real app, we'd call createEvent(newEvent)
+        // For now, update local state to show it works
+        const selectedType = eventTypes.find(t => t.id === parseInt(newEvent.type_id));
+
         setEvents([...events, {
-            id: Date.now(),
+            id: `temp-${Date.now()}`,
             title: newEvent.title,
             date: calculateNewDate(newEvent.date),
             time: newEvent.time,
-            type: newEvent.type,
             location: newEvent.location,
-            contractSigned: newEvent.contractSigned,
-            depositPaid: newEvent.depositPaid,
-            finalPaymentPaid: newEvent.finalPaymentPaid,
-            setupNeeds: newEvent.setupNeeds,
-            staffingNeeds: newEvent.staffingNeeds
+            type_name: selectedType?.name || 'Event',
+            category_name: selectedType?.category_name || 'General',
+            color: selectedType?.color || selectedType?.category_color || '#3B82F6',
+            source: 'manual',
+            ...newEvent
         }]);
 
         setShowModal(false);
         setNewEvent({
-            title: '', date: '', time: '', type: 'service',
+            title: '', date: '', time: '', type_id: eventTypes[0]?.id || '',
             location: 'Church', contractSigned: false, depositPaid: false,
             finalPaymentPaid: false, setupNeeds: '', staffingNeeds: ''
         });
@@ -87,6 +105,9 @@ const Calendar = () => {
                     </button>
                     <button className="btn-icon" onClick={() => setCurrentDate(addMonths(currentDate, 1))}>
                         <FaChevronRight />
+                    </button>
+                    <button className="btn-secondary" onClick={() => refreshEvents(true)} disabled={loading}>
+                        {loading ? 'Syncing...' : 'Sync Google'}
                     </button>
                     <button className="btn-primary" onClick={() => {
                         setNewEvent({ ...newEvent, date: format(new Date(), 'yyyy-MM-dd') });
@@ -110,6 +131,20 @@ const Calendar = () => {
         );
     };
 
+    const getContrastColor = (hexcolor) => {
+        if (!hexcolor) return '#3B82F6';
+        if (hexcolor.toLowerCase() === '#ffffff' || hexcolor.toLowerCase() === 'white') return '#1f2937';
+        if (hexcolor.toLowerCase() === '#ffd700' || hexcolor.toLowerCase() === 'gold') return '#b45309';
+
+        // Simple heuristic: if it's very light, use dark text
+        const hex = hexcolor.replace('#', '');
+        const r = parseInt(hex.substr(0, 2), 16);
+        const g = parseInt(hex.substr(2, 2), 16);
+        const b = parseInt(hex.substr(4, 2), 16);
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        return brightness > 180 ? '#1f2937' : hexcolor;
+    };
+
     const cells = () => {
         const monthStart = startOfMonth(currentDate);
         const monthEnd = endOfMonth(monthStart);
@@ -122,10 +157,9 @@ const Calendar = () => {
         return (
             <div className="calendar-grid">
                 {dayList.map((dayItem) => {
-                    const dayEvents = events.filter(e => isSameDay(e.date, dayItem));
                     return (
                         <div
-                            className={`calendar-cell ${!isSameMonth(dayItem, monthStart) ? "disabled" : ""}`}
+                            className={`calendar-cell ${!isSameMonth(dayItem, monthStart) ? "disabled" : ""} ${isSameDay(dayItem, new Date()) ? "today" : ""}`}
                             key={dayItem.toString()}
                             onClick={() => handleDayClick(dayItem)}
                         >
@@ -133,11 +167,28 @@ const Calendar = () => {
                                 <span className="day-number">{format(dayItem, dateFormat)}</span>
                             </div>
                             <div className="cell-events">
-                                {dayEvents.map(event => (
-                                    <div key={event.id} className={`event-chip event-${event.type}`}>
-                                        {event.time} {event.title}
-                                    </div>
-                                ))}
+                                {events && events.filter(e => isSameDay(e.date, dayItem)).map(event => {
+                                    const contrastColor = getContrastColor(event.color);
+                                    const isLight = contrastColor !== event.color;
+
+                                    return (
+                                        <div
+                                            key={event.id}
+                                            className="event-chip"
+                                            style={{
+                                                backgroundColor: isLight ? '#f3f4f6' : `${event.color}25`,
+                                                color: contrastColor,
+                                                borderLeft: `3px solid ${event.color}`
+                                            }}
+                                            title={`${event.type_name || ''} - ${event.title}`}
+                                        >
+                                            <div className="event-chip-content">
+                                                {event.time && <span className="event-chip-time">{event.time}</span>}
+                                                <span className="event-chip-title">{event.title}</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
                     );
@@ -191,15 +242,16 @@ const Calendar = () => {
                     </div>
                     <div className="form-row">
                         <div className="form-group">
-                            <label>Type</label>
+                            <label>Event Type</label>
                             <select
-                                value={newEvent.type}
-                                onChange={(e) => setNewEvent({ ...newEvent, type: e.target.value })}
+                                value={newEvent.type_id}
+                                onChange={(e) => setNewEvent({ ...newEvent, type_id: e.target.value })}
                             >
-                                <option value="service">Service</option>
-                                <option value="special">Special Event</option>
-                                <option value="meeting">Meeting</option>
-                                <option value="rental">Rental</option>
+                                {eventTypes.map(type => (
+                                    <option key={type.id} value={type.id}>
+                                        {type.name} ({type.category_name})
+                                    </option>
+                                ))}
                             </select>
                         </div>
                         <div className="form-group">

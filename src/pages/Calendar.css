@@ -97,11 +97,13 @@
 .calendar-grid {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
-    grid-auto-rows: minmax(100px, 1fr);
+    grid-auto-rows: 150px;
+    /* Fixed height */
     gap: 1px;
     background: var(--color-bg);
-    /* Grid lines color */
     border: 1px solid var(--color-bg);
+    border-radius: var(--radius-md);
+    overflow: hidden;
 }
 
 .calendar-cell {
@@ -110,9 +112,33 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
-    min-height: 120px;
+    height: 150px;
+    /* Match grid-auto-rows */
     transition: background 0.2s;
     cursor: pointer;
+    overflow: hidden;
+    position: relative;
+}
+
+.calendar-cell.today {
+    background: #fffdf5;
+    /* Subtle gold tint */
+}
+
+.calendar-cell.today .day-number {
+    background: var(--color-primary);
+    color: white;
+    font-weight: 700;
+}
+
+.calendar-cell.today::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--color-primary);
 }
 
 .calendar-cell:hover {
@@ -150,18 +176,51 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    overflow-y: auto;
+    flex: 1;
+    scrollbar-width: none;
+    /* Hide scrollbar for clean look */
+}
+
+.cell-events::-webkit-scrollbar {
+    display: none;
 }
 
 .event-chip {
-    font-size: 0.75rem;
-    padding: 2px 6px;
+    font-size: 0.725rem;
+    padding: 2px 8px;
     border-radius: 4px;
-    background: var(--color-primary-light);
-    color: white;
+    background: rgba(59, 130, 246, 0.1);
+    color: #3B82F6;
+    border-left: 3px solid #3B82F6;
+    margin-bottom: 2px;
+    transition: transform 0.1s;
+    overflow: hidden;
+}
+
+.event-chip:hover {
+    transform: translateX(2px);
+    filter: brightness(0.95);
+}
+
+.event-chip-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.event-chip-time {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    opacity: 0.8;
+}
+
+.event-chip-title {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    cursor: pointer;
+    font-weight: 500;
 }
 
 .event-service {
@@ -180,6 +239,37 @@
     background: #dcfce7;
     color: #15803d;
     border-left: 3px solid #15803d;
+}
+
+.event-liturgical.color-White {
+    background: #f3f4f6;
+    color: #1f2937;
+    border-left: 3px solid #9ca3af;
+    /* Silver/White representation */
+}
+
+.event-liturgical.color-Green {
+    background: #dcfce7;
+    color: #15803d;
+    border-left: 3px solid #15803d;
+}
+
+.event-liturgical.color-Purple {
+    background: #f3e8ff;
+    color: #7e22ce;
+    border-left: 3px solid #7e22ce;
+}
+
+.event-liturgical.color-Red {
+    background: #fee2e2;
+    color: #b91c1c;
+    border-left: 3px solid #b91c1c;
+}
+
+.event-chip.event-google {
+    background: #4285f4;
+    color: white;
+    border-left: 3px solid #1a73e8;
 }
 
 /* Form Styles */
@@ -218,9 +308,49 @@
     box-shadow: 0 0 0 2px rgba(74, 20, 140, 0.1);
 }
 
+.form-section {
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    border-radius: var(--radius-md);
+    padding: var(--space-sm);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    margin-top: var(--space-xs);
+}
+
+.form-section legend {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+    padding: 0 var(--space-xs);
+}
+
+.checkbox-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-md);
+}
+
+.checkbox-group label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-weight: 500;
+    cursor: pointer;
+}
+
 .form-actions {
     display: flex;
     justify-content: flex-end;
     gap: var(--space-sm);
     margin-top: var(--space-sm);
+}
+
+textarea {
+    resize: vertical;
+    padding: var(--space-sm);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: var(--radius-md);
+    font-family: inherit;
 }

@@ -22,3 +22,31 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Project specific
+server/church.db
+server/.env
+.env
+.env.*
+
+# Local debug and test scripts
+debug_*.js
+test_*.js
+inspect_*.js
+convert_*.js
+update_*.js
+check_ical.js
+server/inspect_newyear.js
+server/sample_data.js
+server/analyze_duplicates.js
+server/clear_cache.js
+server/inspect_rows.js
+server/debug_excel.js
+debug_api_output.js
+debug_calendars.js
+debug_tokens.js
+update_lectors.js
+update_roster.js
+update_sound.js
+convert_schedule.js
+convert_excel.ps1

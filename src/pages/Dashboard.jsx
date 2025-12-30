@@ -1,8 +1,35 @@
+import { useState, useEffect } from 'react';
 import Card from '../components/Card';
 import { FaCalendarCheck, FaClipboardList, FaMoneyBillAlt, FaTasks } from 'react-icons/fa';
+import { format } from 'date-fns';
+import AtAGlance from '../components/AtAGlance';
+import { useEvents } from '../context/EventsContext';
 import './Dashboard.css';
 
 const Dashboard = () => {
+    const { events, loading: eventsLoading } = useEvents();
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const upcomingEvents = events
+        .filter(event => new Date(event.date) >= today)
+        .sort((a, b) => new Date(a.date) - new Date(b.date))
+        .slice(0, 5);
+
+    const getContrastColor = (hexcolor) => {
+        if (!hexcolor) return '#3B82F6';
+        if (hexcolor.toLowerCase() === '#ffffff' || hexcolor.toLowerCase() === 'white') return '#1f2937';
+        if (hexcolor.toLowerCase() === '#ffd700' || hexcolor.toLowerCase() === 'gold') return '#b45309';
+
+        const hex = hexcolor.replace('#', '');
+        const r = parseInt(hex.substr(0, 2), 16);
+        const g = parseInt(hex.substr(2, 2), 16);
+        const b = parseInt(hex.substr(4, 2), 16);
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        return brightness > 180 ? '#1f2937' : hexcolor;
+    };
+
     return (
         <div className="page-dashboard">
             <header className="dashboard-header">
@@ -19,7 +46,7 @@ const Dashboard = () => {
                 <div className="stat-card">
                     <div className="stat-icon icon-events"><FaCalendarCheck /></div>
                     <div className="stat-info">
-                        <span className="stat-value">3</span>
+                        <span className="stat-value">{upcomingEvents.length}</span>
                         <span className="stat-label">Upcoming Events</span>
                     </div>
                 </div>
@@ -33,25 +60,50 @@ const Dashboard = () => {
             </div>
 
             <div className="dashboard-grid">
-                <Card title="Upcoming Events" className="dashboard-card">
-                    <ul className="event-list">
-                        <li>
-                            <span className="event-date">Dec 24</span>
-                            <span className="event-title">Christmas Eve Service</span>
-                        </li>
-                        <li>
-                            <span className="event-date">Dec 25</span>
-                            <span className="event-title">Christmas Day Service</span>
-                        </li>
-                    </ul>
-                </Card>
+                <div style={{ gridColumn: 'span 2' }}>
+                    <AtAGlance />
+                </div>
 
-                <Card title="Bulletin Status" className="dashboard-card">
-                    <div className="status-indicator status-draft">
-                        <span className="indicator-dot"></span>
-                        <span className="indicator-text">Drafting in Progress</span>
-                    </div>
-                    <p className="status-detail">For Sunday, Dec 21st</p>
+                <Card title="Upcoming Events" className="dashboard-card">
+                    {eventsLoading && upcomingEvents.length === 0 ? (
+                        <p className="loading-text">Loading events...</p>
+                    ) : upcomingEvents.length === 0 ? (
+                        <p className="no-events">No upcoming events this week</p>
+                    ) : (
+                        <ul className="events-list">
+                            {upcomingEvents.map(event => {
+                                const contrastColor = getContrastColor(event.color);
+                                const isLight = contrastColor !== event.color;
+
+                                return (
+                                    <li key={event.id} className="event-item" style={{ borderLeftColor: event.color }}>
+                                        <div className="event-date">
+                                            <span className="event-day">{format(new Date(event.date), 'd')}</span>
+                                            <span className="event-month">{format(new Date(event.date), 'MMM')}</span>
+                                        </div>
+                                        <div className="event-details">
+                                            <div className="event-header-row">
+                                                <span className="event-title">{event.title}</span>
+                                                {event.type_name && (
+                                                    <span
+                                                        className="event-type-badge"
+                                                        style={{
+                                                            color: contrastColor,
+                                                            backgroundColor: isLight ? '#f3f4f6' : `${event.color}25`
+                                                        }}
+                                                    >
+                                                        {event.type_name}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <span className="event-time">{event.time}</span>
+                                            {event.location && <span className="event-location">{event.location}</span>}
+                                        </div>
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    )}
                 </Card>
 
                 <Card title="Finance Snapshot" className="dashboard-card">

@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaEnvelope, FaMusic } from 'react-icons/fa';
+import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaEnvelope, FaMusic, FaCog } from 'react-icons/fa';
 import logo from '../assets/logo.png';
 import './Sidebar.css';
 
@@ -13,6 +13,7 @@ const Sidebar = () => {
         { path: '/people', label: 'People & Ministry', icon: <FaUsers /> },
         { path: '/music', label: 'Music', icon: <FaMusic /> },
         { path: '/todo', label: 'To-Do List', icon: <FaList /> },
+        { path: '/settings', label: 'Settings', icon: <FaCog /> },
     ];
 
     return (

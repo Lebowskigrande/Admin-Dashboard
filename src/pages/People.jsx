@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { FaPlus, FaUserClock, FaPrayingHands, FaUsers, FaClock } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
@@ -16,12 +16,27 @@ const People = () => {
     ]);
     const [newTime, setNewTime] = useState({ date: '', name: '', hours: '', task: '' });
 
-    // Volunteers Mock
-    const [services, setServices] = useState([
-        { id: 1, date: '2025-12-21', time: '8:00 AM', roles: { Lector: 'Mary S.', Usher: 'Tom B.', Chalice: 'Rev. Dave' } },
-        { id: 2, date: '2025-12-21', time: '10:00 AM', roles: { Lector: 'John D.', Usher: 'Sarah W.', Chalice: 'Rev. Dave' } },
-        { id: 3, date: '2025-12-24', time: '6:00 PM', roles: { Lector: 'Kids', Usher: 'Parents', Chalice: 'All Staff' } },
-    ]);
+    // Team Rosters (from user's data)
+    const lectors8am = ['Mary Beth', 'Betsy', 'David', 'Nancy', 'Bob M.'];
+    const lectors10am = [
+        { pair: 'Tori & Kimberly', week: 1 },
+        { pair: 'Tom & Pam', week: 2 },
+        { pair: 'Joel & Volunteer', week: 3 },
+        { pair: 'Karen & Diane', week: 4 }
+    ];
+    const acolyteTeams = [
+        { team: 'Angela, Veronica, Natalia', week: 1 },
+        { team: 'Kimberly, Tori, Amy', week: 2 },
+        { team: 'Eli, Carolyn, Peter', week: 3 },
+        { team: 'Jackson, Quinn, Angela', week: 4 }
+    ];
+    const lemTeams = [
+        { team: 'Angela, Veronica', week: 1 },
+        { team: 'Kimberly, Tori', week: 2 },
+        { team: 'Eli, Carolyn', week: 3 },
+        { team: 'Kimberly, Angela', week: 4 }
+    ];
+    const soundEngineer = 'Cristo Nava';
 
     // Ministry Mock
     const [ministries, setMinistries] = useState([
@@ -63,19 +78,53 @@ const People = () => {
     );
 
     const renderVolunteers = () => (
-        <div className="volunteers-grid">
-            {services.map(s => (
-                <div key={s.id} className="service-card">
-                    <h3>{s.date} - {s.time}</h3>
-                    <hr style={{ margin: '0.5rem 0', border: 'none', borderTop: '1px solid #eee' }} />
-                    {Object.entries(s.roles).map(([role, person]) => (
-                        <div key={role} className="role-row">
-                            <span className="role-name">{role}:</span>
-                            <span className="role-person">{person}</span>
-                        </div>
+        <div className="rosters-container">
+            <Card className="roster-card">
+                <h3 className="roster-title">8:00 AM - Rite I Lectors</h3>
+                <p className="roster-note">Weekly Rotation (5-week cycle)</p>
+                <ul className="roster-list">
+                    {lectors8am.map((name, idx) => (
+                        <li key={idx}><span className="week-badge">Week {idx + 1}</span> {name}</li>
                     ))}
+                </ul>
+            </Card>
+
+            <Card className="roster-card">
+                <h3 className="roster-title">10:00 AM - Rite II Lectors</h3>
+                <p className="roster-note">Weekly Rotation (4-week cycle)</p>
+                <ul className="roster-list">
+                    {lectors10am.map((item, idx) => (
+                        <li key={idx}><span className="week-badge">Week {item.week}</span> {item.pair}</li>
+                    ))}
+                </ul>
+            </Card>
+
+            <Card className="roster-card">
+                <h3 className="roster-title">Acolytes (10:00 AM)</h3>
+                <p className="roster-note">Weekly Rotation (4-week cycle)</p>
+                <ul className="roster-list">
+                    {acolyteTeams.map((item, idx) => (
+                        <li key={idx}><span className="week-badge">Week {item.week}</span> {item.team}</li>
+                    ))}
+                </ul>
+            </Card>
+
+            <Card className="roster-card">
+                <h3 className="roster-title">LEMs / Chalice Bearers (10:00 AM)</h3>
+                <p className="roster-note">Weekly Rotation (4-week cycle)</p>
+                <ul className="roster-list">
+                    {lemTeams.map((item, idx) => (
+                        <li key={idx}><span className="week-badge">Week {item.week}</span> {item.team}</li>
+                    ))}
+                </ul>
+            </Card>
+
+            <Card className="roster-card">
+                <h3 className="roster-title">Sound Engineer (10:00 AM)</h3>
+                <div className="single-role">
+                    <span className="role-value">{soundEngineer}</span>
                 </div>
-            ))}
+            </Card>
         </div>
     );
 
