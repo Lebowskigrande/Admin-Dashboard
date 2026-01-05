@@ -1,0 +1,609 @@
+.page-buildings {
+    padding: 1rem;
+}
+
+.buildings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+}
+
+.campus-map-card {
+    margin-bottom: 2rem;
+    background: #ffffff;
+    height: calc(100vh - 120px);
+    min-height: 520px;
+}
+
+.campus-map-card.card:hover {
+    transform: none;
+    box-shadow: var(--shadow-sm);
+}
+
+.campus-map-card .card-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.campus-map-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+}
+
+.campus-map-header h2 {
+    margin: 0 0 0.35rem 0;
+}
+
+.campus-map-header p {
+    margin: 0;
+    color: #6b7280;
+}
+
+.map-legend {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.legend-item {
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.legend-building {
+    background: #e0f2fe;
+    color: #0c4a6e;
+}
+
+.legend-parking {
+    background: #ede9fe;
+    color: #5b21b6;
+}
+
+.legend-grounds {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.campus-map-layout {
+    display: grid;
+    grid-template-columns: minmax(200px, 0.6fr) minmax(0, 1.3fr) minmax(0, 0.8fr);
+    gap: 1.5rem;
+    align-items: start;
+    height: 100%;
+    flex: 1;
+    min-height: 0;
+}
+
+.campus-map-wrapper {
+    position: relative;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid #e5e7eb;
+    background: #f8fafc;
+    height: 100%;
+    min-height: 0;
+}
+
+.campus-map-image {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.campus-map-overlay {
+    position: absolute;
+    inset: 0;
+}
+
+.campus-map-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.map-area {
+    border-radius: 12px;
+    border: 2px solid transparent;
+    fill: transparent;
+    stroke: transparent;
+    stroke-width: 3px;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    pointer-events: all;
+}
+
+.map-area-building {
+    --area-fill: rgba(37, 99, 235, 0.24);
+    --area-stroke: rgba(37, 99, 235, 0.95);
+}
+
+.map-area-parking {
+    --area-fill: rgba(124, 58, 237, 0.22);
+    --area-stroke: rgba(124, 58, 237, 0.95);
+}
+
+.map-area-grounds {
+    --area-fill: rgba(22, 163, 74, 0.22);
+    --area-stroke: rgba(22, 163, 74, 0.9);
+}
+
+.map-area-entry {
+    --area-fill: rgba(245, 158, 11, 0.28);
+    --area-stroke: rgba(245, 158, 11, 0.95);
+}
+
+.map-area-category-worship {
+    --area-fill: rgba(249, 115, 22, 0.24);
+    --area-stroke: rgba(249, 115, 22, 0.95);
+}
+
+.map-area-category-all-purpose {
+    --area-fill: rgba(14, 165, 233, 0.22);
+    --area-stroke: rgba(14, 165, 233, 0.95);
+}
+
+.map-area:hover,
+.map-area:focus,
+.map-area.active {
+    stroke: var(--area-stroke, rgba(14, 116, 144, 0.9));
+    fill: var(--area-fill, rgba(14, 116, 144, 0.25));
+    filter: drop-shadow(0 0 6px rgba(15, 23, 42, 0.25));
+    outline: none;
+}
+
+.campus-map-details,
+.campus-map-list-panel {
+    background: #f8fafc;
+    border-radius: 16px;
+    padding: 1.25rem;
+    border: 1px solid #e5e7eb;
+    height: 100%;
+    min-height: 0;
+}
+
+.campus-map-details {
+    overflow: auto;
+}
+
+.campus-map-list-panel {
+    overflow: visible;
+}
+
+.campus-map-list-panel h3 {
+    margin: 0 0 0.75rem 0;
+}
+
+.map-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.map-tag-building {
+    background: #e0f2fe;
+    color: #075985;
+}
+
+.map-tag-parking {
+    background: #ede9fe;
+    color: #5b21b6;
+}
+
+.map-tag-grounds {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.map-tag-entry {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.campus-map-details h3 {
+    margin: 0.5rem 0 0.4rem 0;
+}
+
+.campus-map-details p {
+    margin: 0 0 1rem 0;
+    color: #6b7280;
+}
+
+.map-empty h3 {
+    margin: 0 0 0.4rem 0;
+}
+
+.map-empty p {
+    margin: 0;
+    color: #6b7280;
+}
+
+.map-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.map-list-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 10px;
+    border: 1px solid transparent;
+    background: transparent;
+    text-align: left;
+    color: #1f2937;
+    font-weight: 600;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.map-list-item:hover,
+.map-list-item:focus,
+.map-list-item.active {
+    border-color: #cbd5f5;
+    background: #eef2ff;
+}
+
+.map-list-item.selected {
+    border-color: #1d4ed8;
+    background: #dbeafe;
+    box-shadow: inset 0 0 0 1px #1d4ed8;
+}
+
+.map-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+}
+
+.map-dot-building {
+    background: #38bdf8;
+}
+
+.map-dot-parking {
+    background: #8b5cf6;
+}
+
+.map-dot-grounds {
+    background: #22c55e;
+}
+
+.map-dot-entry {
+    background: #f59e0b;
+}
+
+.map-dot-worship {
+    background: #f97316;
+}
+
+.map-dot-all-purpose {
+    background: #0ea5e9;
+}
+
+.map-category {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-left: 0.4rem;
+}
+
+.map-category-worship {
+    background: #ffedd5;
+    color: #9a3412;
+}
+
+.map-category-all-purpose {
+    background: #e0f2fe;
+    color: #075985;
+}
+
+.buildings-tabs {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+
+.repairs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.5rem;
+}
+
+.repair-card {
+    background: white;
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    border-left: 4px solid #ddd;
+}
+
+.repair-card.status-complaint {
+    border-left-color: #ff4757;
+}
+
+.repair-card.status-troubleshoot {
+    border-left-color: #ffa502;
+}
+
+.repair-card.status-repair {
+    border-left-color: #2ed573;
+}
+
+.repair-card.status-complete {
+    border-left-color: #57606f;
+}
+
+.repair-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+}
+
+.repair-status {
+    font-size: 0.8rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    background: #f1f2f6;
+    text-transform: uppercase;
+    font-weight: bold;
+}
+
+.vendors-table th,
+.vendors-table td {
+    padding: 1rem;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.tickets-view {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.tickets-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+}
+
+.tickets-header p {
+    margin: 0.35rem 0 0;
+    color: #6b7280;
+}
+
+.tickets-layout {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(320px, 2fr);
+    gap: 1.5rem;
+}
+
+.tickets-list,
+.ticket-detail {
+    min-height: 420px;
+}
+
+.ticket-row {
+    width: 100%;
+    text-align: left;
+    border: 1px solid transparent;
+    padding: 0.75rem;
+    border-radius: 12px;
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    transition: all 0.2s ease;
+}
+
+.ticket-row + .ticket-row {
+    margin-top: 0.75rem;
+}
+
+.ticket-row:hover,
+.ticket-row.active {
+    border-color: #cbd5f5;
+    background: #eef2ff;
+}
+
+.ticket-row-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.ticket-row-header h4 {
+    margin: 0;
+}
+
+.ticket-status {
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    text-transform: capitalize;
+}
+
+.status-new {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.status-reviewed {
+    background: #e0f2fe;
+    color: #075985;
+}
+
+.status-in_process {
+    background: #ede9fe;
+    color: #5b21b6;
+}
+
+.status-closed {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.ticket-area-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.ticket-area-chip {
+    background: #f3f4f6;
+    color: #4b5563;
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.75rem;
+}
+
+.ticket-detail-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: center;
+}
+
+.ticket-detail-header p {
+    margin: 0.35rem 0 0;
+    color: #6b7280;
+}
+
+.ticket-section {
+    margin-top: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.ticket-task-form,
+.ticket-note-form {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.ticket-task-form input,
+.ticket-note-form textarea {
+    flex: 1;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    padding: 0.55rem 0.75rem;
+    font-family: inherit;
+}
+
+.ticket-task-list,
+.ticket-note-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.ticket-task {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: 10px;
+    background: #f9fafb;
+}
+
+.ticket-task.completed {
+    opacity: 0.7;
+    text-decoration: line-through;
+}
+
+.task-toggle {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid #cbd5e1;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ticket-note-list li {
+    background: #f9fafb;
+    border-radius: 10px;
+    padding: 0.6rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.ticket-note-list em {
+    font-size: 0.75rem;
+    color: #9ca3af;
+    font-style: normal;
+}
+
+.ticket-error {
+    background: #fee2e2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+    border-radius: 10px;
+    padding: 0.6rem 0.8rem;
+    font-weight: 600;
+}
+
+.ticket-form .form-group {
+    margin-bottom: 0.9rem;
+}
+
+.ticket-area-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.5rem;
+}
+
+.ticket-area-option {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 0.45rem 0.6rem;
+}
+
+@media (max-width: 960px) {
+    .campus-map-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .campus-map-card {
+        height: auto;
+    }
+
+    .campus-map-wrapper {
+        height: auto;
+    }
+
+    .campus-map-image {
+        height: auto;
+    }
+}
