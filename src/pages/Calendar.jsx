@@ -182,7 +182,7 @@ const Calendar = () => {
 
         const roleLabels = [
             { key: 'lector', label: 'Lector' },
-            { key: 'chaliceBearer', label: 'LEM' },
+            { key: 'lem', label: 'LEM' },
             { key: 'acolyte', label: 'Acolyte' },
             { key: 'usher', label: 'Usher' },
             { key: 'sound', label: 'Sound' }

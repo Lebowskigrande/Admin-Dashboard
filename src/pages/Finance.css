@@ -144,3 +144,145 @@
     font-size: 0.75rem;
     color: var(--color-text-secondary);
 }
+
+.deposit-card {
+    margin-top: var(--space-xl);
+    padding: var(--space-lg);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+.deposit-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-md);
+}
+
+.deposit-header p {
+    color: var(--color-text-secondary);
+    margin-top: 6px;
+}
+
+.deposit-body {
+    display: grid;
+    grid-template-columns: minmax(260px, 1fr) minmax(220px, 0.8fr);
+    gap: var(--space-md);
+}
+
+.deposit-upload {
+    border: 1px dashed #cbd5f5;
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+    background: #f8fafc;
+}
+
+.upload-label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-weight: 600;
+    color: var(--color-primary-dark);
+}
+
+.upload-label input {
+    margin-top: 6px;
+}
+
+.upload-list {
+    margin-top: var(--space-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.upload-item {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    color: var(--color-text-main);
+}
+
+.deposit-output {
+    border: 1px solid #e2e8f0;
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: var(--space-sm);
+}
+
+.deposit-placeholder {
+    font-size: 0.9rem;
+    color: var(--color-text-secondary);
+}
+
+.deposit-result {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.ocr-results {
+    border-top: 1px solid #e2e8f0;
+    padding-top: var(--space-sm);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.ocr-results h3 {
+    margin: 0;
+    font-size: 0.95rem;
+    color: var(--color-text-main);
+}
+
+.ocr-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.ocr-table th,
+.ocr-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.ocr-table th {
+    text-align: left;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+}
+
+.ocr-status {
+    font-weight: 600;
+}
+
+.ocr-status.ok {
+    color: #16a34a;
+}
+
+.ocr-status.missing {
+    color: #b45309;
+}
+
+.alert.error {
+    background: #fee2e2;
+    color: #991b1b;
+    padding: 10px 12px;
+    border-radius: 10px;
+}
+
+@media (max-width: 960px) {
+    .deposit-body {
+        grid-template-columns: 1fr;
+    }
+
+    .deposit-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}

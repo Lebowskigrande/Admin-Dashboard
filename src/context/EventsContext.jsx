@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { getUnifiedEvents } from '../services/eventService';
+import { API_URL } from '../services/apiConfig';
 
 const EventsContext = createContext();
 
@@ -26,7 +27,7 @@ export const EventsProvider = ({ children }) => {
         setLoading(true);
         try {
             if (forceSync) {
-                await fetch('http://localhost:3001/api/google/sync', { method: 'POST' });
+                await fetch(`${API_URL}/google/sync`, { method: 'POST' });
             }
 
             const unifiedData = await getUnifiedEvents();

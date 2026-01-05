@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import Card from '../components/Card';
 import { FaGoogle, FaCheck, FaTimes, FaSync } from 'react-icons/fa';
+import { API_BASE, API_URL } from '../services/apiConfig';
 import './Settings.css';
 
 const Settings = () => {
@@ -29,7 +30,7 @@ const Settings = () => {
 
     const checkGoogleStatus = async () => {
         try {
-            const response = await fetch('http://localhost:3001/api/google/status');
+            const response = await fetch(`${API_URL}/google/status`);
             if (response.ok) {
                 const data = await response.json();
                 setGoogleConnected(data.connected);
@@ -47,7 +48,7 @@ const Settings = () => {
     const fetchCalendars = async () => {
         setLoadingCalendars(true);
         try {
-            const response = await fetch('http://localhost:3001/api/google/calendars');
+            const response = await fetch(`${API_URL}/google/calendars`);
             if (response.ok) {
                 const data = await response.json();
                 // Ensure data is an array
@@ -66,7 +67,7 @@ const Settings = () => {
 
     const toggleCalendar = async (calendar) => {
         try {
-            await fetch('http://localhost:3001/api/google/calendars/select', {
+            await fetch(`${API_URL}/google/calendars/select`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -89,14 +90,14 @@ const Settings = () => {
         // Save current page to return after OAuth
         sessionStorage.setItem('oauthReturnPath', window.location.pathname);
         // Direct redirect - more reliable than popup
-        window.location.href = 'http://localhost:3001/auth/google';
+        window.location.href = `${API_BASE}/auth/google`;
     };
 
     const disconnectGoogle = async () => {
         if (!confirm('Disconnect Google Calendar? Events will no longer sync.')) return;
 
         try {
-            await fetch('http://localhost:3001/api/google/disconnect', { method: 'POST' });
+            await fetch(`${API_URL}/google/disconnect`, { method: 'POST' });
             setGoogleConnected(false);
             setCalendars([]);
         } catch (error) {

@@ -1,14 +1,129 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import db from './db.js';
 import { PEOPLE } from '../src/data/people.js';
+
+const require = createRequire(import.meta.url);
+const XLSX = require('xlsx');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const liturgicalPath = path.join(__dirname, '../src/data/liturgical_calendar_2026.json');
 const schedulePath = path.join(__dirname, '../src/data/service_schedule.json');
+const peopleWorkbookPath = path.join(__dirname, '../dashboard people data.xlsx');
+
+const ROLE_MAP = {
+    'Acolyte': 'acolyte',
+    'Altar Guild': 'altarGuild',
+    'Building Supervisor': 'buildingSupervisor',
+    'Celebrant': 'celebrant',
+    'Childcare': 'childcare',
+    'Choirmaster': 'choirmaster',
+    'LEM': 'lem',
+    'Lector': 'lector',
+    'Officiant': 'officiant',
+    'Organist': 'organist',
+    'Preacher': 'preacher',
+    'Sound Engineer': 'sound',
+    'Thurifer': 'thurifer',
+    'Usher': 'usher'
+};
+
+const normalizeText = (value) => String(value || '').trim();
+
+const normalizeCategory = (value) => {
+    const normalized = normalizeText(value).toLowerCase();
+    if (normalized.startsWith('clergy')) return 'clergy';
+    if (normalized.startsWith('staff')) return 'staff';
+    if (normalized.startsWith('volunteer')) return 'volunteer';
+    return 'volunteer';
+};
+
+const parseRoles = (value) => {
+    const roles = normalizeText(value)
+        .split(',')
+        .map((role) => normalizeText(role))
+        .filter(Boolean)
+        .map((role) => ROLE_MAP[role])
+        .filter(Boolean);
+    return Array.from(new Set(roles));
+};
+
+const parseTeams = (value) => {
+    const items = normalizeText(value)
+        .split(',')
+        .map((item) => normalizeText(item));
+    const teamNumbers = items
+        .map((item) => {
+            const match = item.match(/team\s*(\d+)/i);
+            return match ? Number(match[1]) : null;
+        })
+        .filter((num) => Number.isInteger(num));
+    return Array.from(new Set(teamNumbers));
+};
+
+const buildDisplayName = (firstName, lastName) => {
+    const first = normalizeText(firstName);
+    const last = normalizeText(lastName);
+    return normalizeText(`${first} ${last}`);
+};
+
+const loadPeopleFromWorkbook = () => {
+    if (!fs.existsSync(peopleWorkbookPath)) return [];
+    const workbook = XLSX.readFile(peopleWorkbookPath);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+
+    return rows
+        .map((row) => {
+            const displayName = buildDisplayName(row['First Name'], row['Last Name']);
+            if (!displayName) return null;
+
+            const title = normalizeText(row['Title']);
+            const extension = normalizeText(row['Extension']);
+            const tags = [];
+            if (title) tags.push(title);
+            if (extension) tags.push(`ext-${extension}`);
+
+            return {
+                displayName,
+                email: normalizeText(row['Email']),
+                category: normalizeCategory(row['Category']),
+                roles: parseRoles(row['Eligible Roles']),
+                tags,
+                teams: {
+                    lem: parseTeams(row['LEM Team']),
+                    acolyte: parseTeams(row['Acolyte Team']),
+                    usher: parseTeams(row['Usher Team'])
+                }
+            };
+        })
+        .filter(Boolean);
+};
+
+const buildTeamAssignments = (people) => {
+    const teamAssignments = {
+        lem: new Map(),
+        acolyte: new Map(),
+        usher: new Map()
+    };
+
+    const addToTeamMap = (map, teamNumber, name) => {
+        if (!map.has(teamNumber)) map.set(teamNumber, []);
+        map.get(teamNumber).push(name);
+    };
+
+    people.forEach((person) => {
+        person.teams?.lem?.forEach((team) => addToTeamMap(teamAssignments.lem, team, person.displayName));
+        person.teams?.acolyte?.forEach((team) => addToTeamMap(teamAssignments.acolyte, team, person.displayName));
+        person.teams?.usher?.forEach((team) => addToTeamMap(teamAssignments.usher, team, person.displayName));
+    });
+
+    return teamAssignments;
+};
 
 export const seedDatabase = () => {
     const liturgicalCount = db.prepare('SELECT count(*) as count FROM liturgical_days').get().count;
@@ -33,56 +148,105 @@ export const seedDatabase = () => {
     const scheduleCount = db.prepare('SELECT count(*) as count FROM schedule_roles').get().count;
 
     if (scheduleCount === 0) {
-        console.log('Seeding schedule data...');
-        const scheduleData = JSON.parse(fs.readFileSync(schedulePath, 'utf8'));
+        const workbookPeople = loadPeopleFromWorkbook();
+        if (workbookPeople.length) {
+            console.log('Seeding schedule data from teams...');
+            const teamAssignments = buildTeamAssignments(workbookPeople);
+            const sortNames = (names) => names.sort((a, b) => a.localeCompare(b));
 
-        const insert = db.prepare(`
-            INSERT INTO schedule_roles (date, service_time, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour)
-            VALUES (@date, @serviceTime, @lector, @usher, @acolyte, @chaliceBearer, @soundEngineer, @coffeeHour)
-        `);
+            const sundays = db.prepare(`
+                SELECT date
+                FROM liturgical_days
+                WHERE CAST(strftime('%w', date) AS INTEGER) = 0
+                ORDER BY date
+            `).all();
 
-        // Group by date to determine time
-        const grouped = {};
-        scheduleData.forEach(entry => {
-            if (!grouped[entry.date]) grouped[entry.date] = [];
-            grouped[entry.date].push(entry);
-        });
+            let currentMonth = '';
+            let sundayIndex = 0;
 
-        const insertMany = db.transaction(() => {
-            Object.entries(grouped).forEach(([date, entries]) => {
-                entries.forEach((entry, index) => {
-                    // Logic: If 2 entries, first is 8am, second is 10am. 
-                    // If 1 entry, assume 10am (principal service) unless specified otherwise 
-                    // (User said "10am service... 8am..."). 
-                    // Let's stick to the rotation logic: 1st=8am, 2nd=10am (if 2 exist).
+            const insert = db.prepare(`
+                INSERT INTO schedule_roles (date, service_time, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `);
 
-                    let time = '10:00';
-                    if (entries.length >= 2) {
-                        time = index === 0 ? '08:00' : '10:00';
+            const insertMany = db.transaction(() => {
+                sundays.forEach(({ date }) => {
+                    const monthKey = date.slice(0, 7);
+                    if (monthKey !== currentMonth) {
+                        currentMonth = monthKey;
+                        sundayIndex = 0;
                     }
 
-                    insert.run({
-                        date: entry.date,
-                        serviceTime: time,
-                        lector: entry.roles.lector || '',
-                        usher: entry.roles.usher || '',
-                        acolyte: entry.roles.acolyte || '',
-                        chaliceBearer: entry.roles.chaliceBearer || '',
-                        soundEngineer: entry.roles.sound || '',
-                        coffeeHour: entry.roles.coffeeHour || ''
+                    sundayIndex += 1;
+                    const teamNumber = sundayIndex;
+                    const lemNames = teamNumber <= 4 ? teamAssignments.lem.get(teamNumber) || [] : [];
+                    const acolyteNames = teamNumber <= 4 ? teamAssignments.acolyte.get(teamNumber) || [] : [];
+                    const usherNames = teamNumber <= 4 ? teamAssignments.usher.get(teamNumber) || [] : [];
+
+                    insert.run(
+                        date,
+                        '10:00',
+                        '',
+                        teamNumber <= 4 ? sortNames([...usherNames]).join(', ') : '',
+                        teamNumber <= 4 ? sortNames([...acolyteNames]).join(', ') : '',
+                        teamNumber <= 4 ? sortNames([...lemNames]).join(', ') : '',
+                        '',
+                        ''
+                    );
+                });
+            });
+
+            insertMany();
+            console.log(`Inserted ${sundays.length} schedule entries from teams.`);
+        } else {
+            console.log('Seeding schedule data from JSON...');
+            const scheduleData = JSON.parse(fs.readFileSync(schedulePath, 'utf8'));
+
+            const insert = db.prepare(`
+                INSERT INTO schedule_roles (date, service_time, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour)
+                VALUES (@date, @serviceTime, @lector, @usher, @acolyte, @chaliceBearer, @soundEngineer, @coffeeHour)
+            `);
+
+            // Group by date to determine time
+            const grouped = {};
+            scheduleData.forEach(entry => {
+                if (!grouped[entry.date]) grouped[entry.date] = [];
+                grouped[entry.date].push(entry);
+            });
+
+            const insertMany = db.transaction(() => {
+                Object.entries(grouped).forEach(([date, entries]) => {
+                    entries.forEach((entry, index) => {
+                        let time = '10:00';
+                        if (entries.length >= 2) {
+                            time = index === 0 ? '08:00' : '10:00';
+                        }
+
+                        insert.run({
+                            date: entry.date,
+                            serviceTime: time,
+                            lector: entry.roles.lector || '',
+                            usher: entry.roles.usher || '',
+                            acolyte: entry.roles.acolyte || '',
+                            chaliceBearer: entry.roles.chaliceBearer || '',
+                            soundEngineer: entry.roles.sound || '',
+                            coffeeHour: entry.roles.coffeeHour || ''
+                        });
                     });
                 });
             });
-        });
 
-        insertMany();
-        console.log(`Inserted ${scheduleData.length} schedule entries.`);
+            insertMany();
+            console.log(`Inserted ${scheduleData.length} schedule entries.`);
+        }
     }
 
     const peopleCount = db.prepare('SELECT count(*) as count FROM people').get().count;
 
     if (peopleCount === 0) {
         console.log('Seeding people data...');
+        const workbookPeople = loadPeopleFromWorkbook();
+        const sourcePeople = workbookPeople.length ? workbookPeople : PEOPLE;
         const insert = db.prepare(`
             INSERT INTO people (id, display_name, email, category, roles, tags)
             VALUES (@id, @displayName, @email, @category, @roles, @tags)
@@ -91,7 +255,7 @@ export const seedDatabase = () => {
         const insertMany = db.transaction((rows) => {
             for (const person of rows) {
                 insert.run({
-                    id: person.id,
+                    id: person.id || person.displayName?.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
                     displayName: person.displayName,
                     email: person.email || '',
                     category: person.category || '',
@@ -101,8 +265,8 @@ export const seedDatabase = () => {
             }
         });
 
-        insertMany(PEOPLE);
-        console.log(`Inserted ${PEOPLE.length} people.`);
+        insertMany(sourcePeople);
+        console.log(`Inserted ${sourcePeople.length} people.`);
     }
 
     const buildingCount = db.prepare('SELECT count(*) as count FROM buildings').get().count;

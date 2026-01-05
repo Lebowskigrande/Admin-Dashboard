@@ -1,0 +1,31 @@
+{
+  "templatePath": "deposit slip template.pdf",
+  "outputPath": "output/deposit-slip.pdf",
+  "ocrRegions": {
+    "checkNumber": { "xMin": 0.6, "xMax": 1.0, "yMin": 0.0, "yMax": 0.35 },
+    "amount": { "xMin": 0.55, "xMax": 1.0, "yMin": 0.3, "yMax": 0.75 }
+  },
+  "fieldMap": {
+    "total": "Cash",
+    "checks": [
+      { "number": "ChkNum1", "amount": "ChkAmt1" },
+      { "number": "ChkNum2", "amount": "ChkAmt2" },
+      { "number": "ChkNum3", "amount": "ChkAmt3" },
+      { "number": "ChkNum4", "amount": "ChkAmt4" },
+      { "number": "ChkNum5", "amount": "ChkAmt5" },
+      { "number": "ChkNum6", "amount": "ChkAmt6" },
+      { "number": "ChkNum7", "amount": "ChkAmt7" },
+      { "number": "ChkNum8", "amount": "ChkAmt8" },
+      { "number": "ChkNum9", "amount": "ChkAmt9" },
+      { "number": "ChkNum10", "amount": "ChkAmt10" },
+      { "number": "ChkNum11", "amount": "ChkAmt11" },
+      { "number": "ChkNum12", "amount": "ChkAmt12" },
+      { "number": "ChkNum13", "amount": "ChkAmt13" },
+      { "number": "ChkNum14", "amount": "ChkAmt14" },
+      { "number": "ChkNum15", "amount": "ChkAmt15" },
+      { "number": "ChkNum16", "amount": "ChkAmt16" },
+      { "number": "ChkNum17", "amount": "ChkAmt17" },
+      { "number": "ChkNum18", "amount": "ChkAmt18" }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "templatePath": "deposit slip template.pdf",
+  "outputPath": "output/deposit-slip.pdf",
+  "ocrRegions": {
+    "checkNumber": { "xMin": 0.6, "xMax": 1.0, "yMin": 0.0, "yMax": 0.35 },
+    "amount": { "xMin": 0.55, "xMax": 1.0, "yMin": 0.3, "yMax": 0.75 }
+  },
+  "fieldMap": {
+    "date": "deposit_date",
+    "total": "total_amount",
+    "checks": [
+      { "number": "check1_number", "amount": "check1_amount" },
+      { "number": "check2_number", "amount": "check2_amount" },
+      { "number": "check3_number", "amount": "check3_amount" },
+      { "number": "check4_number", "amount": "check4_amount" },
+      { "number": "check5_number", "amount": "check5_amount" },
+      { "number": "check6_number", "amount": "check6_amount" },
+      { "number": "check7_number", "amount": "check7_amount" },
+      { "number": "check8_number", "amount": "check8_amount" }
+    ]
+  }
+}

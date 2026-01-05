@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { FaPlus, FaTrash, FaCheck } from 'react-icons/fa';
 import Card from '../components/Card';
+import { API_URL } from '../services/apiConfig';
 import './Todo.css';
 
 const Todo = () => {
@@ -15,7 +16,7 @@ const Todo = () => {
             setLoading(true);
             setError('');
             try {
-                const response = await fetch('http://localhost:3001/api/tasks');
+                const response = await fetch(`${API_URL}/tasks`);
                 if (!response.ok) throw new Error('Failed to load tasks');
                 const data = await response.json();
                 setTasks(Array.isArray(data) ? data : []);
@@ -34,7 +35,7 @@ const Todo = () => {
         e.preventDefault();
         if (!newTask.trim()) return;
         try {
-            const response = await fetch('http://localhost:3001/api/tasks', {
+            const response = await fetch(`${API_URL}/tasks`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: newTask.trim() })
@@ -53,7 +54,7 @@ const Todo = () => {
         const task = tasks.find((item) => item.id === id);
         if (!task) return;
         try {
-            const response = await fetch(`http://localhost:3001/api/tasks/${id}`, {
+            const response = await fetch(`${API_URL}/tasks/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: task.text, completed: !task.completed })
@@ -69,7 +70,7 @@ const Todo = () => {
 
     const deleteTask = async (id) => {
         try {
-            const response = await fetch(`http://localhost:3001/api/tasks/${id}`, {
+            const response = await fetch(`${API_URL}/tasks/${id}`, {
                 method: 'DELETE'
             });
             if (!response.ok) throw new Error('Failed to delete task');

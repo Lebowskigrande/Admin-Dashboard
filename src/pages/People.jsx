@@ -5,6 +5,7 @@ import Modal from '../components/Modal';
 import { ROLE_DEFINITIONS } from '../models/roles';
 import { createPerson } from '../models/person';
 import { clearLiturgicalCache } from '../services/liturgicalService';
+import { API_URL } from '../services/apiConfig';
 import './People.css';
 
 const CATEGORY_CONFIG = [
@@ -55,7 +56,7 @@ const People = () => {
             setLoading(true);
             setError('');
             try {
-                const response = await fetch('http://localhost:3001/api/people');
+                const response = await fetch(`${API_URL}/people`);
                 if (!response.ok) throw new Error('Failed to load people');
                 const data = await response.json();
                 setPeople(Array.isArray(data) ? data : []);
@@ -127,8 +128,8 @@ const People = () => {
         try {
             const response = await fetch(
                 editingId
-                    ? `http://localhost:3001/api/people/${editingId}`
-                    : 'http://localhost:3001/api/people',
+                    ? `${API_URL}/people/${editingId}`
+                    : `${API_URL}/people`,
                 {
                     method: editingId ? 'PUT' : 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -158,7 +159,7 @@ const People = () => {
         if (!editingId) return;
         if (!confirm('Delete this person? This cannot be undone.')) return;
         try {
-            const response = await fetch(`http://localhost:3001/api/people/${editingId}`, {
+            const response = await fetch(`${API_URL}/people/${editingId}`, {
                 method: 'DELETE'
             });
             if (!response.ok) throw new Error('Failed to delete person');

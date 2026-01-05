@@ -83,7 +83,7 @@ const AtAGlance = () => {
                     </div>
                     <div className="role-row">
                         <span className="role-label-compact">LEM:</span>
-                        <span className="role-value">{getRoleAssignments(service10am, 'chaliceBearer')}</span>
+                        <span className="role-value">{getRoleAssignments(service10am, 'lem')}</span>
                     </div>
                     <div className="role-row">
                         <span className="role-label-compact">Acolyte:</span>

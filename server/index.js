@@ -1,16 +1,26 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import multer from 'multer';
+import { readFile, rm } from 'fs/promises';
+import { join, dirname, resolve, basename } from 'path';
+import { tmpdir } from 'os';
+import { fileURLToPath } from 'url';
 import db from './db.js';
 import { seedDatabase } from './seed.js';
 import { getAuthUrl, getTokensFromCode, setStoredCredentials } from './googleAuth.js';
 import { fetchGoogleCalendarEvents, fetchCalendarList } from './googleCalendar.js';
 import { categorizeGoogleEvent, getEventContext, syncGoogleEvents } from './eventEngine.js';
+import { buildDepositSlipPdf, extractChecksFromImages } from './depositSlip.js';
 
 dotenv.config({ path: './server/.env' });
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 const app = express();
 const PORT = 3001;
+const upload = multer({ dest: join(tmpdir(), 'deposit-slip-uploads') });
 
 app.use(cors());
 app.use(express.json());
@@ -766,6 +776,130 @@ app.get('/api/events', async (req, res) => {
     } catch (error) {
         console.error('Error fetching merged events:', error);
         res.status(500).json({ error: 'Failed to fetch events' });
+    }
+});
+
+// --- Liturgical & Schedule Data ---
+
+app.get('/api/liturgical-days', (req, res) => {
+    const { start, end } = req.query;
+    let sql = 'SELECT * FROM liturgical_days';
+    const params = [];
+
+    if (start && end) {
+        sql += ' WHERE date BETWEEN ? AND ?';
+        params.push(start, end);
+    } else if (start) {
+        sql += ' WHERE date >= ?';
+        params.push(start);
+    } else if (end) {
+        sql += ' WHERE date <= ?';
+        params.push(end);
+    }
+
+    sql += ' ORDER BY date';
+    const rows = db.prepare(sql).all(...params);
+    res.json(rows);
+});
+
+app.get('/api/schedule-roles', (req, res) => {
+    const { start, end } = req.query;
+    let sql = 'SELECT * FROM schedule_roles';
+    const params = [];
+
+    if (start && end) {
+        sql += ' WHERE date BETWEEN ? AND ?';
+        params.push(start, end);
+    } else if (start) {
+        sql += ' WHERE date >= ?';
+        params.push(start);
+    } else if (end) {
+        sql += ' WHERE date <= ?';
+        params.push(end);
+    }
+
+    sql += ' ORDER BY date, service_time';
+    const rows = db.prepare(sql).all(...params);
+    res.json(rows);
+});
+
+app.put('/api/schedule-roles', (req, res) => {
+    const {
+        date,
+        service_time = '10:00',
+        lector = '',
+        usher = '',
+        acolyte = '',
+        lem = '',
+        sound = '',
+        coffeeHour = ''
+    } = req.body || {};
+
+    if (!date) {
+        return res.status(400).json({ error: 'Date is required' });
+    }
+
+    const existing = db.prepare(
+        'SELECT 1 FROM schedule_roles WHERE date = ? AND service_time = ?'
+    ).get(date, service_time);
+
+    if (existing) {
+        db.prepare(`
+            UPDATE schedule_roles
+            SET lector = ?, usher = ?, acolyte = ?, chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?
+            WHERE date = ? AND service_time = ?
+        `).run(lector, usher, acolyte, lem, sound, coffeeHour, date, service_time);
+    } else {
+        db.prepare(`
+            INSERT INTO schedule_roles (date, service_time, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(date, service_time, lector, usher, acolyte, lem, sound, coffeeHour);
+    }
+
+    res.json({ success: true, date, service_time });
+});
+
+// --- Deposit Slip OCR ---
+
+app.post('/api/deposit-slip', upload.array('checks', 30), async (req, res) => {
+    try {
+        const files = req.files || [];
+        if (files.length === 0) {
+            return res.status(400).json({ error: 'No check images uploaded' });
+        }
+
+        const configPath = resolve(__dirname, 'depositSlipConfig.json');
+        const config = JSON.parse(await readFile(configPath, 'utf8'));
+        const templatePath = resolve(__dirname, '..', config.templatePath || 'deposit slip template.pdf');
+
+        const outputDir = join(tmpdir(), `deposit-slip-${Date.now()}`);
+        const outputPath = join(outputDir, 'deposit-slip.pdf');
+
+        const imagePaths = files.map((file) => ({
+            path: file.path,
+            source: file.originalname || basename(file.path)
+        }));
+        const checks = await extractChecksFromImages(imagePaths, { ocrRegions: config.ocrRegions });
+
+        await buildDepositSlipPdf({
+            templatePath,
+            outputPath,
+            checks,
+            fieldMap: config.fieldMap || {}
+        });
+
+        const pdfBytes = await readFile(outputPath);
+        const pdfBase64 = pdfBytes.toString('base64');
+        res.json({
+            pdfBase64,
+            checks
+        });
+
+        await rm(outputDir, { recursive: true, force: true });
+        await Promise.all(imagePaths.map((path) => rm(path, { force: true })));
+    } catch (error) {
+        console.error('Deposit slip error:', error);
+        res.status(500).json({ error: 'Failed to build deposit slip' });
     }
 });
 

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Calendar from './pages/Calendar';
+import LiturgicalSchedule from './pages/LiturgicalSchedule';
 import Bulletins from './pages/Bulletins';
 import Finance from './pages/Finance';
 import Todo from './pages/Todo';
@@ -20,6 +21,7 @@ function App() {
           <Route path="/" element={<Layout />}>
             <Route index element={<Dashboard />} />
             <Route path="calendar" element={<Calendar />} />
+            <Route path="liturgical-schedule" element={<LiturgicalSchedule />} />
             <Route path="finance" element={<Finance />} />
             <Route path="communications" element={<Communications />} />
             <Route path="buildings" element={<Buildings />} />

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { FaPlus, FaTools, FaClipboardList, FaAddressBook, FaClipboardCheck, FaTrash } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
+import { API_URL } from '../services/apiConfig';
 import './Buildings.css';
 
 const MAP_AREAS = [
@@ -271,7 +272,7 @@ const Buildings = () => {
         event.preventDefault();
         if (!newTicket.title.trim()) return;
         try {
-            const response = await fetch('http://localhost:3001/api/tickets', {
+            const response = await fetch(`${API_URL}/tickets`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -294,7 +295,7 @@ const Buildings = () => {
 
     const updateTicket = async (ticketId, updates) => {
         try {
-            const response = await fetch(`http://localhost:3001/api/tickets/${ticketId}`, {
+            const response = await fetch(`${API_URL}/tickets/${ticketId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(updates)
@@ -324,7 +325,7 @@ const Buildings = () => {
         const trimmed = newTaskText.trim();
         if (!trimmed) return;
         try {
-            const response = await fetch('http://localhost:3001/api/tasks', {
+            const response = await fetch(`${API_URL}/tasks`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: trimmed, ticket_id: ticketId })
@@ -345,7 +346,7 @@ const Buildings = () => {
 
     const toggleTicketTask = async (task) => {
         try {
-            const response = await fetch(`http://localhost:3001/api/tasks/${task.id}`, {
+            const response = await fetch(`${API_URL}/tasks/${task.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: task.text, completed: !task.completed })
@@ -365,7 +366,7 @@ const Buildings = () => {
 
     const deleteTicketTask = async (task) => {
         try {
-            const response = await fetch(`http://localhost:3001/api/tasks/${task.id}`, {
+            const response = await fetch(`${API_URL}/tasks/${task.id}`, {
                 method: 'DELETE'
             });
             if (!response.ok) throw new Error('Failed to delete task');
@@ -573,7 +574,7 @@ const Buildings = () => {
             setTicketsLoading(true);
             setTicketsError('');
             try {
-                const response = await fetch('http://localhost:3001/api/tickets');
+                const response = await fetch(`${API_URL}/tickets`);
                 if (!response.ok) throw new Error('Failed to load tickets');
                 const data = await response.json();
                 setTickets(Array.isArray(data) ? data : []);
