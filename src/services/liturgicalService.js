@@ -30,7 +30,8 @@ const buildServiceEntries = (entries = []) => {
                 usher: entry.usher || '',
                 acolyte: entry.acolyte || '',
                 lem: entry.chalice_bearer || '',
-                sound: entry.sound_engineer || ''
+                sound: entry.sound_engineer || '',
+                coffeeHour: entry.coffee_hour || ''
             }
         };
     });

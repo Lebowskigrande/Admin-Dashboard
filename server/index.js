@@ -862,24 +862,37 @@ app.put('/api/schedule-roles', (req, res) => {
 // --- Deposit Slip OCR ---
 
 app.post('/api/deposit-slip', upload.array('checks', 30), async (req, res) => {
+    let outputDir = null;
+    let imagePaths = null;
     try {
         const files = req.files || [];
         if (files.length === 0) {
             return res.status(400).json({ error: 'No check images uploaded' });
         }
 
+        const debugOcr = req.body?.debugOcr === '1' || req.body?.debugOcr === 'true';
         const configPath = resolve(__dirname, 'depositSlipConfig.json');
         const config = JSON.parse(await readFile(configPath, 'utf8'));
         const templatePath = resolve(__dirname, '..', config.templatePath || 'deposit slip template.pdf');
 
-        const outputDir = join(tmpdir(), `deposit-slip-${Date.now()}`);
+        outputDir = join(tmpdir(), `deposit-slip-${Date.now()}`);
         const outputPath = join(outputDir, 'deposit-slip.pdf');
 
-        const imagePaths = files.map((file) => ({
+        imagePaths = files.map((file) => ({
             path: file.path,
             source: file.originalname || basename(file.path)
         }));
-        const checks = await extractChecksFromImages(imagePaths, { ocrRegions: config.ocrRegions });
+        const checks = await extractChecksFromImages(imagePaths, {
+            ocrRegions: config.ocrRegions,
+            includeOcrLines: debugOcr,
+            ocrEngines: config.ocrEngines,
+            ocrRegionOrigin: config.ocrRegionOrigin,
+            ocrRegionAnchor: config.ocrRegionAnchor,
+            ocrModel: config.ocrModel,
+            ocrCropMaxSize: config.ocrCropMaxSize,
+            ocrPreviewOnly: config.ocrPreviewOnly === true,
+            ocrAlign: config.ocrAlign
+        });
 
         await buildDepositSlipPdf({
             templatePath,
@@ -892,14 +905,23 @@ app.post('/api/deposit-slip', upload.array('checks', 30), async (req, res) => {
         const pdfBase64 = pdfBytes.toString('base64');
         res.json({
             pdfBase64,
-            checks
+            checks,
+            debugOcr
         });
-
-        await rm(outputDir, { recursive: true, force: true });
-        await Promise.all(imagePaths.map((path) => rm(path, { force: true })));
     } catch (error) {
         console.error('Deposit slip error:', error);
-        res.status(500).json({ error: 'Failed to build deposit slip' });
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to build deposit slip' });
+        }
+    } finally {
+        if (outputDir) {
+            await rm(outputDir, { recursive: true, force: true }).catch(() => {});
+        }
+        if (imagePaths?.length) {
+            await Promise.all(
+                imagePaths.map((file) => rm(file.path || file, { force: true }).catch(() => {}))
+            );
+        }
     }
 });
 

@@ -1,0 +1,153 @@
+.page-sunday {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+}
+
+.sunday-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-md);
+}
+
+.sunday-nav {
+    display: flex;
+    gap: var(--space-sm);
+}
+
+.sunday-summary-card {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--space-md);
+    align-items: center;
+}
+
+.summary-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+}
+
+.sunday-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: var(--space-md);
+}
+
+.sunday-panel h3 {
+    margin-bottom: var(--space-sm);
+}
+
+.panel-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.panel-row select,
+.panel-row input {
+    width: 100%;
+}
+
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.staff-grid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.staff-row {
+    display: grid;
+    grid-template-columns: 1.2fr 0.6fr auto;
+    gap: var(--space-sm);
+    align-items: center;
+}
+
+.btn-link {
+    background: none;
+    border: none;
+    color: var(--color-primary);
+    cursor: pointer;
+    padding: 0;
+}
+
+.sunday-services {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: var(--space-md);
+}
+
+.sunday-service-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.sunday-service-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-md);
+}
+
+.service-meta {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+}
+
+.service-name {
+    font-size: 0.9rem;
+    color: var(--color-text-secondary);
+}
+
+.service-roles-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-sm);
+}
+
+.role-edit-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+}
+
+.role-edit-row input {
+    padding: 8px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+@media (max-width: 720px) {
+    .sunday-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .sunday-summary-card {
+        grid-template-columns: 1fr;
+    }
+
+    .staff-row {
+        grid-template-columns: 1fr;
+    }
+}

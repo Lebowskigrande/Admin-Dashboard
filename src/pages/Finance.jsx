@@ -13,6 +13,7 @@ const Finance = () => {
     const [depositError, setDepositError] = useState('');
     const [depositUrl, setDepositUrl] = useState('');
     const [depositChecks, setDepositChecks] = useState([]);
+    const [depositDebug, setDepositDebug] = useState(false);
     const [transactions, setTransactions] = useState([
         { id: 1, date: '2025-12-01', description: 'Weekly Offering', amount: 5200.00, type: 'income', category: 'Donation', glCode: '4001', approved: true, sentToEsp: true, checkType: 'Check' },
         { id: 2, date: '2025-12-05', description: 'Utility Bill - Nov', amount: 450.00, type: 'expense', category: 'Utilities', glCode: '5010', approved: false, sentToEsp: false },
@@ -86,9 +87,10 @@ const Finance = () => {
     const renderOcrNote = (check) => {
         const missing = [];
         if (check?.missing?.checkNumber) missing.push('check number');
-        if (check?.missing?.amount) missing.push('amount');
+        if (check?.missing?.amount) missing.push('numeric amount');
+        if (check?.missing?.legalAmountText) missing.push('written amount');
         if (missing.length === 0) return 'OK';
-        if (missing.length === 2) return 'Missing check number and amount';
+        if (missing.length === 2) return `Missing ${missing[0]} and ${missing[1]}`;
         return `Missing ${missing[0]}`;
     };
 
@@ -103,6 +105,7 @@ const Finance = () => {
         try {
             const formData = new FormData();
             depositFiles.forEach((file) => formData.append('checks', file));
+            formData.append('debugOcr', depositDebug ? '1' : '0');
 
             const response = await fetch(`${API_URL}/deposit-slip`, {
                 method: 'POST',
@@ -254,6 +257,14 @@ const Finance = () => {
                                 onChange={handleDepositFiles}
                             />
                         </label>
+                        <label className="debug-toggle">
+                            <input
+                                type="checkbox"
+                                checked={depositDebug}
+                                onChange={(event) => setDepositDebug(event.target.checked)}
+                            />
+                            Show OCR debug details
+                        </label>
                         {depositFiles.length > 0 && (
                             <div className="upload-list">
                                 {depositFiles.map((file) => (
@@ -283,12 +294,23 @@ const Finance = () => {
                                                     <th>Check #</th>
                                                     <th className="text-right">Amount</th>
                                                     <th>Status</th>
+                                                    <th>Written Amount</th>
+                                                    <th>Match</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {depositChecks.map((check, index) => {
                                                     const note = renderOcrNote(check);
                                                     const statusClass = note === 'OK' ? 'ok' : 'missing';
+                                                    let matchLabel = 'Unverified';
+                                                    let matchClass = 'missing';
+                                                    if (check.amountMatch === true) {
+                                                        matchLabel = 'Match';
+                                                        matchClass = 'ok';
+                                                    } else if (check.amountMatch === false) {
+                                                        matchLabel = 'Mismatch';
+                                                        matchClass = 'error';
+                                                    }
                                                     return (
                                                         <tr key={`${check.source || 'check'}-${index}`}>
                                                             <td>{check.source || 'Unknown'}</td>
@@ -299,11 +321,77 @@ const Finance = () => {
                                                             <td>
                                                                 <span className={`ocr-status ${statusClass}`}>{note}</span>
                                                             </td>
+                                                            <td>{check.legalAmountText || '--'}</td>
+                                                            <td>
+                                                                <span className={`ocr-status ${matchClass}`}>{matchLabel}</span>
+                                                            </td>
                                                         </tr>
                                                     );
                                                 })}
                                             </tbody>
                                         </table>
+                                        {depositDebug && (
+                                            <div className="ocr-debug">
+                                                {depositChecks.map((check, index) => (
+                                                    <details key={`ocr-debug-${check.source || 'check'}-${index}`}>
+                                                        <summary>{check.source || `Check ${index + 1}`}</summary>
+                                                        <div className="ocr-debug-lines">
+                                                            {check.ocrError && (
+                                                                <div className="text-muted">OCR error: {check.ocrError}</div>
+                                                            )}
+                                                            {check.ocrRegions && (
+                                                                <div className="ocr-region-results">
+                                                                    {check.alignedPreviewBase64 && (
+                                                                        <div className="ocr-preview">
+                                                                            <img
+                                                                                src={`data:image/png;base64,${check.alignedPreviewBase64}`}
+                                                                                alt="Aligned check preview"
+                                                                            />
+                                                                        </div>
+                                                                    )}
+                                                                    {Object.entries(check.ocrRegions).map(([regionKey, region]) => (
+                                                                        <div key={`${regionKey}-${index}`}>
+                                                                            <span className="font-mono">{regionKey}:</span>
+                                                                            <span>{` ${region.text || '--'} `}</span>
+                                                                            <span className="text-muted">{`(${region.engine || 'n/a'})`}</span>
+                                                                            {region.previewBase64 && (
+                                                                                <div className="ocr-preview">
+                                                                                    <img
+                                                                                        src={`data:image/png;base64,${region.previewBase64}`}
+                                                                                        alt={`${regionKey} preview`}
+                                                                                    />
+                                                                                </div>
+                                                                            )}
+                                                                            {region.candidates && (
+                                                                                <div className="text-muted">
+                                                                                    {Object.entries(region.candidates).map(([engine, text]) => (
+                                                                                        <div key={`${regionKey}-${engine}`}>
+                                                                                            <span className="font-mono">{engine}:</span>
+                                                                                            <span>{` ${text || '--'}`}</span>
+                                                                                        </div>
+                                                                                    ))}
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {(check.ocrLines || []).map((line, lineIndex) => (
+                                                                <div key={`ocr-line-${index}-${lineIndex}`}>
+                                                                    <span className="font-mono">{line.text || '--'}</span>
+                                                                    <span className="text-muted">
+                                                                        {` [${Math.round(line.left)},${Math.round(line.top)} - ${Math.round(line.right)},${Math.round(line.bottom)}]`}
+                                                                    </span>
+                                                                </div>
+                                                            ))}
+                                                            {(check.ocrLines || []).length === 0 && (
+                                                                <div className="text-muted">No OCR lines captured.</div>
+                                                            )}
+                                                        </div>
+                                                    </details>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </div>

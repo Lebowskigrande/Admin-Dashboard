@@ -41,21 +41,48 @@ const run = async () => {
 
     let checks = [];
     if (checksPdf) {
-        checks = await extractChecksFromPdf(resolve(checksPdf), { ocrRegions: config.ocrRegions });
+        checks = await extractChecksFromPdf(resolve(checksPdf), {
+            ocrRegions: config.ocrRegions,
+            ocrEngines: config.ocrEngines,
+            ocrRegionOrigin: config.ocrRegionOrigin,
+            ocrRegionAnchor: config.ocrRegionAnchor,
+            ocrModel: config.ocrModel,
+            ocrCropMaxSize: config.ocrCropMaxSize,
+            ocrPreviewOnly: config.ocrPreviewOnly === true,
+            ocrAlign: config.ocrAlign
+        });
     } else if (imagesDir) {
         const files = await readdir(resolve(imagesDir));
         const imagePaths = files
             .filter((file) => /\.(png|jpg|jpeg)$/i.test(file))
             .map((file) => resolve(imagesDir, file))
             .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-        checks = await extractChecksFromImages(imagePaths, { ocrRegions: config.ocrRegions });
+        checks = await extractChecksFromImages(imagePaths, {
+            ocrRegions: config.ocrRegions,
+            ocrEngines: config.ocrEngines,
+            ocrRegionOrigin: config.ocrRegionOrigin,
+            ocrRegionAnchor: config.ocrRegionAnchor,
+            ocrModel: config.ocrModel,
+            ocrCropMaxSize: config.ocrCropMaxSize,
+            ocrPreviewOnly: config.ocrPreviewOnly === true,
+            ocrAlign: config.ocrAlign
+        });
     } else if (imagesList) {
         const imagePaths = imagesList
             .split(',')
             .map((value) => value.trim())
             .filter(Boolean)
             .map((value) => resolve(value));
-        checks = await extractChecksFromImages(imagePaths, { ocrRegions: config.ocrRegions });
+        checks = await extractChecksFromImages(imagePaths, {
+            ocrRegions: config.ocrRegions,
+            ocrEngines: config.ocrEngines,
+            ocrRegionOrigin: config.ocrRegionOrigin,
+            ocrRegionAnchor: config.ocrRegionAnchor,
+            ocrModel: config.ocrModel,
+            ocrCropMaxSize: config.ocrCropMaxSize,
+            ocrPreviewOnly: config.ocrPreviewOnly === true,
+            ocrAlign: config.ocrAlign
+        });
     }
     await buildDepositSlipPdf({
         templatePath,

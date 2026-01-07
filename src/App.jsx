@@ -11,6 +11,7 @@ import Buildings from './pages/Buildings';
 import People from './pages/People';
 import Music from './pages/Music';
 import Settings from './pages/Settings';
+import Sunday from './pages/Sunday';
 import { EventsProvider } from './context/EventsContext';
 
 function App() {
@@ -22,6 +23,7 @@ function App() {
             <Route index element={<Dashboard />} />
             <Route path="calendar" element={<Calendar />} />
             <Route path="liturgical-schedule" element={<LiturgicalSchedule />} />
+            <Route path="sunday" element={<Sunday />} />
             <Route path="finance" element={<Finance />} />
             <Route path="communications" element={<Communications />} />
             <Route path="buildings" element={<Buildings />} />

@@ -11,6 +11,7 @@ export const ROLE_DEFINITIONS = [
     { key: 'choirmaster', label: 'Choirmaster', tags: ['music', 'staff'] },
     { key: 'organist', label: 'Organist', tags: ['music', 'staff'] },
     { key: 'sound', label: 'Sound Engineer', tags: ['tech', 'volunteer'] },
+    { key: 'coffeeHour', label: 'Coffee Hour', tags: ['hospitality', 'volunteer'] },
     { key: 'buildingSupervisor', label: 'Building Supervisor', tags: ['facilities', 'staff'] },
     { key: 'childcare', label: 'Childcare', tags: ['staff'] }
 ];

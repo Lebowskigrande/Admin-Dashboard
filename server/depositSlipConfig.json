@@ -2,8 +2,25 @@
   "templatePath": "deposit slip template.pdf",
   "outputPath": "output/deposit-slip.pdf",
   "ocrRegions": {
-    "checkNumber": { "xMin": 0.6, "xMax": 1.0, "yMin": 0.0, "yMax": 0.35 },
-    "amount": { "xMin": 0.55, "xMax": 1.0, "yMin": 0.3, "yMax": 0.75 }
+    "micr": { "xMin": 0.0, "xMax": 1.0, "yMin": 0.84, "yMax": 1.0 },
+    "legalAmount": { "xMin": 0.0288, "xMax": 0.8738, "yMin": 0.4435, "yMax": 0.5592 },
+    "numericAmount": { "xMin": 0.7513, "xMax": 0.9538, "yMin": 0.3276, "yMax": 0.4700 },
+    "checkNumber": { "xMin": 0.8, "xMax": 0.96, "yMin": 0.9, "yMax": 0.95 }
+  },
+  "ocrRegionOrigin": "top-left",
+  "ocrRegionAnchor": "none",
+  "ocrEngines": ["trocr"],
+  "ocrPreviewOnly": false,
+  "ocrModel": "microsoft/trocr-large-handwritten",
+  "ocrCropMaxSize": 512,
+  "ocrAlign": {
+    "enabled": true,
+    "boundsPadding": 32,
+    "deskewMaxAngle": 3,
+    "deskewStep": 0.5,
+    "deskewBand": 0.2,
+    "deskewScale": 0.4,
+    "micrTessLang": "eng"
   },
   "fieldMap": {
     "total": "Cash",
