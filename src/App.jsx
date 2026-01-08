@@ -6,10 +6,8 @@ import LiturgicalSchedule from './pages/LiturgicalSchedule';
 import Bulletins from './pages/Bulletins';
 import Finance from './pages/Finance';
 import Todo from './pages/Todo';
-import Communications from './pages/Communications';
 import Buildings from './pages/Buildings';
 import People from './pages/People';
-import Music from './pages/Music';
 import Settings from './pages/Settings';
 import Sunday from './pages/Sunday';
 import { EventsProvider } from './context/EventsContext';
@@ -25,10 +23,8 @@ function App() {
             <Route path="liturgical-schedule" element={<LiturgicalSchedule />} />
             <Route path="sunday" element={<Sunday />} />
             <Route path="finance" element={<Finance />} />
-            <Route path="communications" element={<Communications />} />
             <Route path="buildings" element={<Buildings />} />
             <Route path="people" element={<People />} />
-            <Route path="music" element={<Music />} />
             <Route path="bulletins" element={<Bulletins />} />
             <Route path="todo" element={<Todo />} />
             <Route path="settings" element={<Settings />} />

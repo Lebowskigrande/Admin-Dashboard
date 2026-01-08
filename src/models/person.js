@@ -25,5 +25,13 @@ export const createPlaceholderPerson = (label, { roles = [], tags = [] } = {}) =
 
 export const matchPersonByName = (people, rawName) => {
     const normalized = normalizeName(rawName).toLowerCase();
-    return people.find(person => normalizeName(person.displayName).toLowerCase() === normalized);
+    const exact = people.find(person => normalizeName(person.displayName).toLowerCase() === normalized);
+    if (exact) return exact;
+
+    if (!normalized || normalized.includes(' ')) return null;
+    const matches = people.filter(person => {
+        const first = normalizeName(person.displayName).split(' ')[0]?.toLowerCase();
+        return first === normalized;
+    });
+    return matches.length === 1 ? matches[0] : null;
 };

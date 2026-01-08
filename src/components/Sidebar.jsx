@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaEnvelope, FaMusic, FaCog, FaClipboardCheck, FaSun } from 'react-icons/fa';
+import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun } from 'react-icons/fa';
 import logo from '../assets/logo.png';
 import './Sidebar.css';
 
@@ -10,10 +10,8 @@ const Sidebar = () => {
         { path: '/calendar', label: 'Events Calendar', icon: <FaCalendarAlt /> },
         { path: '/liturgical-schedule', label: 'Liturgical Schedule', icon: <FaClipboardCheck /> },
         { path: '/finance', label: 'Finance', icon: <FaMoneyBillWave /> },
-        { path: '/communications', label: 'Communications', icon: <FaEnvelope /> },
         { path: '/buildings', label: 'Buildings & Grounds', icon: <FaBuilding /> },
         { path: '/people', label: 'People', icon: <FaUsers /> },
-        { path: '/music', label: 'Music', icon: <FaMusic /> },
         { path: '/todo', label: 'To-Do List', icon: <FaList /> },
         { path: '/settings', label: 'Settings', icon: <FaCog /> },
     ];
@@ -39,9 +37,7 @@ const Sidebar = () => {
                     </NavLink>
                 ))}
             </nav>
-            <div className="sidebar-footer">
-                <p>© 2025 Church Admin</p>
-            </div>
+
         </aside>
     );
 };

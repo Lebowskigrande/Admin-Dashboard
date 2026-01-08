@@ -248,8 +248,8 @@ export const seedDatabase = () => {
         const workbookPeople = loadPeopleFromWorkbook();
         const sourcePeople = workbookPeople.length ? workbookPeople : PEOPLE;
         const insert = db.prepare(`
-            INSERT INTO people (id, display_name, email, category, roles, tags)
-            VALUES (@id, @displayName, @email, @category, @roles, @tags)
+            INSERT INTO people (id, display_name, email, category, roles, tags, teams)
+            VALUES (@id, @displayName, @email, @category, @roles, @tags, @teams)
         `);
 
         const insertMany = db.transaction((rows) => {
@@ -260,7 +260,8 @@ export const seedDatabase = () => {
                     email: person.email || '',
                     category: person.category || '',
                     roles: JSON.stringify(person.roles || []),
-                    tags: JSON.stringify(person.tags || [])
+                    tags: JSON.stringify(person.tags || []),
+                    teams: JSON.stringify(person.teams || {})
                 });
             }
         });

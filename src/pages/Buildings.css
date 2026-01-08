@@ -222,6 +222,65 @@
     color: #6b7280;
 }
 
+.map-ticket-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.map-ticket-section h4 {
+    margin: 0.5rem 0 0 0;
+    font-size: 0.95rem;
+    color: #111827;
+}
+
+.map-ticket-empty {
+    margin: 0;
+    color: #9ca3af;
+    font-size: 0.9rem;
+}
+
+.map-ticket-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.map-ticket-button {
+    text-align: left;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    border-radius: 12px;
+    padding: 0.6rem 0.75rem;
+    cursor: pointer;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.map-ticket-button:hover,
+.map-ticket-button:focus {
+    border-color: #c7d2fe;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12);
+}
+
+.map-ticket-button h5 {
+    margin: 0;
+    font-size: 0.95rem;
+    color: #111827;
+}
+
+.map-ticket-button p {
+    margin: 0.35rem 0 0 0;
+    color: #6b7280;
+    font-size: 0.88rem;
+}
+
+.map-ticket-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
 .map-empty h3 {
     margin: 0 0 0.4rem 0;
 }

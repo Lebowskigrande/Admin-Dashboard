@@ -7,6 +7,7 @@ let cachedEvents = null;
 let cachedPeople = null;
 let cachedLiturgicalDays = null;
 let cachedScheduleRoles = null;
+let cachedSundays = null;
 
 const SERVICE_TIME_SLOTS = ['08:00', '10:00'];
 const buildServiceEntries = (entries = []) => {
@@ -25,13 +26,18 @@ const buildServiceEntries = (entries = []) => {
             name: 'Sunday Service',
             time,
             rite,
+            location: entry.location || '',
             roles: {
+                celebrant: entry.celebrant || '',
+                preacher: entry.preacher || '',
                 lector: entry.lector || '',
+                organist: entry.organist || '',
                 usher: entry.usher || '',
                 acolyte: entry.acolyte || '',
                 lem: entry.chalice_bearer || '',
                 sound: entry.sound_engineer || '',
-                coffeeHour: entry.coffee_hour || ''
+                coffeeHour: entry.coffee_hour || '',
+                childcare: entry.childcare || ''
             }
         };
     });
@@ -96,14 +102,33 @@ const fetchScheduleRoles = async () => {
     return cachedScheduleRoles;
 };
 
+const fetchSundays = async () => {
+    if (cachedSundays) return cachedSundays;
+    try {
+        const response = await fetch(`${API_URL}/sundays`);
+        if (!response.ok) throw new Error('Failed to fetch sundays');
+        const data = await response.json();
+        cachedSundays = Array.isArray(data) ? data : [];
+    } catch (error) {
+        console.error('Error fetching sundays:', error);
+        cachedSundays = null;
+    }
+    return cachedSundays;
+};
+
 export const getAllEventsFromAPI = async () => {
     if (cachedEvents) return cachedEvents;
     const peopleList = await fetchPeople();
-    const [liturgicalDays, scheduleRoles] = await Promise.all([
-        fetchLiturgicalDays(),
-        fetchScheduleRoles()
-    ]);
-    cachedEvents = buildSundayCache(peopleList, liturgicalDays, scheduleRoles);
+    const sundays = await fetchSundays();
+    if (sundays && sundays.length) {
+        cachedEvents = sundays.map((day) => createSundayFromApiDay(day, peopleList));
+    } else {
+        const [liturgicalDays, scheduleRoles] = await Promise.all([
+            fetchLiturgicalDays(),
+            fetchScheduleRoles()
+        ]);
+        cachedEvents = buildSundayCache(peopleList, liturgicalDays, scheduleRoles);
+    }
     return cachedEvents;
 };
 
@@ -114,6 +139,7 @@ export const clearLiturgicalCache = () => {
     cachedPeople = null;
     cachedLiturgicalDays = null;
     cachedScheduleRoles = null;
+    cachedSundays = null;
 };
 
 export const getSundaysInRange = async (startDate, endDate) => {

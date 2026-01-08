@@ -177,14 +177,44 @@ db.exec(`
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT,
         service_time TEXT,
+        location TEXT,
+        celebrant TEXT,
+        preacher TEXT,
+        organist TEXT,
         lector TEXT,
         usher TEXT,
         acolyte TEXT,
         chalice_bearer TEXT,
         sound_engineer TEXT,
-        coffee_hour TEXT
+        coffee_hour TEXT,
+        childcare TEXT
     );
 `);
+
+const ensureScheduleRolesColumns = () => {
+    const columns = db.prepare('PRAGMA table_info(schedule_roles)').all().map(col => col.name);
+    const columnSet = new Set(columns);
+    const addColumn = (name) => {
+        if (!columnSet.has(name)) {
+            db.exec(`ALTER TABLE schedule_roles ADD COLUMN ${name} TEXT`);
+            columnSet.add(name);
+        }
+    };
+
+    ['celebrant', 'preacher', 'organist', 'childcare', 'location'].forEach(addColumn);
+};
+
+ensureScheduleRolesColumns();
+
+const ensurePeopleColumns = () => {
+    const columns = db.prepare('PRAGMA table_info(people)').all().map(col => col.name);
+    const columnSet = new Set(columns);
+    if (!columnSet.has('teams')) {
+        db.exec('ALTER TABLE people ADD COLUMN teams TEXT');
+    }
+};
+
+ensurePeopleColumns();
 
 db.exec(`
     CREATE TABLE IF NOT EXISTS google_tokens (

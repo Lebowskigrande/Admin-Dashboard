@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FaUserTie, FaUsers, FaHandsHelping, FaPlus, FaPen, FaTrash } from 'react-icons/fa';
+import { FaUsers, FaHandsHelping, FaPlus, FaPen, FaTrash, FaCross } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
 import { ROLE_DEFINITIONS } from '../models/roles';
@@ -13,7 +13,7 @@ const CATEGORY_CONFIG = [
         key: 'clergy',
         label: 'Clergy',
         description: 'Ordained leaders who preside, preach, and provide sacramental care.',
-        icon: <FaUserTie />
+        icon: <FaCross />
     },
     {
         key: 'staff',

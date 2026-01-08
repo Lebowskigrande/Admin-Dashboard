@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FaPlus, FaTools, FaClipboardList, FaAddressBook, FaClipboardCheck, FaTrash } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
@@ -113,7 +113,7 @@ const MAP_AREAS = [
 const Buildings = () => {
     const [activeTab, setActiveTab] = useState('repairs');
     const [showModal, setShowModal] = useState(false);
-    const [activeArea, setActiveArea] = useState(MAP_AREAS[0]);
+    const [activeArea, setActiveArea] = useState(null);
     const [hoveredArea, setHoveredArea] = useState(null);
 
     const [tickets, setTickets] = useState([]);
@@ -121,6 +121,8 @@ const Buildings = () => {
     const [ticketsError, setTicketsError] = useState('');
     const [showTicketModal, setShowTicketModal] = useState(false);
     const [selectedTicketId, setSelectedTicketId] = useState(null);
+    const [pendingTicketScroll, setPendingTicketScroll] = useState(false);
+    const ticketsViewRef = useRef(null);
     const [newTicket, setNewTicket] = useState({
         title: '',
         description: '',
@@ -382,7 +384,7 @@ const Buildings = () => {
     };
 
     const renderTickets = () => (
-        <div className="tickets-view">
+        <div className="tickets-view" ref={ticketsViewRef}>
             <div className="tickets-header">
                 <div>
                     <h2>Issue Tickets</h2>
@@ -569,6 +571,19 @@ const Buildings = () => {
         }, {});
     }, []);
 
+    const activeAreaTickets = useMemo(() => {
+        if (!activeDetails?.id) return [];
+        return tickets.filter((ticket) => (
+            (ticket.areas || []).includes(activeDetails.id) && ticket.status !== 'closed'
+        ));
+    }, [activeDetails, tickets]);
+
+    const focusTicket = (ticketId) => {
+        setSelectedTicketId(ticketId);
+        setActiveTab('tickets');
+        setPendingTicketScroll(true);
+    };
+
     useEffect(() => {
         const loadTickets = async () => {
             setTicketsLoading(true);
@@ -591,6 +606,15 @@ const Buildings = () => {
 
         loadTickets();
     }, [selectedTicketId]);
+
+    useEffect(() => {
+        if (!pendingTicketScroll || activeTab !== 'tickets') return;
+        const node = ticketsViewRef.current;
+        if (node) {
+            node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        setPendingTicketScroll(false);
+    }, [pendingTicketScroll, activeTab, selectedTicketId]);
 
     const selectedTicket = useMemo(() => {
         return tickets.find((ticket) => ticket.id === selectedTicketId) || null;
@@ -726,6 +750,29 @@ const Buildings = () => {
                                 )}
                                 <h3>{activeDetails?.name}</h3>
                                 <p>{activeDetails?.description}</p>
+                                {activeAreaTickets.length > 0 && (
+                                    <div className="map-ticket-section">
+                                        <h4>Active Tickets</h4>
+                                        <div className="map-ticket-list">
+                                            {activeAreaTickets.map((ticket) => (
+                                                <button
+                                                    key={ticket.id}
+                                                    type="button"
+                                                    className="map-ticket-button"
+                                                    onClick={() => focusTicket(ticket.id)}
+                                                >
+                                                    <div className="map-ticket-header">
+                                                        <h5>{ticket.title}</h5>
+                                                        <span className={`ticket-status status-${ticket.status}`}>
+                                                            {ticket.status.replace('_', ' ')}
+                                                        </span>
+                                                    </div>
+                                                    <p>{ticket.description || 'No description'}</p>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </>
                         )}
                     </div>

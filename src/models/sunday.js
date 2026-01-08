@@ -3,24 +3,42 @@ import { ROLE_KEYS } from './roles';
 import { createPerson, createPlaceholderPerson, matchPersonByName, normalizeName } from './person';
 import { PEOPLE } from '../data/people';
 
+const parseAssignmentTokens = (rawAssignments) => {
+    if (!rawAssignments) return [];
+    if (Array.isArray(rawAssignments)) {
+        return rawAssignments.map(token => `${token}`.trim()).filter(Boolean);
+    }
+    if (typeof rawAssignments !== 'string') return [];
+    return rawAssignments
+        .split(',')
+        .map(token => token.trim())
+        .filter(Boolean);
+};
+
+const matchPerson = (peopleList, token) => {
+    const idMatch = peopleList.find(person => person.id === token);
+    if (idMatch) return idMatch;
+    return matchPersonByName(peopleList, token);
+};
+
 const normalizeAssignments = (rawAssignments, role, peopleList = PEOPLE) => {
     if (!rawAssignments) {
         return { role, status: 'unassigned', people: [] };
     }
 
-    const names = typeof rawAssignments === 'string'
-        ? rawAssignments.split(',').map(name => normalizeName(name)).filter(Boolean)
-        : [];
+    const tokens = parseAssignmentTokens(rawAssignments)
+        .map(token => normalizeName(token))
+        .filter(Boolean);
 
-    const people = names.map(name => {
-        if (name.toLowerCase().includes('volunteer needed')) {
+    const people = tokens.map((token) => {
+        if (token.toLowerCase().includes('volunteer needed')) {
             return createPlaceholderPerson('Volunteer Needed', { roles: [role], tags: ['open'] });
         }
 
-        const matched = matchPersonByName(peopleList, name);
+        const matched = matchPerson(peopleList, token);
         if (matched) return matched;
 
-        return createPerson({ name, roles: [role], tags: ['guest'] });
+        return createPerson({ name: token, roles: [role], tags: ['guest'] });
     });
 
     const status = people.length === 0

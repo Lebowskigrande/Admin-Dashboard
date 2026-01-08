@@ -71,13 +71,6 @@
     flex: 1;
 }
 
-.bulletin-card {
-    border-left: 3px solid transparent;
-}
-
-.bulletin-card:hover {
-    border-left-color: var(--color-primary);
-}
 
 .bulletin-info h4 {
     margin: 0 0 var(--space-xs) 0;

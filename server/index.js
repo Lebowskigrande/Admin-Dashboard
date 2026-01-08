@@ -31,15 +31,449 @@ seedDatabase();
 const normalizeName = (name = '') => name.trim().replace(/\s+/g, ' ');
 const slugifyName = (name) => normalizeName(name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
+const coerceJsonArray = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            if (Array.isArray(parsed)) return parsed;
+        } catch {
+            return value
+                .split(',')
+                .map((entry) => entry.trim())
+                .filter(Boolean);
+        }
+    }
+    return [];
+};
+
+const coerceJsonObject = (value) => {
+    if (!value) return {};
+    if (typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value);
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch {
+            return {};
+        }
+    }
+    return {};
+};
+
 const parseJsonField = (value, fallback = []) => {
     if (!value) return fallback;
-    try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : fallback;
-    } catch {
-        return fallback;
-    }
+    const parsed = coerceJsonArray(value);
+    return parsed.length ? parsed : fallback;
 };
+
+const ROLE_TOKEN_MAP = {
+    celebrant: 'celebrant',
+    preacher: 'preacher',
+    officiant: 'officiant',
+    lector: 'lector',
+    lem: 'lem',
+    'lay eucharistic minister': 'lem',
+    acolyte: 'acolyte',
+    thurifer: 'thurifer',
+    usher: 'usher',
+    'altar guild': 'altarGuild',
+    altarguild: 'altarGuild',
+    choirmaster: 'choirmaster',
+    organist: 'organist',
+    sound: 'sound',
+    'sound engineer': 'sound',
+    soundengineer: 'sound',
+    'coffee hour': 'coffeeHour',
+    coffeehour: 'coffeeHour',
+    'building supervisor': 'buildingSupervisor',
+    buildingsupervisor: 'buildingSupervisor',
+    childcare: 'childcare'
+};
+
+const normalizeRoleToken = (token) => {
+    const raw = String(token || '').trim();
+    if (!raw) return '';
+    const lowered = raw.toLowerCase();
+    const compact = lowered.replace(/[^a-z0-9]+/g, '');
+    return ROLE_TOKEN_MAP[lowered] || ROLE_TOKEN_MAP[compact] || raw;
+};
+
+const normalizePersonRoles = (value) => {
+    const roles = coerceJsonArray(value)
+        .map((role) => normalizeRoleToken(role))
+        .filter(Boolean);
+    return Array.from(new Set(roles));
+};
+
+const normalizePersonName = (value) => {
+    return String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+};
+
+const DEFAULT_ORGANIST_ID = 'rob-hovencamp';
+const DEFAULT_SOUND_ID = 'cristo-nava';
+const DEFAULT_LOCATION_BY_TIME = {
+    '08:00': 'chapel',
+    '10:00': 'sanctuary'
+};
+const TEAM_ROLE_COLUMNS = {
+    lem: 'chalice_bearer',
+    acolyte: 'acolyte',
+    usher: 'usher',
+    sound: 'sound_engineer',
+    coffeeHour: 'coffee_hour',
+    childcare: 'childcare'
+};
+
+const getWeekOfMonth = (dateStr) => {
+    const date = new Date(`${dateStr}T00:00:00`);
+    const firstOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
+    const offset = firstOfMonth.getDay();
+    return Math.floor((date.getDate() + offset - 1) / 7) + 1;
+};
+
+const DEFAULT_BUILDINGS = [
+    { id: 'sanctuary', name: 'Church', category: 'Worship', notes: 'Main worship space, nave, and sacristy access.' },
+    { id: 'chapel', name: 'Chapel', category: 'Worship', notes: 'Weekday services and quiet prayer.' },
+    { id: 'parish-hall', name: 'Fellows Hall', category: 'All Purpose', notes: 'Fellowship hall, kitchens, and meeting rooms.' },
+    { id: 'office', name: 'Office/School', category: 'All Purpose', notes: 'Administration, classrooms, and staff workspace.' },
+    { id: 'parking-north', name: 'North Parking', category: 'Parking', notes: 'Primary lot with 48 spaces and ADA access.' },
+    { id: 'parking-south', name: 'South Parking', category: 'Parking', notes: 'Overflow lot and service access.' },
+    { id: 'playground', name: 'Playground', category: 'Grounds', notes: 'Outdoor play area and family gathering space.' },
+    { id: 'close', name: 'Close', category: 'Grounds', notes: 'Green space, garden beds, and footpaths.' },
+    { id: 'main-gate', name: 'Main Gate', category: 'Entry', notes: 'Main pedestrian entry off the street.' },
+    { id: 'south-parking-gate', name: 'South Parking Gate', category: 'Entry', notes: 'Gate access to the south parking lot.' },
+    { id: 'north-parking-gate', name: 'North Parking Gate', category: 'Entry', notes: 'Gate access to the north parking lot.' }
+];
+
+const getTeamDefaultsForDate = (dateStr) => {
+    const teamNumber = getWeekOfMonth(dateStr);
+    const rows = db.prepare('SELECT id, display_name, roles, teams FROM people').all();
+    const defaults = {};
+    Object.keys(TEAM_ROLE_COLUMNS).forEach((role) => {
+        defaults[role] = [];
+    });
+
+    rows.forEach((row) => {
+        const roles = normalizePersonRoles(row.roles);
+        const teams = coerceJsonObject(row.teams);
+        Object.keys(TEAM_ROLE_COLUMNS).forEach((role) => {
+            if (!roles.includes(role)) return;
+            const teamList = Array.isArray(teams?.[role]) ? teams[role] : [];
+            const normalizedTeams = teamList.map((value) => Number(value)).filter((value) => !Number.isNaN(value));
+            if (normalizedTeams.includes(teamNumber)) {
+                defaults[role].push({ id: row.id, name: row.display_name || '' });
+            }
+        });
+    });
+
+    const output = {};
+    Object.entries(defaults).forEach(([role, members]) => {
+        output[role] = members
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((member) => member.id)
+            .join(', ');
+    });
+
+    return output;
+};
+
+const buildPeopleIndex = () => {
+    const rows = db.prepare('SELECT id, display_name FROM people').all();
+    const byId = new Map();
+    const byName = new Map();
+    const byNameNormalized = new Map();
+    const byFirstName = new Map();
+    rows.forEach((row) => {
+        if (row.id) byId.set(row.id, row.id);
+        if (row.display_name) {
+            byName.set(row.display_name.toLowerCase(), row.id);
+            const normalized = normalizePersonName(row.display_name);
+            if (normalized) byNameNormalized.set(normalized, row.id);
+            const first = normalized.split(' ')[0];
+            if (first) {
+                const existing = byFirstName.get(first);
+                if (existing) {
+                    byFirstName.set(first, null);
+                } else {
+                    byFirstName.set(first, row.id);
+                }
+            }
+        }
+    });
+    return { byId, byName, byNameNormalized, byFirstName };
+};
+
+const normalizeScheduleValue = (value, peopleIndex) => {
+    if (!value) return '';
+    const tokens = String(value)
+        .split(',')
+        .map((token) => token.trim())
+        .filter(Boolean);
+
+    const normalized = tokens.map((token) => {
+        if (peopleIndex.byId.has(token)) return token;
+        const match = peopleIndex.byName.get(token.toLowerCase());
+        if (match) return match;
+        const normalizedName = normalizePersonName(token);
+        const normalizedMatch = peopleIndex.byNameNormalized.get(normalizedName);
+        if (normalizedMatch) return normalizedMatch;
+        if (normalizedName && !normalizedName.includes(' ')) {
+            return peopleIndex.byFirstName.get(normalizedName) || token;
+        }
+        return token;
+    });
+
+    return normalized.join(', ');
+};
+
+const normalizeScheduleRow = (row, peopleIndex) => {
+    if (!row) return row;
+    const fields = [
+        'celebrant',
+        'preacher',
+        'organist',
+        'lector',
+        'usher',
+        'acolyte',
+        'chalice_bearer',
+        'sound_engineer',
+        'coffee_hour',
+        'childcare'
+    ];
+
+    const normalized = { ...row };
+    fields.forEach((field) => {
+        normalized[field] = normalizeScheduleValue(row[field], peopleIndex);
+    });
+
+    return normalized;
+};
+
+const backfillScheduleRoles = () => {
+    const peopleIndex = buildPeopleIndex();
+    const rows = db.prepare('SELECT * FROM schedule_roles').all();
+    const update = db.prepare(`
+        UPDATE schedule_roles
+        SET celebrant = ?, preacher = ?, organist = ?, lector = ?, usher = ?, acolyte = ?,
+            chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?, childcare = ?
+        WHERE id = ?
+    `);
+    rows.forEach((row) => {
+        const normalized = normalizeScheduleRow(row, peopleIndex);
+        const changed = [
+            'celebrant', 'preacher', 'organist', 'lector', 'usher', 'acolyte',
+            'chalice_bearer', 'sound_engineer', 'coffee_hour', 'childcare'
+        ].some((field) => (row[field] || '') !== (normalized[field] || ''));
+        if (changed) {
+            update.run(
+                normalized.celebrant,
+                normalized.preacher,
+                normalized.organist,
+                normalized.lector,
+                normalized.usher,
+                normalized.acolyte,
+                normalized.chalice_bearer,
+                normalized.sound_engineer,
+                normalized.coffee_hour,
+                normalized.childcare,
+                row.id
+            );
+        }
+    });
+};
+
+backfillScheduleRoles();
+
+const backfillServiceTimes = () => {
+    const sundayDates = db.prepare(`
+        SELECT date
+        FROM liturgical_days
+        WHERE CAST(strftime('%w', date) AS INTEGER) = 0
+    `).all();
+    const getRow = db.prepare('SELECT * FROM schedule_roles WHERE date = ? AND service_time = ?');
+    const insertRow = db.prepare(`
+        INSERT INTO schedule_roles (
+            date, service_time, celebrant, preacher, organist, location, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const updateLinked = db.prepare(`
+        UPDATE schedule_roles
+        SET celebrant = ?, preacher = ?, organist = ?
+        WHERE date = ? AND service_time = ?
+    `);
+
+    sundayDates.forEach(({ date }) => {
+        const eight = getRow.get(date, '08:00');
+        const ten = getRow.get(date, '10:00');
+        const source = eight || ten || {};
+
+        const defaultOrganist = source.organist || DEFAULT_ORGANIST_ID;
+        const defaultCelebrant = source.celebrant || '';
+        const defaultPreacher = source.preacher || '';
+        const defaultLocation = source.location || '';
+
+        if (!eight) {
+            insertRow.run(
+                date,
+                '08:00',
+                defaultCelebrant,
+                defaultPreacher,
+                defaultOrganist,
+                defaultLocation || DEFAULT_LOCATION_BY_TIME['08:00'] || '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                ''
+            );
+        }
+
+        if (!ten) {
+            const teamDefaults = getTeamDefaultsForDate(date);
+            insertRow.run(
+                date,
+                '10:00',
+                defaultCelebrant,
+                defaultPreacher,
+                defaultOrganist,
+                defaultLocation || DEFAULT_LOCATION_BY_TIME['10:00'] || '',
+                '',
+                teamDefaults.usher || '',
+                teamDefaults.acolyte || '',
+                teamDefaults.lem || '',
+                teamDefaults.sound || DEFAULT_SOUND_ID,
+                teamDefaults.coffeeHour || '',
+                teamDefaults.childcare || ''
+            );
+        }
+
+        if (eight && ten) {
+            const mergedCelebrant = eight.celebrant || ten.celebrant || '';
+            const mergedPreacher = eight.preacher || ten.preacher || '';
+            const mergedOrganist = eight.organist || ten.organist || DEFAULT_ORGANIST_ID;
+            const mergedLocation = eight.location || ten.location || DEFAULT_LOCATION_BY_TIME['10:00'] || '';
+            updateLinked.run(mergedCelebrant, mergedPreacher, mergedOrganist, date, '08:00');
+            updateLinked.run(mergedCelebrant, mergedPreacher, mergedOrganist, date, '10:00');
+            db.prepare('UPDATE schedule_roles SET location = ? WHERE date = ? AND service_time = ?').run(mergedLocation, date, '08:00');
+            db.prepare('UPDATE schedule_roles SET location = ? WHERE date = ? AND service_time = ?').run(mergedLocation, date, '10:00');
+        }
+    });
+};
+
+backfillServiceTimes();
+
+const backfillPeopleFields = () => {
+    const rows = db.prepare('SELECT id, roles, tags, teams FROM people').all();
+    const update = db.prepare(`
+        UPDATE people
+        SET roles = ?, tags = ?, teams = ?
+        WHERE id = ?
+    `);
+    rows.forEach((row) => {
+        const roles = normalizePersonRoles(row.roles);
+        const tags = coerceJsonArray(row.tags);
+        const teams = coerceJsonObject(row.teams);
+        const nextRoles = JSON.stringify(roles);
+        const nextTags = JSON.stringify(tags);
+        const nextTeams = JSON.stringify(teams);
+        if ((row.roles || '') !== nextRoles || (row.tags || '') !== nextTags || (row.teams || '') !== nextTeams) {
+            update.run(nextRoles, nextTags, nextTeams, row.id);
+        }
+    });
+};
+
+backfillPeopleFields();
+
+const backfillBuildings = () => {
+    const insert = db.prepare(`
+        INSERT INTO buildings (
+            id, name, category, capacity, size_sqft, rental_rate_hour, rental_rate_day, parking_spaces, event_types, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const exists = db.prepare('SELECT 1 FROM buildings WHERE id = ?');
+
+    DEFAULT_BUILDINGS.forEach((building) => {
+        if (exists.get(building.id)) return;
+        insert.run(
+            building.id,
+            building.name,
+            building.category || 'All Purpose',
+            0,
+            0,
+            0,
+            0,
+            0,
+            JSON.stringify([]),
+            building.notes || ''
+        );
+    });
+};
+
+backfillBuildings();
+
+const backfillTeamDefaults = () => {
+    const rows = db.prepare(`
+        SELECT id, date, service_time, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
+        FROM schedule_roles
+        WHERE service_time = '10:00'
+    `).all();
+    const update = db.prepare(`
+        UPDATE schedule_roles
+        SET usher = ?, acolyte = ?, chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?, childcare = ?
+        WHERE id = ?
+    `);
+
+    rows.forEach((row) => {
+        const defaults = getTeamDefaultsForDate(row.date);
+        const nextUsher = row.usher || defaults.usher || '';
+        const nextAcolyte = row.acolyte || defaults.acolyte || '';
+        const nextLem = row.chalice_bearer || defaults.lem || '';
+        const nextSound = row.sound_engineer || defaults.sound || DEFAULT_SOUND_ID;
+        const nextCoffee = row.coffee_hour || defaults.coffeeHour || '';
+        const nextChildcare = row.childcare || defaults.childcare || '';
+
+        const changed = nextUsher !== (row.usher || '')
+            || nextAcolyte !== (row.acolyte || '')
+            || nextLem !== (row.chalice_bearer || '')
+            || nextSound !== (row.sound_engineer || '')
+            || nextCoffee !== (row.coffee_hour || '')
+            || nextChildcare !== (row.childcare || '');
+
+        if (changed) {
+            update.run(
+                nextUsher,
+                nextAcolyte,
+                nextLem,
+                nextSound,
+                nextCoffee,
+                nextChildcare,
+                row.id
+            );
+        }
+    });
+};
+
+backfillTeamDefaults();
+
+const backfillServiceLocations = () => {
+    const rows = db.prepare('SELECT id, service_time, location FROM schedule_roles').all();
+    const update = db.prepare('UPDATE schedule_roles SET location = ? WHERE id = ?');
+    rows.forEach((row) => {
+        if (row.location && `${row.location}`.trim()) return;
+        const fallback = DEFAULT_LOCATION_BY_TIME[row.service_time] || '';
+        if (fallback) update.run(fallback, row.id);
+    });
+};
+
+backfillServiceLocations();
 
 const ensureUniqueId = (baseId, table) => {
     const allowedTables = new Set(['people', 'buildings', 'tickets', 'tasks']);
@@ -251,14 +685,15 @@ app.get('/api/people', (req, res) => {
         displayName: row.display_name,
         email: row.email || '',
         category: row.category || '',
-        roles: parseJsonField(row.roles),
-        tags: parseJsonField(row.tags)
+        roles: normalizePersonRoles(row.roles),
+        tags: parseJsonField(row.tags),
+        teams: coerceJsonObject(row.teams)
     }));
     res.json(people);
 });
 
 app.post('/api/people', (req, res) => {
-    const { displayName, email = '', category = 'volunteer', roles = [], tags = [] } = req.body || {};
+    const { displayName, email = '', category = 'volunteer', roles = [], tags = [], teams = {} } = req.body || {};
 
     const normalizedName = normalizeName(displayName);
     if (!normalizedName) {
@@ -269,15 +704,16 @@ app.post('/api/people', (req, res) => {
     const id = ensureUniqueId(baseId, 'people');
 
     db.prepare(`
-        INSERT INTO people (id, display_name, email, category, roles, tags)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO people (id, display_name, email, category, roles, tags, teams)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
         id,
         normalizedName,
         email,
         category,
-        JSON.stringify(Array.isArray(roles) ? roles : []),
-        JSON.stringify(Array.isArray(tags) ? tags : [])
+        JSON.stringify(normalizePersonRoles(roles)),
+        JSON.stringify(coerceJsonArray(tags)),
+        JSON.stringify(coerceJsonObject(teams))
     );
 
     res.status(201).json({
@@ -285,14 +721,15 @@ app.post('/api/people', (req, res) => {
         displayName: normalizedName,
         email,
         category,
-        roles: Array.isArray(roles) ? roles : [],
-        tags: Array.isArray(tags) ? tags : []
+        roles: normalizePersonRoles(roles),
+        tags: coerceJsonArray(tags),
+        teams: coerceJsonObject(teams)
     });
 });
 
 app.put('/api/people/:id', (req, res) => {
     const { id } = req.params;
-    const { displayName, email = '', category = 'volunteer', roles = [], tags = [] } = req.body || {};
+    const { displayName, email = '', category = 'volunteer', roles = [], tags = [], teams = {} } = req.body || {};
 
     const normalizedName = normalizeName(displayName);
     if (!normalizedName) {
@@ -310,14 +747,16 @@ app.put('/api/people/:id', (req, res) => {
             email = ?,
             category = ?,
             roles = ?,
-            tags = ?
+            tags = ?,
+            teams = ?
         WHERE id = ?
     `).run(
         normalizedName,
         email,
         category,
-        JSON.stringify(Array.isArray(roles) ? roles : []),
-        JSON.stringify(Array.isArray(tags) ? tags : []),
+        JSON.stringify(normalizePersonRoles(roles)),
+        JSON.stringify(coerceJsonArray(tags)),
+        JSON.stringify(coerceJsonObject(teams)),
         id
     );
 
@@ -326,8 +765,9 @@ app.put('/api/people/:id', (req, res) => {
         displayName: normalizedName,
         email,
         category,
-        roles: Array.isArray(roles) ? roles : [],
-        tags: Array.isArray(tags) ? tags : []
+        roles: normalizePersonRoles(roles),
+        tags: coerceJsonArray(tags),
+        teams: coerceJsonObject(teams)
     });
 });
 
@@ -802,6 +1242,72 @@ app.get('/api/liturgical-days', (req, res) => {
     res.json(rows);
 });
 
+const buildServiceRows = (scheduleRows = []) => {
+    const serviceTimes = ['08:00', '10:00'];
+    const rowsByTime = new Map(
+        scheduleRows.map((row) => [row.service_time || '', row])
+    );
+
+    return serviceTimes.map((time) => {
+        const row = rowsByTime.get(time) || {};
+        const rite = time.startsWith('08') ? 'Rite I' : 'Rite II';
+        return {
+            name: 'Sunday Service',
+            time,
+            rite,
+            location: row.location || DEFAULT_LOCATION_BY_TIME[time] || '',
+            roles: {
+                celebrant: row.celebrant || '',
+                preacher: row.preacher || '',
+                lector: row.lector || '',
+                organist: row.organist || '',
+                usher: row.usher || '',
+                acolyte: row.acolyte || '',
+                lem: row.chalice_bearer || '',
+                sound: row.sound_engineer || '',
+                coffeeHour: row.coffee_hour || '',
+                childcare: row.childcare || ''
+            }
+        };
+    });
+};
+
+app.get('/api/sundays', (req, res) => {
+    const { start, end } = req.query;
+    let sql = 'SELECT * FROM liturgical_days';
+    const params = [];
+
+    if (start && end) {
+        sql += ' WHERE date BETWEEN ? AND ?';
+        params.push(start, end);
+    } else if (start) {
+        sql += ' WHERE date >= ?';
+        params.push(start);
+    } else if (end) {
+        sql += ' WHERE date <= ?';
+        params.push(end);
+    }
+
+    sql += ' ORDER BY date';
+    const days = db.prepare(sql).all(...params);
+    const scheduleRows = db.prepare('SELECT * FROM schedule_roles').all();
+    const peopleIndex = buildPeopleIndex();
+    const normalizedSchedule = scheduleRows.map((row) => normalizeScheduleRow(row, peopleIndex));
+    const scheduleByDate = normalizedSchedule.reduce((acc, row) => {
+        if (!acc[row.date]) acc[row.date] = [];
+        acc[row.date].push(row);
+        return acc;
+    }, {});
+
+    const sundays = days.map((day) => ({
+        ...day,
+        bulletin_status: day.bulletin_status || 'draft',
+        services: buildServiceRows(scheduleByDate[day.date] || [])
+    }));
+
+    res.json(sundays);
+});
+
 app.get('/api/schedule-roles', (req, res) => {
     const { start, end } = req.query;
     let sql = 'SELECT * FROM schedule_roles';
@@ -820,21 +1326,41 @@ app.get('/api/schedule-roles', (req, res) => {
 
     sql += ' ORDER BY date, service_time';
     const rows = db.prepare(sql).all(...params);
-    res.json(rows);
+    const peopleIndex = buildPeopleIndex();
+    const normalized = rows.map((row) => normalizeScheduleRow(row, peopleIndex));
+    res.json(normalized);
 });
 
 app.put('/api/schedule-roles', (req, res) => {
     const {
         date,
         service_time = '10:00',
+        celebrant = '',
+        preacher = '',
         lector = '',
+        organist = '',
         usher = '',
         acolyte = '',
         lem = '',
         sound = '',
-        coffeeHour = ''
+        coffeeHour = '',
+        childcare = '',
+        location = ''
     } = req.body || {};
 
+    const peopleIndex = buildPeopleIndex();
+    const normalized = {
+        celebrant: normalizeScheduleValue(celebrant, peopleIndex),
+        preacher: normalizeScheduleValue(preacher, peopleIndex),
+        lector: normalizeScheduleValue(lector, peopleIndex),
+        organist: normalizeScheduleValue(organist, peopleIndex),
+        usher: normalizeScheduleValue(usher, peopleIndex),
+        acolyte: normalizeScheduleValue(acolyte, peopleIndex),
+        lem: normalizeScheduleValue(lem, peopleIndex),
+        sound: normalizeScheduleValue(sound, peopleIndex),
+        coffeeHour: normalizeScheduleValue(coffeeHour, peopleIndex),
+        childcare: normalizeScheduleValue(childcare, peopleIndex)
+    };
     if (!date) {
         return res.status(400).json({ error: 'Date is required' });
     }
@@ -846,14 +1372,101 @@ app.put('/api/schedule-roles', (req, res) => {
     if (existing) {
         db.prepare(`
             UPDATE schedule_roles
-            SET lector = ?, usher = ?, acolyte = ?, chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?
+            SET celebrant = ?, preacher = ?, lector = ?, organist = ?, location = ?, usher = ?, acolyte = ?, chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?, childcare = ?
             WHERE date = ? AND service_time = ?
-        `).run(lector, usher, acolyte, lem, sound, coffeeHour, date, service_time);
+        `).run(
+            normalized.celebrant,
+            normalized.preacher,
+            normalized.lector,
+            normalized.organist,
+            location || DEFAULT_LOCATION_BY_TIME[service_time] || '',
+            normalized.usher,
+            normalized.acolyte,
+            normalized.lem,
+            normalized.sound,
+            normalized.coffeeHour,
+            normalized.childcare,
+            date,
+            service_time
+        );
     } else {
+        const teamDefaults = service_time === '10:00' ? getTeamDefaultsForDate(date) : {};
+        const defaultOrganist = normalized.organist || DEFAULT_ORGANIST_ID;
+        const defaultSound = service_time === '10:00'
+            ? (normalized.sound || teamDefaults.sound || DEFAULT_SOUND_ID)
+            : normalized.sound;
         db.prepare(`
-            INSERT INTO schedule_roles (date, service_time, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(date, service_time, lector, usher, acolyte, lem, sound, coffeeHour);
+            INSERT INTO schedule_roles (
+                date, service_time, celebrant, preacher, lector, organist, location, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            date,
+            service_time,
+            normalized.celebrant,
+            normalized.preacher,
+            normalized.lector,
+            defaultOrganist,
+            location || DEFAULT_LOCATION_BY_TIME[service_time] || '',
+            normalized.usher || teamDefaults.usher || '',
+            normalized.acolyte || teamDefaults.acolyte || '',
+            normalized.lem || teamDefaults.lem || '',
+            defaultSound,
+            normalized.coffeeHour || teamDefaults.coffeeHour || '',
+            normalized.childcare || teamDefaults.childcare || ''
+        );
+    }
+
+    const linkedTime = service_time === '08:00' ? '10:00' : '08:00';
+    const linkedRow = db.prepare('SELECT 1 FROM schedule_roles WHERE date = ? AND service_time = ?').get(date, linkedTime);
+    if (linkedRow) {
+        db.prepare(`
+            UPDATE schedule_roles
+            SET celebrant = ?, preacher = ?, organist = ?
+            WHERE date = ? AND service_time = ?
+        `).run(normalized.celebrant, normalized.preacher, normalized.organist, date, linkedTime);
+    } else {
+        const linkedDefaults = linkedTime === '10:00' ? getTeamDefaultsForDate(date) : {};
+        const defaultOrganist = normalized.organist || DEFAULT_ORGANIST_ID;
+        const linkedSound = linkedTime === '10:00'
+            ? (normalized.sound || linkedDefaults.sound || DEFAULT_SOUND_ID)
+            : '';
+
+        if (linkedTime === '10:00') {
+            db.prepare(`
+                INSERT INTO schedule_roles (
+                    date, service_time, celebrant, preacher, organist, location, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
+                )
+                VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)
+            `).run(
+                date,
+                linkedTime,
+                normalized.celebrant,
+                normalized.preacher,
+                defaultOrganist,
+                location || DEFAULT_LOCATION_BY_TIME[linkedTime] || '',
+                linkedDefaults.usher || '',
+                linkedDefaults.acolyte || '',
+                linkedDefaults.lem || '',
+                linkedSound,
+                linkedDefaults.coffeeHour || '',
+                linkedDefaults.childcare || ''
+            );
+        } else {
+            db.prepare(`
+                INSERT INTO schedule_roles (
+                    date, service_time, celebrant, preacher, organist, location, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
+                )
+                VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '')
+            `).run(
+                date,
+                linkedTime,
+                normalized.celebrant,
+                normalized.preacher,
+                defaultOrganist,
+                location || DEFAULT_LOCATION_BY_TIME[linkedTime] || ''
+            );
+        }
     }
 
     res.json({ success: true, date, service_time });
@@ -929,13 +1542,41 @@ app.post('/api/deposit-slip', upload.array('checks', 30), async (req, res) => {
 app.get('/api/roles/:date', (req, res) => {
     const { date } = req.params;
     const roles = db.prepare('SELECT * FROM schedule_roles WHERE date = ?').get(date);
-    res.json(roles || {});
+    const peopleIndex = buildPeopleIndex();
+    const normalized = roles ? normalizeScheduleRow(roles, peopleIndex) : {};
+    res.json(normalized);
 });
 
 // Update roles
 app.put('/api/roles/:date', (req, res) => {
     const { date } = req.params;
-    const { lector, usher, acolyte, chaliceBearer, sound, coffeeHour } = req.body;
+    const peopleIndex = buildPeopleIndex();
+    const {
+        celebrant = '',
+        preacher = '',
+        lector = '',
+        organist = '',
+        usher = '',
+        acolyte = '',
+        chaliceBearer = '',
+        sound = '',
+        coffeeHour = '',
+        childcare = '',
+        location = ''
+    } = req.body || {};
+
+    const normalized = {
+        celebrant: normalizeScheduleValue(celebrant, peopleIndex),
+        preacher: normalizeScheduleValue(preacher, peopleIndex),
+        lector: normalizeScheduleValue(lector, peopleIndex),
+        organist: normalizeScheduleValue(organist, peopleIndex),
+        usher: normalizeScheduleValue(usher, peopleIndex),
+        acolyte: normalizeScheduleValue(acolyte, peopleIndex),
+        chaliceBearer: normalizeScheduleValue(chaliceBearer, peopleIndex),
+        sound: normalizeScheduleValue(sound, peopleIndex),
+        coffeeHour: normalizeScheduleValue(coffeeHour, peopleIndex),
+        childcare: normalizeScheduleValue(childcare, peopleIndex)
+    };
 
     // Check if entry exists
     const exists = db.prepare('SELECT 1 FROM schedule_roles WHERE date = ?').get(date);
@@ -943,14 +1584,42 @@ app.put('/api/roles/:date', (req, res) => {
     if (exists) {
         db.prepare(`
             UPDATE schedule_roles 
-            SET lector = ?, usher = ?, acolyte = ?, chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?
+            SET celebrant = ?, preacher = ?, lector = ?, organist = ?, location = ?, usher = ?, acolyte = ?, chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?, childcare = ?
             WHERE date = ?
-        `).run(lector, usher, acolyte, chaliceBearer, sound, coffeeHour, date);
+        `).run(
+            normalized.celebrant,
+            normalized.preacher,
+            normalized.lector,
+            normalized.organist,
+            location || '',
+            normalized.usher,
+            normalized.acolyte,
+            normalized.chaliceBearer,
+            normalized.sound,
+            normalized.coffeeHour,
+            normalized.childcare,
+            date
+        );
     } else {
         db.prepare(`
-            INSERT INTO schedule_roles (date, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(date, lector, usher, acolyte, chaliceBearer, sound, coffeeHour);
+            INSERT INTO schedule_roles (
+                date, celebrant, preacher, lector, organist, location, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            date,
+            normalized.celebrant,
+            normalized.preacher,
+            normalized.lector,
+            normalized.organist,
+            location || '',
+            normalized.usher,
+            normalized.acolyte,
+            normalized.chaliceBearer,
+            normalized.sound,
+            normalized.coffeeHour,
+            normalized.childcare
+        );
     }
 
     res.json({ success: true, date });

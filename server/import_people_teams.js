@@ -8,7 +8,7 @@ const XLSX = require('xlsx');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const workbookPath = join(__dirname, '../dashboard people data.xlsx');
+const workbookPath = join(__dirname, '../dashboard people data backup.xlsx');
 
 const ROLE_MAP = {
     'Acolyte': 'acolyte',
@@ -109,28 +109,69 @@ const ensureUniqueId = (baseId) => {
 };
 
 const insertPerson = db.prepare(`
-    INSERT INTO people (id, display_name, email, category, roles, tags)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO people (id, display_name, email, category, roles, tags, teams)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
 `);
 
-db.prepare('DELETE FROM people').run();
+const updatePerson = db.prepare(`
+    UPDATE people
+    SET display_name = ?, email = ?, category = ?, roles = ?, tags = ?, teams = ?
+    WHERE id = ?
+`);
 
-const insertPeople = db.transaction(() => {
+const findPerson = db.prepare(`
+    SELECT * FROM people
+    WHERE LOWER(display_name) = LOWER(?) OR (email <> '' AND LOWER(email) = LOWER(?))
+    LIMIT 1
+`);
+
+const mergeUnique = (base = [], additions = []) => {
+    const set = new Set([...(base || []), ...(additions || [])].filter(Boolean));
+    return Array.from(set);
+};
+
+const mergeTeams = (base = {}, additions = {}) => {
+    const merged = { ...(base || {}) };
+    Object.entries(additions || {}).forEach(([key, value]) => {
+        merged[key] = mergeUnique(merged[key] || [], value || []);
+    });
+    return merged;
+};
+
+const mergePeople = db.transaction(() => {
     for (const person of people) {
-        const baseId = slugify(person.displayName);
-        const id = ensureUniqueId(baseId);
-        insertPerson.run(
-            id,
-            person.displayName,
-            person.email,
-            person.category,
-            JSON.stringify(person.roles),
-            JSON.stringify(person.tags)
-        );
+        const existing = findPerson.get(person.displayName, person.email || '');
+        if (existing) {
+            const nextRoles = mergeUnique(JSON.parse(existing.roles || '[]'), person.roles || []);
+            const nextTags = mergeUnique(JSON.parse(existing.tags || '[]'), person.tags || []);
+            const existingTeams = JSON.parse(existing.teams || '{}');
+            const nextTeams = mergeTeams(existingTeams, person.teams || {});
+            updatePerson.run(
+                person.displayName || existing.display_name,
+                person.email || existing.email || '',
+                person.category || existing.category || 'volunteer',
+                JSON.stringify(nextRoles),
+                JSON.stringify(nextTags),
+                JSON.stringify(nextTeams),
+                existing.id
+            );
+        } else {
+            const baseId = slugify(person.displayName);
+            const id = ensureUniqueId(baseId);
+            insertPerson.run(
+                id,
+                person.displayName,
+                person.email,
+                person.category,
+                JSON.stringify(person.roles || []),
+                JSON.stringify(person.tags || []),
+                JSON.stringify(person.teams || {})
+            );
+        }
     }
 });
 
-insertPeople();
+mergePeople();
 
 const teamAssignments = {
     lem: new Map(),
