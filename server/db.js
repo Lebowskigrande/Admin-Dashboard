@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { vestryChecklistItems } from './vestryChecklistData.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -190,6 +191,42 @@ db.exec(`
         childcare TEXT
     );
 `);
+
+db.exec(`
+    CREATE TABLE IF NOT EXISTS vestry_checklist (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        month INTEGER,
+        month_name TEXT,
+        phase TEXT,
+        task TEXT,
+        notes TEXT,
+        sort_order INTEGER
+    );
+`);
+
+const seedVestryChecklist = () => {
+    const count = db.prepare('SELECT count(*) as count FROM vestry_checklist').get().count;
+    if (count === vestryChecklistItems.length) return;
+    if (count > 0) {
+        db.prepare('DELETE FROM vestry_checklist').run();
+    }
+    const insert = db.prepare(`
+        INSERT INTO vestry_checklist (month, month_name, phase, task, notes, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    vestryChecklistItems.forEach((item) => {
+        insert.run(
+            item.month,
+            item.monthName,
+            item.phase,
+            item.task,
+            item.notes || '',
+            item.sortOrder || 0
+        );
+    });
+};
+
+seedVestryChecklist();
 
 const ensureScheduleRolesColumns = () => {
     const columns = db.prepare('PRAGMA table_info(schedule_roles)').all().map(col => col.name);

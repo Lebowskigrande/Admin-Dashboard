@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { readFile, rm } from 'fs/promises';
 import { join, dirname, resolve, basename } from 'path';
 import { tmpdir } from 'os';
@@ -21,6 +22,7 @@ const __dirname = dirname(__filename);
 const app = express();
 const PORT = 3001;
 const upload = multer({ dest: join(tmpdir(), 'deposit-slip-uploads') });
+const vestryUpload = multer({ dest: join(tmpdir(), 'vestry-packet-uploads') });
 
 app.use(cors());
 app.use(express.json());
@@ -1470,6 +1472,79 @@ app.put('/api/schedule-roles', (req, res) => {
     }
 
     res.json({ success: true, date, service_time });
+});
+
+// --- Vestry Packet Builder ---
+
+app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
+    const files = req.files || [];
+    const filesById = new Map(files.map((file) => [file.fieldname, file]));
+    try {
+        const order = JSON.parse(req.body?.order || '[]');
+        if (!Array.isArray(order) || order.length === 0) {
+            return res.status(400).json({ error: 'Packet order is required' });
+        }
+
+        const packetDoc = await PDFDocument.create();
+        for (const item of order) {
+            if (!item || !item.id) continue;
+            const file = filesById.get(item.id);
+            if (!file) {
+                if (item.required) {
+                    return res.status(400).json({ error: `Missing required document: ${item.label || item.id}` });
+                }
+                continue;
+            }
+            const srcBytes = await readFile(file.path);
+            const srcDoc = await PDFDocument.load(srcBytes);
+            const pages = await packetDoc.copyPages(srcDoc, srcDoc.getPageIndices());
+            pages.forEach((page) => packetDoc.addPage(page));
+        }
+
+        const pages = packetDoc.getPages();
+        const totalPages = pages.length;
+        const font = await packetDoc.embedFont(StandardFonts.Helvetica);
+        pages.forEach((page, index) => {
+            const label = `Page ${index + 1} of ${totalPages}`;
+            const fontSize = 9;
+            const { width } = page.getSize();
+            const textWidth = font.widthOfTextAtSize(label, fontSize);
+            const x = (width - textWidth) / 2;
+            const y = 18;
+            page.drawText(label, { x, y, size: fontSize, font, color: rgb(0.35, 0.35, 0.35) });
+        });
+
+        const pdfBytes = await packetDoc.save();
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'attachment; filename="vestry-packet.pdf"');
+        res.send(Buffer.from(pdfBytes));
+    } catch (error) {
+        console.error('Vestry packet error:', error);
+        res.status(500).json({ error: 'Failed to build vestry packet' });
+    } finally {
+        await Promise.all(
+            files.map((file) => rm(file.path, { force: true }).catch(() => {}))
+        );
+    }
+});
+
+app.get('/api/vestry/checklist', (req, res) => {
+    const month = Number(req.query.month);
+    if (!month || Number.isNaN(month)) {
+        const rows = db.prepare(`
+            SELECT id, month, month_name, phase, task, notes, sort_order
+            FROM vestry_checklist
+            ORDER BY month, sort_order, id
+        `).all();
+        return res.json(rows);
+    }
+    const rows = db.prepare(`
+        SELECT id, month, month_name, phase, task, notes, sort_order
+        FROM vestry_checklist
+        WHERE month = ?
+        ORDER BY sort_order, id
+    `).all(month);
+    return res.json(rows);
 });
 
 // --- Deposit Slip OCR ---

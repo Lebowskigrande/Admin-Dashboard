@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun } from 'react-icons/fa';
+import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun, FaChurch } from 'react-icons/fa';
 import logo from '../assets/logo.png';
 import './Sidebar.css';
 
@@ -10,6 +10,7 @@ const Sidebar = () => {
         { path: '/calendar', label: 'Events Calendar', icon: <FaCalendarAlt /> },
         { path: '/liturgical-schedule', label: 'Liturgical Schedule', icon: <FaClipboardCheck /> },
         { path: '/finance', label: 'Finance', icon: <FaMoneyBillWave /> },
+        { path: '/vestry', label: 'Vestry', icon: <FaChurch /> },
         { path: '/buildings', label: 'Buildings & Grounds', icon: <FaBuilding /> },
         { path: '/people', label: 'People', icon: <FaUsers /> },
         { path: '/todo', label: 'To-Do List', icon: <FaList /> },

@@ -10,6 +10,8 @@ import Buildings from './pages/Buildings';
 import People from './pages/People';
 import Settings from './pages/Settings';
 import Sunday from './pages/Sunday';
+import Communications from './pages/Communications';
+import Vestry from './pages/Vestry';
 import { EventsProvider } from './context/EventsContext';
 
 function App() {
@@ -28,6 +30,8 @@ function App() {
             <Route path="bulletins" element={<Bulletins />} />
             <Route path="todo" element={<Todo />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="communications" element={<Communications />} />
+            <Route path="vestry" element={<Vestry />} />
           </Route>
         </Routes>
       </EventsProvider>

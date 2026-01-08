@@ -211,6 +211,12 @@
     max-width: 160px;
 }
 
+.tag-chip--vestry {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
 .roles {
     margin-top: 0.75rem;
     display: flex;

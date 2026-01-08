@@ -1,0 +1,369 @@
+.page-vestry {
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.vestry-header h1 {
+    margin: 0.2rem 0;
+}
+
+.vestry-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(220px, 1fr));
+    gap: 1rem;
+}
+
+.vestry-panel h2 {
+    margin-top: 0;
+    margin-bottom: 0.4rem;
+}
+
+.vestry-panel.full-span {
+    grid-column: 1 / -1;
+}
+
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.panel-header.compact {
+    margin-bottom: 0.5rem;
+}
+
+.btn-compact {
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    border-radius: 8px;
+}
+
+.panel-meta {
+    font-size: 0.8rem;
+    color: #6b7280;
+    font-weight: 600;
+}
+
+.vestry-checklist-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    max-height: 340px;
+    overflow: auto;
+    padding-right: 0.2rem;
+}
+
+.vestry-checklist-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.vestry-checklist-title {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #6b7280;
+    letter-spacing: 0.06em;
+}
+
+.vestry-checklist-item {
+    display: flex;
+    gap: 0.45rem;
+    align-items: flex-start;
+    font-size: 0.8rem;
+    color: #1f2937;
+}
+
+.vestry-checklist-item input {
+    margin-top: 0.15rem;
+}
+
+.vestry-checklist-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.vestry-checklist-task {
+    font-weight: 600;
+    line-height: 1.15;
+}
+
+.vestry-checklist-notes {
+    font-size: 0.72rem;
+    color: #6b7280;
+}
+
+.pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.pill {
+    background: #eef2ff;
+    color: #1e3a8a;
+    padding: 0.3rem 0.65rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.vestry-pill {
+    background: #ffe4e6;
+    color: #9f1239;
+}
+
+.meeting-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+}
+
+.meeting-list.compact {
+    gap: 0.5rem;
+}
+
+.meeting-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    background: #f9fafb;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    color: inherit;
+}
+
+.meeting-row.next {
+    border-color: #c7d2fe;
+    background: #eef2ff;
+}
+
+.meeting-row.active {
+    border-color: #60a5fa;
+    background: #dbeafe;
+}
+
+.meeting-row:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+}
+
+.meeting-tag {
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid #d1d5db;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #4b5563;
+    background: #fff;
+}
+
+.meeting-tag.next-tag {
+    background: #1d4ed8;
+    color: #fff;
+    border-color: #1d4ed8;
+}
+
+.committee-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.committee-grid.compact {
+    gap: 0.5rem;
+}
+
+.committee-row {
+    display: grid;
+    grid-template-columns: minmax(160px, 1.4fr) repeat(3, minmax(110px, 1fr)) auto;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.committee-row input {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.82rem;
+    font-family: inherit;
+}
+
+.packet-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.packet-summary {
+    margin-top: 0.2rem;
+    font-size: 0.82rem;
+    color: #4b5563;
+}
+
+.packet-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.packet-list {
+    margin-top: 0.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.packet-row {
+    display: grid;
+    grid-template-columns: auto minmax(200px, 1fr) minmax(200px, 1fr) auto;
+    gap: 0.35rem;
+    align-items: center;
+    padding: 0.28rem 0.4rem;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+    background: #fff;
+}
+
+.packet-row.compact {
+    padding: 0.25rem 0.38rem;
+}
+
+.packet-order {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.drag-handle {
+    color: #9ca3af;
+    font-weight: 700;
+    font-size: 0.9rem;
+    letter-spacing: -0.08em;
+    cursor: grab;
+    user-select: none;
+}
+
+.packet-row.drag-over {
+    border-color: #93c5fd;
+    background: #eff6ff;
+}
+
+.packet-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.packet-meta input {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 0.25rem 0.4rem;
+    font-size: 0.78rem;
+    font-family: inherit;
+}
+
+.packet-label {
+    font-weight: 600;
+    color: #1f2937;
+}
+
+.packet-required {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #b45309;
+    background: #fef3c7;
+    border-radius: 999px;
+    padding: 0.05rem 0.4rem;
+}
+
+.packet-status {
+    display: flex;
+    gap: 0.3rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.status-pill {
+    font-size: 0.7rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    border: 1px solid transparent;
+}
+
+.status-pill.ready {
+    background: #dcfce7;
+    color: #166534;
+    border-color: #bbf7d0;
+}
+
+.status-pill.missing {
+    background: #fee2e2;
+    color: #991b1b;
+    border-color: #fecaca;
+}
+
+.packet-row input[type='file'] {
+    font-size: 0.72rem;
+}
+
+.packet-download {
+    margin-top: 0.85rem;
+}
+
+.btn-icon {
+    border: 1px solid #e5e7eb;
+    background: #fff;
+    color: #374151;
+    border-radius: 8px;
+    padding: 0.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-icon.small svg {
+    width: 0.85rem;
+    height: 0.85rem;
+}
+
+.btn-link {
+    border: none;
+    background: none;
+    color: #dc2626;
+    font-size: 0.95rem;
+    cursor: pointer;
+}
+
+@media (max-width: 720px) {
+    .committee-row {
+        grid-template-columns: 1fr;
+    }
+
+    .packet-row {
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+    }
+
+    .packet-order {
+        flex-direction: row;
+    }
+}
+
+@media (max-width: 1200px) {
+    .vestry-grid {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+}

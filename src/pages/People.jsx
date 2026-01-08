@@ -36,7 +36,8 @@ const defaultFormState = {
     email: '',
     category: 'volunteer',
     roles: [],
-    tags: ''
+    tags: '',
+    vestryMember: false
 };
 
 const People = () => {
@@ -78,13 +79,15 @@ const People = () => {
     };
 
     const openEdit = (person) => {
+        const tags = person.tags || [];
         setEditingId(person.id);
         setFormState({
             name: person.displayName || '',
             email: person.email || '',
             category: person.category || 'volunteer',
             roles: person.roles || [],
-            tags: person.tags ? person.tags.join(', ') : ''
+            tags: tags.length ? tags.join(', ') : '',
+            vestryMember: tags.some((tag) => tag.toLowerCase() === 'vestry member')
         });
         setIsModalOpen(true);
     };
@@ -115,7 +118,10 @@ const People = () => {
         const trimmedName = formState.name.trim();
         if (!trimmedName) return;
 
-        const tags = parseTags(formState.tags);
+        const tags = parseTags(formState.tags).filter((tag) => tag.toLowerCase() !== 'vestry member');
+        if (formState.category === 'volunteer' && formState.vestryMember) {
+            tags.push('Vestry Member');
+        }
         const base = createPerson({ name: trimmedName, roles: formState.roles, tags });
         const payload = {
             displayName: base.displayName,
@@ -216,6 +222,10 @@ const People = () => {
         const extensionTag = tags.find((tag) => tag.startsWith('ext-'));
         const titleTags = tags.filter((tag) => tag && tag !== extensionTag);
         const metaChips = [...titleTags, ...(extensionTag ? [extensionTag] : [])];
+        const tagClassName = (tag) => {
+            if (tag.toLowerCase() === 'vestry member') return 'tag-chip tag-chip--vestry';
+            return 'tag-chip';
+        };
 
         return (
         <Card key={person.id} className="person-card">
@@ -226,14 +236,14 @@ const People = () => {
                     {metaChips.length > 0 && (
                         <div className="meta-chip-row">
                             {metaChips.map((tag) => (
-                                <span key={tag} className="tag-chip">{tag}</span>
+                                <span key={tag} className={tagClassName(tag)}>{tag}</span>
                             ))}
                         </div>
                     )}
                     {tags.length > metaChips.length && (
                         <div className="tag-row">
                             {tags.filter((tag) => !metaChips.includes(tag)).map((tag) => (
-                                <span key={tag} className="tag-chip">{tag}</span>
+                                <span key={tag} className={tagClassName(tag)}>{tag}</span>
                             ))}
                         </div>
                     )}
@@ -419,6 +429,19 @@ const People = () => {
                             />
                         </div>
                     </div>
+                    {formState.category === 'volunteer' && (
+                        <div className="form-group">
+                            <label>Titles</label>
+                            <label className="role-option">
+                                <input
+                                    type="checkbox"
+                                    checked={formState.vestryMember}
+                                    onChange={(event) => setFormState({ ...formState, vestryMember: event.target.checked })}
+                                />
+                                <span>Vestry Member</span>
+                            </label>
+                        </div>
+                    )}
 
                     <div className="form-group">
                         <label>Roles</label>

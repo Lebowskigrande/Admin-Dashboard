@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FaEnvelopeOpen, FaFileAlt, FaPaperPlane, FaChurch, FaPlus } from 'react-icons/fa';
+import { FaEnvelopeOpen, FaFileAlt, FaPaperPlane, FaPlus } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
 import './Communications.css';
@@ -27,15 +27,6 @@ const Communications = () => {
         { id: 8, text: 'Place in Narthex', done: false },
     ]);
 
-    // Vestry Packets
-    const [vestryTasks, setVestryTasks] = useState([
-        { id: 1, text: 'Request reports from Treasurer', done: true },
-        { id: 2, text: 'Request Property Report', done: false },
-        { id: 3, text: 'Draft Agenda with Rector', done: false },
-        { id: 4, text: 'Compile PDF packet', done: false },
-        { id: 5, text: 'Email to Vestry members', done: false },
-    ]);
-
     // Weekly Email
     const [emailTasks, setEmailTasks] = useState([
         { id: 1, text: 'Collect announcements', done: true },
@@ -44,7 +35,6 @@ const Communications = () => {
         { id: 4, text: 'Proofread', done: false },
         { id: 5, text: 'Schedule/Send via Constant Contact', done: false },
     ]);
-
 
     const handleMailSubmit = (e) => {
         e.preventDefault();
@@ -120,15 +110,11 @@ const Communications = () => {
                 <button className={`tab-btn ${activeTab === 'email' ? 'active' : ''}`} onClick={() => setActiveTab('email')}>
                     <FaPaperPlane /> Weekly Email
                 </button>
-                <button className={`tab-btn ${activeTab === 'vestry' ? 'active' : ''}`} onClick={() => setActiveTab('vestry')}>
-                    <FaChurch /> Vestry Packets
-                </button>
             </div>
 
             {activeTab === 'mail' && renderMailLog()}
             {activeTab === 'bulletins' && renderChecklist(bulletinTasks, setBulletinTasks, "Sunday Bulletin Production")}
             {activeTab === 'email' && renderChecklist(emailTasks, setEmailTasks, "Wireless Weekly Email")}
-            {activeTab === 'vestry' && renderChecklist(vestryTasks, setVestryTasks, "Monthly Vestry Packet")}
 
             <Modal
                 isOpen={showModal}
