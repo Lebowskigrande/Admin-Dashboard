@@ -27,7 +27,7 @@ export const EventsProvider = ({ children }) => {
         setLoading(true);
         try {
             if (forceSync) {
-                await fetch(`${API_URL}/google/sync`, { method: 'POST' });
+                await fetch(`${API_URL}/google/sync`, { method: 'POST', credentials: 'include' });
             }
 
             const unifiedData = await getUnifiedEvents();

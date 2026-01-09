@@ -9,11 +9,17 @@ import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import db from './db.js';
+import { randomUUID } from 'crypto';
+import { sqlite } from './db.js';
+import { runMigrations } from './db/migrate.js';
+import { seedNormalized } from './db/seedNormalized.js';
+import { migrateLegacyData } from './db/legacy_migrate.js';
+import { applyDefaultSundayAssignments, ensureDefaultSundayServices } from './db/default_services.js';
 import { seedDatabase } from './seed.js';
-import { getAuthUrl, getTokensFromCode, setStoredCredentials } from './googleAuth.js';
+import { getAuthUrl, getTokensFromCode } from './googleAuth.js';
 import { fetchGoogleCalendarEvents, fetchCalendarList } from './googleCalendar.js';
-import { categorizeGoogleEvent, getEventContext, syncGoogleEvents } from './eventEngine.js';
+import { google } from 'googleapis';
+import { syncGoogleEvents } from './eventEngine.js';
 import { buildDepositSlipPdf, extractChecksFromImages } from './depositSlip.js';
 
 dotenv.config({ path: './server/.env' });
@@ -24,14 +30,75 @@ const execFileAsync = promisify(execFile);
 
 const app = express();
 const PORT = 3001;
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const upload = multer({ dest: join(tmpdir(), 'deposit-slip-uploads') });
 const vestryUpload = multer({ dest: join(tmpdir(), 'vestry-packet-uploads') });
 
-app.use(cors());
+app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
 app.use(express.json());
 
-// Run Seed
+const SESSION_COOKIE = 'dashboard_session';
+const SESSION_TTL_DAYS = 30;
+
+const parseCookies = (cookieHeader = '') => {
+    return cookieHeader.split(';').reduce((acc, pair) => {
+        const [rawKey, ...rest] = pair.trim().split('=');
+        if (!rawKey) return acc;
+        acc[rawKey] = decodeURIComponent(rest.join('='));
+        return acc;
+    }, {});
+};
+
+const setSessionCookie = (res, value, days = SESSION_TTL_DAYS) => {
+    const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toUTCString();
+    res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}`);
+};
+
+const clearSessionCookie = (res) => {
+    res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
+};
+
+const loadSessionUser = (req) => {
+    const cookies = parseCookies(req.headers.cookie || '');
+    const sessionId = cookies[SESSION_COOKIE];
+    if (!sessionId) return null;
+    const session = db.prepare(`
+        SELECT user_id, expires_at FROM user_sessions WHERE id = ?
+    `).get(sessionId);
+    if (!session) return null;
+    if (new Date(session.expires_at) < new Date()) return null;
+    const user = db.prepare(`
+        SELECT id, email, display_name, avatar_url FROM users WHERE id = ?
+    `).get(session.user_id);
+    return user || null;
+};
+
+app.use((req, _res, next) => {
+    req.user = loadSessionUser(req);
+    next();
+});
+
+const requireAuth = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+    next();
+};
+
+const getUserTokens = (userId) => {
+    return db.prepare(`
+        SELECT * FROM user_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
+    `).get(userId);
+};
+
+// Run migrations and seeds
+runMigrations();
 seedDatabase();
+seedNormalized();
+migrateLegacyData();
+ensureDefaultSundayServices();
+
+const db = sqlite;
 
 const normalizeName = (name = '') => name.trim().replace(/\s+/g, ' ');
 const slugifyName = (name) => normalizeName(name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -112,6 +179,13 @@ const normalizePersonRoles = (value) => {
     return Array.from(new Set(roles));
 };
 
+const normalizeTags = (value) => {
+    const tags = coerceJsonArray(value)
+        .map((tag) => normalizeName(tag))
+        .filter(Boolean);
+    return Array.from(new Set(tags));
+};
+
 const normalizePersonName = (value) => {
     return String(value || '')
         .toLowerCase()
@@ -120,73 +194,11 @@ const normalizePersonName = (value) => {
         .trim();
 };
 
-const DEFAULT_ORGANIST_ID = 'rob-hovencamp';
-const DEFAULT_SOUND_ID = 'cristo-nava';
 const DEFAULT_LOCATION_BY_TIME = {
     '08:00': 'chapel',
     '10:00': 'sanctuary'
 };
-const TEAM_ROLE_COLUMNS = {
-    lem: 'chalice_bearer',
-    acolyte: 'acolyte',
-    usher: 'usher',
-    sound: 'sound_engineer',
-    coffeeHour: 'coffee_hour',
-    childcare: 'childcare'
-};
 
-const getWeekOfMonth = (dateStr) => {
-    const date = new Date(`${dateStr}T00:00:00`);
-    const firstOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-    const offset = firstOfMonth.getDay();
-    return Math.floor((date.getDate() + offset - 1) / 7) + 1;
-};
-
-const DEFAULT_BUILDINGS = [
-    { id: 'sanctuary', name: 'Church', category: 'Worship', notes: 'Main worship space, nave, and sacristy access.' },
-    { id: 'chapel', name: 'Chapel', category: 'Worship', notes: 'Weekday services and quiet prayer.' },
-    { id: 'parish-hall', name: 'Fellows Hall', category: 'All Purpose', notes: 'Fellowship hall, kitchens, and meeting rooms.' },
-    { id: 'office', name: 'Office/School', category: 'All Purpose', notes: 'Administration, classrooms, and staff workspace.' },
-    { id: 'parking-north', name: 'North Parking', category: 'Parking', notes: 'Primary lot with 48 spaces and ADA access.' },
-    { id: 'parking-south', name: 'South Parking', category: 'Parking', notes: 'Overflow lot and service access.' },
-    { id: 'playground', name: 'Playground', category: 'Grounds', notes: 'Outdoor play area and family gathering space.' },
-    { id: 'close', name: 'Close', category: 'Grounds', notes: 'Green space, garden beds, and footpaths.' },
-    { id: 'main-gate', name: 'Main Gate', category: 'Entry', notes: 'Main pedestrian entry off the street.' },
-    { id: 'south-parking-gate', name: 'South Parking Gate', category: 'Entry', notes: 'Gate access to the south parking lot.' },
-    { id: 'north-parking-gate', name: 'North Parking Gate', category: 'Entry', notes: 'Gate access to the north parking lot.' }
-];
-
-const getTeamDefaultsForDate = (dateStr) => {
-    const teamNumber = getWeekOfMonth(dateStr);
-    const rows = db.prepare('SELECT id, display_name, roles, teams FROM people').all();
-    const defaults = {};
-    Object.keys(TEAM_ROLE_COLUMNS).forEach((role) => {
-        defaults[role] = [];
-    });
-
-    rows.forEach((row) => {
-        const roles = normalizePersonRoles(row.roles);
-        const teams = coerceJsonObject(row.teams);
-        Object.keys(TEAM_ROLE_COLUMNS).forEach((role) => {
-            if (!roles.includes(role)) return;
-            const teamList = Array.isArray(teams?.[role]) ? teams[role] : [];
-            const normalizedTeams = teamList.map((value) => Number(value)).filter((value) => !Number.isNaN(value));
-            if (normalizedTeams.includes(teamNumber)) {
-                defaults[role].push({ id: row.id, name: row.display_name || '' });
-            }
-        });
-    });
-
-    const output = {};
-    Object.entries(defaults).forEach(([role, members]) => {
-        output[role] = members
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((member) => member.id)
-            .join(', ');
-    });
-
-    return output;
-};
 
 const buildPeopleIndex = () => {
     const rows = db.prepare('SELECT id, display_name FROM people').all();
@@ -237,248 +249,7 @@ const normalizeScheduleValue = (value, peopleIndex) => {
     return normalized.join(', ');
 };
 
-const normalizeScheduleRow = (row, peopleIndex) => {
-    if (!row) return row;
-    const fields = [
-        'celebrant',
-        'preacher',
-        'organist',
-        'lector',
-        'usher',
-        'acolyte',
-        'chalice_bearer',
-        'sound_engineer',
-        'coffee_hour',
-        'childcare'
-    ];
 
-    const normalized = { ...row };
-    fields.forEach((field) => {
-        normalized[field] = normalizeScheduleValue(row[field], peopleIndex);
-    });
-
-    return normalized;
-};
-
-const backfillScheduleRoles = () => {
-    const peopleIndex = buildPeopleIndex();
-    const rows = db.prepare('SELECT * FROM schedule_roles').all();
-    const update = db.prepare(`
-        UPDATE schedule_roles
-        SET celebrant = ?, preacher = ?, organist = ?, lector = ?, usher = ?, acolyte = ?,
-            chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?, childcare = ?
-        WHERE id = ?
-    `);
-    rows.forEach((row) => {
-        const normalized = normalizeScheduleRow(row, peopleIndex);
-        const changed = [
-            'celebrant', 'preacher', 'organist', 'lector', 'usher', 'acolyte',
-            'chalice_bearer', 'sound_engineer', 'coffee_hour', 'childcare'
-        ].some((field) => (row[field] || '') !== (normalized[field] || ''));
-        if (changed) {
-            update.run(
-                normalized.celebrant,
-                normalized.preacher,
-                normalized.organist,
-                normalized.lector,
-                normalized.usher,
-                normalized.acolyte,
-                normalized.chalice_bearer,
-                normalized.sound_engineer,
-                normalized.coffee_hour,
-                normalized.childcare,
-                row.id
-            );
-        }
-    });
-};
-
-backfillScheduleRoles();
-
-const backfillServiceTimes = () => {
-    const sundayDates = db.prepare(`
-        SELECT date
-        FROM liturgical_days
-        WHERE CAST(strftime('%w', date) AS INTEGER) = 0
-    `).all();
-    const getRow = db.prepare('SELECT * FROM schedule_roles WHERE date = ? AND service_time = ?');
-    const insertRow = db.prepare(`
-        INSERT INTO schedule_roles (
-            date, service_time, celebrant, preacher, organist, location, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const updateLinked = db.prepare(`
-        UPDATE schedule_roles
-        SET celebrant = ?, preacher = ?, organist = ?
-        WHERE date = ? AND service_time = ?
-    `);
-
-    sundayDates.forEach(({ date }) => {
-        const eight = getRow.get(date, '08:00');
-        const ten = getRow.get(date, '10:00');
-        const source = eight || ten || {};
-
-        const defaultOrganist = source.organist || DEFAULT_ORGANIST_ID;
-        const defaultCelebrant = source.celebrant || '';
-        const defaultPreacher = source.preacher || '';
-        const defaultLocation = source.location || '';
-
-        if (!eight) {
-            insertRow.run(
-                date,
-                '08:00',
-                defaultCelebrant,
-                defaultPreacher,
-                defaultOrganist,
-                defaultLocation || DEFAULT_LOCATION_BY_TIME['08:00'] || '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                ''
-            );
-        }
-
-        if (!ten) {
-            const teamDefaults = getTeamDefaultsForDate(date);
-            insertRow.run(
-                date,
-                '10:00',
-                defaultCelebrant,
-                defaultPreacher,
-                defaultOrganist,
-                defaultLocation || DEFAULT_LOCATION_BY_TIME['10:00'] || '',
-                '',
-                teamDefaults.usher || '',
-                teamDefaults.acolyte || '',
-                teamDefaults.lem || '',
-                teamDefaults.sound || DEFAULT_SOUND_ID,
-                teamDefaults.coffeeHour || '',
-                teamDefaults.childcare || ''
-            );
-        }
-
-        if (eight && ten) {
-            const mergedCelebrant = eight.celebrant || ten.celebrant || '';
-            const mergedPreacher = eight.preacher || ten.preacher || '';
-            const mergedOrganist = eight.organist || ten.organist || DEFAULT_ORGANIST_ID;
-            const mergedLocation = eight.location || ten.location || DEFAULT_LOCATION_BY_TIME['10:00'] || '';
-            updateLinked.run(mergedCelebrant, mergedPreacher, mergedOrganist, date, '08:00');
-            updateLinked.run(mergedCelebrant, mergedPreacher, mergedOrganist, date, '10:00');
-            db.prepare('UPDATE schedule_roles SET location = ? WHERE date = ? AND service_time = ?').run(mergedLocation, date, '08:00');
-            db.prepare('UPDATE schedule_roles SET location = ? WHERE date = ? AND service_time = ?').run(mergedLocation, date, '10:00');
-        }
-    });
-};
-
-backfillServiceTimes();
-
-const backfillPeopleFields = () => {
-    const rows = db.prepare('SELECT id, roles, tags, teams FROM people').all();
-    const update = db.prepare(`
-        UPDATE people
-        SET roles = ?, tags = ?, teams = ?
-        WHERE id = ?
-    `);
-    rows.forEach((row) => {
-        const roles = normalizePersonRoles(row.roles);
-        const tags = coerceJsonArray(row.tags);
-        const teams = coerceJsonObject(row.teams);
-        const nextRoles = JSON.stringify(roles);
-        const nextTags = JSON.stringify(tags);
-        const nextTeams = JSON.stringify(teams);
-        if ((row.roles || '') !== nextRoles || (row.tags || '') !== nextTags || (row.teams || '') !== nextTeams) {
-            update.run(nextRoles, nextTags, nextTeams, row.id);
-        }
-    });
-};
-
-backfillPeopleFields();
-
-const backfillBuildings = () => {
-    const insert = db.prepare(`
-        INSERT INTO buildings (
-            id, name, category, capacity, size_sqft, rental_rate_hour, rental_rate_day, parking_spaces, event_types, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const exists = db.prepare('SELECT 1 FROM buildings WHERE id = ?');
-
-    DEFAULT_BUILDINGS.forEach((building) => {
-        if (exists.get(building.id)) return;
-        insert.run(
-            building.id,
-            building.name,
-            building.category || 'All Purpose',
-            0,
-            0,
-            0,
-            0,
-            0,
-            JSON.stringify([]),
-            building.notes || ''
-        );
-    });
-};
-
-backfillBuildings();
-
-const backfillTeamDefaults = () => {
-    const rows = db.prepare(`
-        SELECT id, date, service_time, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
-        FROM schedule_roles
-        WHERE service_time = '10:00'
-    `).all();
-    const update = db.prepare(`
-        UPDATE schedule_roles
-        SET usher = ?, acolyte = ?, chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?, childcare = ?
-        WHERE id = ?
-    `);
-
-    rows.forEach((row) => {
-        const defaults = getTeamDefaultsForDate(row.date);
-        const nextUsher = row.usher || defaults.usher || '';
-        const nextAcolyte = row.acolyte || defaults.acolyte || '';
-        const nextLem = row.chalice_bearer || defaults.lem || '';
-        const nextSound = row.sound_engineer || defaults.sound || DEFAULT_SOUND_ID;
-        const nextCoffee = row.coffee_hour || defaults.coffeeHour || '';
-        const nextChildcare = row.childcare || defaults.childcare || '';
-
-        const changed = nextUsher !== (row.usher || '')
-            || nextAcolyte !== (row.acolyte || '')
-            || nextLem !== (row.chalice_bearer || '')
-            || nextSound !== (row.sound_engineer || '')
-            || nextCoffee !== (row.coffee_hour || '')
-            || nextChildcare !== (row.childcare || '');
-
-        if (changed) {
-            update.run(
-                nextUsher,
-                nextAcolyte,
-                nextLem,
-                nextSound,
-                nextCoffee,
-                nextChildcare,
-                row.id
-            );
-        }
-    });
-};
-
-backfillTeamDefaults();
-
-const backfillServiceLocations = () => {
-    const rows = db.prepare('SELECT id, service_time, location FROM schedule_roles').all();
-    const update = db.prepare('UPDATE schedule_roles SET location = ? WHERE id = ?');
-    rows.forEach((row) => {
-        if (row.location && `${row.location}`.trim()) return;
-        const fallback = DEFAULT_LOCATION_BY_TIME[row.service_time] || '';
-        if (fallback) update.run(fallback, row.id);
-    });
-};
-
-backfillServiceLocations();
 
 const ensureUniqueId = (baseId, table) => {
     const allowedTables = new Set(['people', 'buildings', 'tickets', 'tasks']);
@@ -499,6 +270,12 @@ const TICKET_STATUSES = ['new', 'reviewed', 'in_process', 'closed'];
 
 // --- Google Calendar OAuth Routes ---
 
+const fetchGoogleProfile = async (tokens) => {
+    const oauth2 = google.oauth2('v2');
+    const response = await oauth2.userinfo.get({ access_token: tokens.access_token });
+    return response.data;
+};
+
 app.get('/auth/google', (req, res) => {
     const authUrl = getAuthUrl();
     res.redirect(authUrl);
@@ -513,15 +290,49 @@ app.get('/auth/google/callback', async (req, res) => {
 
     try {
         const tokens = await getTokensFromCode(code);
+        const profile = await fetchGoogleProfile(tokens);
+        const userId = `google-${profile.id}`;
+        const now = new Date().toISOString();
 
-        // Store tokens in database
         db.prepare(`
-            INSERT OR REPLACE INTO google_tokens (id, access_token, refresh_token, expiry_date)
-            VALUES (1, ?, ?, ?)
-        `).run(tokens.access_token, tokens.refresh_token, tokens.expiry_date);
+            INSERT INTO users (id, email, display_name, avatar_url, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                email = excluded.email,
+                display_name = excluded.display_name,
+                avatar_url = excluded.avatar_url
+        `).run(
+            userId,
+            profile.email || '',
+            profile.name || profile.email || 'User',
+            profile.picture || '',
+            now
+        );
 
-        // Redirect back to frontend Settings page
-        res.redirect('http://localhost:5173/settings');
+        db.prepare('DELETE FROM user_tokens WHERE user_id = ?').run(userId);
+        db.prepare(`
+            INSERT INTO user_tokens (id, user_id, access_token, refresh_token, expiry_date, scope, token_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            `token-${randomUUID()}`,
+            userId,
+            tokens.access_token || null,
+            tokens.refresh_token || null,
+            tokens.expiry_date || null,
+            tokens.scope || null,
+            tokens.token_type || null,
+            now
+        );
+
+        const sessionId = `sess-${randomUUID()}`;
+        const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+        db.prepare(`
+            INSERT INTO user_sessions (id, user_id, created_at, expires_at)
+            VALUES (?, ?, ?, ?)
+        `).run(sessionId, userId, now, expiresAt);
+
+        setSessionCookie(res, sessionId);
+        res.redirect(`${CLIENT_ORIGIN}/settings`);
     } catch (error) {
         console.error('Error during OAuth callback:', error);
         res.status(500).send('Authentication failed');
@@ -529,9 +340,140 @@ app.get('/auth/google/callback', async (req, res) => {
 });
 
 app.get('/api/google/status', (req, res) => {
-    const tokens = db.prepare('SELECT * FROM google_tokens WHERE id = 1').get();
+    if (!req.user) return res.json({ connected: false });
+    const tokens = getUserTokens(req.user.id);
     res.json({ connected: !!tokens });
 });
+
+app.get('/api/me', (req, res) => {
+    if (!req.user) return res.json({ user: null });
+    res.json({ user: req.user });
+});
+
+app.post('/api/logout', (req, res) => {
+    const cookies = parseCookies(req.headers.cookie || '');
+    const sessionId = cookies[SESSION_COOKIE];
+    if (sessionId) {
+        db.prepare('DELETE FROM user_sessions WHERE id = ?').run(sessionId);
+    }
+    clearSessionCookie(res);
+    res.json({ success: true });
+});
+
+const YOUTUBE_TIMEZONE = process.env.YOUTUBE_TIMEZONE || 'America/Los_Angeles';
+
+const formatYoutubeDate = (isoString) => {
+    const date = new Date(isoString);
+    if (Number.isNaN(date.getTime())) return '';
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: YOUTUBE_TIMEZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).format(date);
+};
+
+const fetchUpcomingStreams = async (apiKey, channelId) => {
+    const searchParams = new URLSearchParams({
+        part: 'id',
+        channelId,
+        eventType: 'upcoming',
+        type: 'video',
+        order: 'date',
+        maxResults: '10',
+        key: apiKey
+    });
+    const searchResponse = await fetch(`https://www.googleapis.com/youtube/v3/search?${searchParams.toString()}`);
+    if (!searchResponse.ok) {
+        throw new Error('Failed to fetch YouTube stream list');
+    }
+    const searchData = await searchResponse.json();
+    const videoIds = (searchData.items || [])
+        .map((item) => item?.id?.videoId)
+        .filter(Boolean);
+    if (!videoIds.length) return [];
+
+    const videosParams = new URLSearchParams({
+        part: 'snippet,liveStreamingDetails',
+        id: videoIds.join(','),
+        key: apiKey
+    });
+    const videosResponse = await fetch(`https://www.googleapis.com/youtube/v3/videos?${videosParams.toString()}`);
+    if (!videosResponse.ok) {
+        throw new Error('Failed to fetch YouTube stream details');
+    }
+    const videosData = await videosResponse.json();
+    return (videosData.items || []).map((item) => {
+        const scheduled = item?.liveStreamingDetails?.scheduledStartTime || '';
+        return {
+            videoId: item.id,
+            title: item?.snippet?.title || 'Upcoming Livestream',
+            scheduledStartTime: scheduled,
+            scheduledDate: scheduled ? formatYoutubeDate(scheduled) : '',
+            url: `https://www.youtube.com/watch?v=${item.id}`
+        };
+    }).filter((item) => item.scheduledDate);
+};
+
+const parseNotes = (value) => {
+    if (!value) return {};
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+};
+
+const syncLivestreamsToSundays = (streams) => {
+    const update = db.prepare('UPDATE event_occurrences SET notes = ? WHERE id = ?');
+    const findOccurrence = db.prepare(`
+        SELECT id, notes FROM event_occurrences
+        WHERE event_id = 'sunday-service' AND date = ? AND start_time = '10:00'
+    `);
+    let updated = 0;
+    streams.forEach((stream) => {
+        const occurrence = findOccurrence.get(stream.scheduledDate);
+        if (!occurrence) return;
+        const notes = parseNotes(occurrence.notes);
+        notes.youtubeUrl = stream.url;
+        notes.youtubeTitle = stream.title;
+        notes.youtubeVideoId = stream.videoId;
+        notes.youtubeScheduledStart = stream.scheduledStartTime;
+        update.run(JSON.stringify(notes), occurrence.id);
+        updated += 1;
+    });
+    return updated;
+};
+
+const scheduleYouTubeSync = () => {
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    const channelId = process.env.YOUTUBE_CHANNEL_ID;
+    if (!apiKey || !channelId) return;
+
+    const runSync = async () => {
+        try {
+            const streams = await fetchUpcomingStreams(apiKey, channelId);
+            syncLivestreamsToSundays(streams);
+            const nextScheduled = streams
+                .map((stream) => new Date(stream.scheduledStartTime).getTime())
+                .filter((ts) => Number.isFinite(ts))
+                .sort((a, b) => a - b)[0];
+            if (nextScheduled) {
+                const delay = Math.max(nextScheduled - Date.now() + 2 * 60 * 1000, 5 * 60 * 1000);
+                setTimeout(runSync, delay);
+                return;
+            }
+        } catch (error) {
+            console.error('YouTube auto-sync error:', error);
+        }
+        setTimeout(runSync, 60 * 60 * 1000);
+    };
+
+    runSync();
+};
+
+scheduleYouTubeSync();
 
 app.get('/api/youtube/upcoming', async (req, res) => {
     const apiKey = process.env.YOUTUBE_API_KEY;
@@ -540,52 +482,89 @@ app.get('/api/youtube/upcoming', async (req, res) => {
         return res.status(400).json({ error: 'Missing YouTube API configuration' });
     }
     try {
-        const params = new URLSearchParams({
-            part: 'id',
-            channelId,
-            eventType: 'upcoming',
-            type: 'video',
-            order: 'date',
-            maxResults: '1',
-            key: apiKey
-        });
-        const response = await fetch(`https://www.googleapis.com/youtube/v3/search?${params.toString()}`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch YouTube stream');
-        }
-        const data = await response.json();
-        const videoId = data?.items?.[0]?.id?.videoId || '';
-        if (!videoId) {
-            return res.json({ url: '' });
-        }
-        return res.json({ url: `https://www.youtube.com/watch?v=${videoId}` });
+        const streams = await fetchUpcomingStreams(apiKey, channelId);
+        res.json(streams);
     } catch (error) {
         console.error('YouTube API error:', error);
         return res.status(500).json({ error: 'Failed to fetch livestream' });
     }
 });
 
-app.post('/api/google/disconnect', (req, res) => {
-    db.prepare('DELETE FROM google_tokens WHERE id = 1').run();
+app.post('/api/youtube/sync', async (req, res) => {
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    const channelId = process.env.YOUTUBE_CHANNEL_ID;
+    if (!apiKey || !channelId) {
+        return res.status(400).json({ error: 'Missing YouTube API configuration' });
+    }
+    try {
+        const streams = await fetchUpcomingStreams(apiKey, channelId);
+        const synced = syncLivestreamsToSundays(streams);
+        res.json({ success: true, synced });
+    } catch (error) {
+        console.error('YouTube sync error:', error);
+        res.status(500).json({ error: 'Failed to sync livestreams' });
+    }
+});
+
+app.get('/api/sunday/livestream', (req, res) => {
+    const { date } = req.query;
+    if (!date) {
+        return res.status(400).json({ error: 'date is required' });
+    }
+    const occurrence = db.prepare(`
+        SELECT notes FROM event_occurrences
+        WHERE event_id = 'sunday-service' AND date = ? AND start_time = '10:00'
+        LIMIT 1
+    `).get(date);
+    const notes = parseNotes(occurrence?.notes);
+    res.json({
+        url: notes.youtubeUrl || '',
+        title: notes.youtubeTitle || '',
+        videoId: notes.youtubeVideoId || '',
+        scheduledStart: notes.youtubeScheduledStart || ''
+    });
+});
+
+app.post('/api/google/disconnect', requireAuth, (req, res) => {
+    db.prepare('DELETE FROM user_tokens WHERE user_id = ?').run(req.user.id);
+    db.prepare('DELETE FROM calendar_links WHERE user_id = ?').run(req.user.id);
     res.json({ success: true });
 });
 
-app.get('/api/google/calendars', async (req, res) => {
+app.get('/api/google/calendars', requireAuth, async (req, res) => {
     try {
-        const tokens = db.prepare('SELECT * FROM google_tokens WHERE id = 1').get();
-
+        const tokens = getUserTokens(req.user.id);
         if (!tokens) {
             return res.status(401).json({ error: 'Not connected to Google Calendar' });
         }
 
-        setStoredCredentials({
+        const calendars = await fetchCalendarList({
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,
             expiry_date: tokens.expiry_date
         });
 
-        const calendars = await fetchCalendarList();
-        const selectedIds = db.prepare('SELECT calendar_id FROM selected_calendars').all().map(c => c.calendar_id);
+        const selectedIds = db.prepare(`
+            SELECT calendar_id FROM calendar_links WHERE user_id = ? AND selected = 1
+        `).all(req.user.id).map(c => c.calendar_id);
+
+        const upsertCalendar = db.prepare(`
+            INSERT INTO calendars (id, summary, background_color, time_zone)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                summary = excluded.summary,
+                background_color = excluded.background_color,
+                time_zone = excluded.time_zone
+        `);
+
+        calendars.forEach((calendar) => {
+            upsertCalendar.run(
+                calendar.id,
+                calendar.summary || '',
+                calendar.backgroundColor || '',
+                calendar.timeZone || ''
+            );
+        });
 
         const calendarsWithSelection = calendars.map(cal => ({
             id: cal.id,
@@ -601,18 +580,19 @@ app.get('/api/google/calendars', async (req, res) => {
     }
 });
 
-app.post('/api/google/calendars/select', async (req, res) => {
+app.post('/api/google/calendars/select', requireAuth, async (req, res) => {
     try {
-        const { calendarId, summary, backgroundColor, selected } = req.body;
-
-        if (selected) {
-            db.prepare(`
-                INSERT OR REPLACE INTO selected_calendars (calendar_id, summary, background_color)
-                VALUES (?, ?, ?)
-            `).run(calendarId, summary, backgroundColor);
-        } else {
-            db.prepare('DELETE FROM selected_calendars WHERE calendar_id = ?').run(calendarId);
+        const { calendarId, selected } = req.body;
+        if (!calendarId) {
+            return res.status(400).json({ error: 'calendarId is required' });
         }
+        const linkId = `link-${req.user.id}-${calendarId}`;
+
+        db.prepare(`
+            INSERT INTO calendar_links (id, user_id, calendar_id, selected)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET selected = excluded.selected
+        `).run(linkId, req.user.id, calendarId, selected ? 1 : 0);
 
         res.json({ success: true });
     } catch (error) {
@@ -621,40 +601,33 @@ app.post('/api/google/calendars/select', async (req, res) => {
     }
 });
 
-app.get('/api/google/events', async (req, res) => {
+app.get('/api/google/events', requireAuth, async (req, res) => {
     try {
-        const tokens = db.prepare('SELECT * FROM google_tokens WHERE id = 1').get();
-
+        const tokens = getUserTokens(req.user.id);
         if (!tokens) {
             return res.status(401).json({ error: 'Not connected to Google Calendar' });
         }
 
-        setStoredCredentials({
-            access_token: tokens.access_token,
-            refresh_token: tokens.refresh_token,
-            expiry_date: tokens.expiry_date
-        });
-
-        // Get selected calendars
-        const selectedCalendars = db.prepare('SELECT calendar_id FROM selected_calendars').all();
-        const calendarIds = selectedCalendars.length > 0
-            ? selectedCalendars.map(c => c.calendar_id)
-            : ['primary'];
-
-        // Return cached events from database
-        let rows = db.prepare(`
-            SELECT e.*, t.name as type_name, t.slug as type_slug, c.name as category_name, 
+        const rows = db.prepare(`
+            SELECT e.id, e.title, e.description, e.event_type_id, o.date, o.start_time, o.building_id,
+                   t.name as type_name, t.slug as type_slug, c.name as category_name, 
                    COALESCE(t.color, c.color) as type_color
-            FROM custom_events e
-            JOIN event_types t ON e.event_type_id = t.id
-            JOIN event_categories c ON t.category_id = c.id
+            FROM events e
+            JOIN event_occurrences o ON o.event_id = e.id
+            LEFT JOIN event_types t ON e.event_type_id = t.id
+            LEFT JOIN event_categories c ON t.category_id = c.id
             WHERE e.source = 'google'
         `).all();
 
-        // If cache is empty, trigger a sync in the background
         if (rows.length === 0) {
-            console.log('Google event cache empty, triggering background sync...');
-            syncGoogleEvents(fetchGoogleCalendarEvents).catch(err => {
+            syncGoogleEvents(fetchGoogleCalendarEvents, {
+                userId: req.user.id,
+                tokens: {
+                    access_token: tokens.access_token,
+                    refresh_token: tokens.refresh_token,
+                    expiry_date: tokens.expiry_date
+                }
+            }).catch(err => {
                 console.error('Background sync failed:', err);
             });
         }
@@ -663,8 +636,8 @@ app.get('/api/google/events', async (req, res) => {
             id: `google-${e.id}`,
             summary: e.title,
             description: e.description,
-            start: { dateTime: e.time ? `${e.date}T${e.time}:00` : null, date: !e.time ? e.date : null },
-            location: e.location,
+            start: { dateTime: e.start_time ? `${e.date}T${e.start_time}:00` : null, date: !e.start_time ? e.date : null },
+            location: e.building_id,
             type_name: e.type_name,
             category_name: e.category_name,
             color: e.type_color,
@@ -678,18 +651,19 @@ app.get('/api/google/events', async (req, res) => {
     }
 });
 
-app.post('/api/google/sync', async (req, res) => {
+app.post('/api/google/sync', requireAuth, async (req, res) => {
     try {
-        const tokens = db.prepare('SELECT * FROM google_tokens WHERE id = 1').get();
+        const tokens = getUserTokens(req.user.id);
         if (!tokens) return res.status(401).json({ error: 'Not connected' });
 
-        setStoredCredentials({
-            access_token: tokens.access_token,
-            refresh_token: tokens.refresh_token,
-            expiry_date: tokens.expiry_date
+        const total = await syncGoogleEvents(fetchGoogleCalendarEvents, {
+            userId: req.user.id,
+            tokens: {
+                access_token: tokens.access_token,
+                refresh_token: tokens.refresh_token,
+                expiry_date: tokens.expiry_date
+            }
         });
-
-        const total = await syncGoogleEvents(fetchGoogleCalendarEvents);
         res.json({ success: true, count: total });
     } catch (error) {
         console.error('Sync error:', error);
@@ -740,6 +714,9 @@ app.post('/api/people', (req, res) => {
     const baseId = slugifyName(normalizedName) || `person-${Date.now()}`;
     const id = ensureUniqueId(baseId, 'people');
 
+    const normalizedRoles = normalizePersonRoles(roles);
+    const normalizedTags = normalizeTags(tags);
+
     db.prepare(`
         INSERT INTO people (id, display_name, email, category, roles, tags, teams)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -748,8 +725,8 @@ app.post('/api/people', (req, res) => {
         normalizedName,
         email,
         category,
-        JSON.stringify(normalizePersonRoles(roles)),
-        JSON.stringify(coerceJsonArray(tags)),
+        JSON.stringify(normalizedRoles),
+        JSON.stringify(normalizedTags),
         JSON.stringify(coerceJsonObject(teams))
     );
 
@@ -758,8 +735,8 @@ app.post('/api/people', (req, res) => {
         displayName: normalizedName,
         email,
         category,
-        roles: normalizePersonRoles(roles),
-        tags: coerceJsonArray(tags),
+        roles: normalizedRoles,
+        tags: normalizedTags,
         teams: coerceJsonObject(teams)
     });
 });
@@ -778,6 +755,9 @@ app.put('/api/people/:id', (req, res) => {
         return res.status(404).json({ error: 'Person not found' });
     }
 
+    const normalizedRoles = normalizePersonRoles(roles);
+    const normalizedTags = normalizeTags(tags);
+
     db.prepare(`
         UPDATE people SET
             display_name = ?,
@@ -791,8 +771,8 @@ app.put('/api/people/:id', (req, res) => {
         normalizedName,
         email,
         category,
-        JSON.stringify(normalizePersonRoles(roles)),
-        JSON.stringify(coerceJsonArray(tags)),
+        JSON.stringify(normalizedRoles),
+        JSON.stringify(normalizedTags),
         JSON.stringify(coerceJsonObject(teams)),
         id
     );
@@ -802,8 +782,8 @@ app.put('/api/people/:id', (req, res) => {
         displayName: normalizedName,
         email,
         category,
-        roles: normalizePersonRoles(roles),
-        tags: coerceJsonArray(tags),
+        roles: normalizedRoles,
+        tags: normalizedTags,
         teams: coerceJsonObject(teams)
     });
 });
@@ -1197,8 +1177,6 @@ app.delete('/api/tasks/:id', (req, res) => {
 // Get all events (merged)
 app.get('/api/events', async (req, res) => {
     try {
-        const { categories, eventTypes } = getEventContext();
-
         // 1. Get liturgical events
         const days = db.prepare('SELECT * FROM liturgical_days ORDER BY date').all();
         const liturgicalEvents = days.map(day => {
@@ -1224,32 +1202,36 @@ app.get('/api/events', async (req, res) => {
             };
         });
 
-        // 2. Get custom events
-        const customEventsRows = db.prepare(`
-            SELECT e.*, t.name as type_name, t.slug as type_slug, c.name as category_name, 
+        // 2. Get scheduled/custom events
+        const eventRows = db.prepare(`
+            SELECT e.id, e.title, e.description, e.event_type_id, e.source, e.metadata,
+                   o.date, o.start_time, o.end_time, o.building_id,
+                   t.name as type_name, t.slug as type_slug, c.name as category_name,
                    COALESCE(t.color, c.color) as type_color
-            FROM custom_events e
-            JOIN event_types t ON e.event_type_id = t.id
-            JOIN event_categories c ON t.category_id = c.id
+            FROM events e
+            JOIN event_occurrences o ON o.event_id = e.id
+            LEFT JOIN event_types t ON e.event_type_id = t.id
+            LEFT JOIN event_categories c ON t.category_id = c.id
+            WHERE e.id <> 'sunday-service'
         `).all();
 
-        const customEvents = customEventsRows.map(e => ({
-            id: `custom-${e.id}`,
+        const scheduledEvents = eventRows.map(e => ({
+            id: e.id,
             title: e.title,
             description: e.description,
             date: e.date,
-            time: e.time,
-            location: e.location,
+            time: e.start_time,
+            location: e.building_id,
             type_name: e.type_name,
             type_slug: e.type_slug,
             category_name: e.category_name,
             color: e.type_color,
             metadata: e.metadata ? JSON.parse(e.metadata) : {},
-            source: 'manual'
+            source: e.source || 'manual'
         }));
 
         // 3. Merge and return
-        res.json([...liturgicalEvents, ...customEvents]);
+        res.json([...liturgicalEvents, ...scheduledEvents]);
     } catch (error) {
         console.error('Error fetching merged events:', error);
         res.status(500).json({ error: 'Failed to fetch events' });
@@ -1279,34 +1261,105 @@ app.get('/api/liturgical-days', (req, res) => {
     res.json(rows);
 });
 
-const buildServiceRows = (scheduleRows = []) => {
-    const serviceTimes = ['08:00', '10:00'];
-    const rowsByTime = new Map(
-        scheduleRows.map((row) => [row.service_time || '', row])
-    );
+const ROLE_KEYS = [
+    'celebrant',
+    'preacher',
+    'organist',
+    'lector',
+    'usher',
+    'acolyte',
+    'lem',
+    'sound',
+    'coffeeHour',
+    'childcare'
+];
 
-    return serviceTimes.map((time) => {
-        const row = rowsByTime.get(time) || {};
-        const rite = time.startsWith('08') ? 'Rite I' : 'Rite II';
+const ROLE_FIELD_MAP = {
+    celebrant: 'celebrant',
+    preacher: 'preacher',
+    organist: 'organist',
+    lector: 'lector',
+    usher: 'usher',
+    acolyte: 'acolyte',
+    lem: 'lem',
+    sound: 'sound',
+    coffeeHour: 'coffeeHour',
+    childcare: 'childcare'
+};
+
+const normalizeAssignmentList = (value, peopleIndex) => {
+    const normalized = normalizeScheduleValue(value, peopleIndex);
+    return normalized
+        .split(',')
+        .map((token) => token.trim())
+        .filter(Boolean);
+};
+
+const buildServiceRowsFromOccurrences = (occurrences = []) => {
+    const sorted = [...occurrences].sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+    return sorted.map((occurrence) => {
+        const time = occurrence.start_time || '10:00';
+        const rite = occurrence.rite || (time.startsWith('08') ? 'Rite I' : 'Rite II');
         return {
             name: 'Sunday Service',
             time,
             rite,
-            location: row.location || DEFAULT_LOCATION_BY_TIME[time] || '',
-            roles: {
-                celebrant: row.celebrant || '',
-                preacher: row.preacher || '',
-                lector: row.lector || '',
-                organist: row.organist || '',
-                usher: row.usher || '',
-                acolyte: row.acolyte || '',
-                lem: row.chalice_bearer || '',
-                sound: row.sound_engineer || '',
-                coffeeHour: row.coffee_hour || '',
-                childcare: row.childcare || ''
-            }
+            location: occurrence.building_id || '',
+            roles: ROLE_KEYS.reduce((acc, key) => {
+                acc[key] = (occurrence.roles?.[key] || []).join(', ');
+                return acc;
+            }, {})
         };
     });
+};
+
+const loadSundayOccurrences = (start, end) => {
+    const params = [];
+    let sql = `
+        SELECT o.id as occurrence_id, o.date, o.start_time, o.building_id, o.rite,
+               a.role_key, a.person_id
+        FROM event_occurrences o
+        LEFT JOIN assignments a ON a.occurrence_id = o.id
+        WHERE o.event_id = 'sunday-service'
+    `;
+    if (start && end) {
+        sql += ' AND o.date BETWEEN ? AND ?';
+        params.push(start, end);
+    } else if (start) {
+        sql += ' AND o.date >= ?';
+        params.push(start);
+    } else if (end) {
+        sql += ' AND o.date <= ?';
+        params.push(end);
+    }
+    const rows = db.prepare(sql).all(...params);
+
+    const byDate = new Map();
+    rows.forEach((row) => {
+        if (!byDate.has(row.date)) byDate.set(row.date, new Map());
+        const byOccurrence = byDate.get(row.date);
+        if (!byOccurrence.has(row.occurrence_id)) {
+            byOccurrence.set(row.occurrence_id, {
+                id: row.occurrence_id,
+                date: row.date,
+                start_time: row.start_time,
+                building_id: row.building_id,
+                rite: row.rite,
+                roles: {}
+            });
+        }
+        const occurrence = byOccurrence.get(row.occurrence_id);
+        if (row.role_key && row.person_id) {
+            if (!occurrence.roles[row.role_key]) occurrence.roles[row.role_key] = [];
+            occurrence.roles[row.role_key].push(row.person_id);
+        }
+    });
+
+    const result = {};
+    byDate.forEach((occurrenceMap, date) => {
+        result[date] = Array.from(occurrenceMap.values());
+    });
+    return result;
 };
 
 app.get('/api/sundays', (req, res) => {
@@ -1327,19 +1380,11 @@ app.get('/api/sundays', (req, res) => {
 
     sql += ' ORDER BY date';
     const days = db.prepare(sql).all(...params);
-    const scheduleRows = db.prepare('SELECT * FROM schedule_roles').all();
-    const peopleIndex = buildPeopleIndex();
-    const normalizedSchedule = scheduleRows.map((row) => normalizeScheduleRow(row, peopleIndex));
-    const scheduleByDate = normalizedSchedule.reduce((acc, row) => {
-        if (!acc[row.date]) acc[row.date] = [];
-        acc[row.date].push(row);
-        return acc;
-    }, {});
-
+    const occurrencesByDate = loadSundayOccurrences(start, end);
     const sundays = days.map((day) => ({
         ...day,
         bulletin_status: day.bulletin_status || 'draft',
-        services: buildServiceRows(scheduleByDate[day.date] || [])
+        services: buildServiceRowsFromOccurrences(occurrencesByDate[day.date] || [])
     }));
 
     res.json(sundays);
@@ -1347,25 +1392,29 @@ app.get('/api/sundays', (req, res) => {
 
 app.get('/api/schedule-roles', (req, res) => {
     const { start, end } = req.query;
-    let sql = 'SELECT * FROM schedule_roles';
-    const params = [];
-
-    if (start && end) {
-        sql += ' WHERE date BETWEEN ? AND ?';
-        params.push(start, end);
-    } else if (start) {
-        sql += ' WHERE date >= ?';
-        params.push(start);
-    } else if (end) {
-        sql += ' WHERE date <= ?';
-        params.push(end);
-    }
-
-    sql += ' ORDER BY date, service_time';
-    const rows = db.prepare(sql).all(...params);
-    const peopleIndex = buildPeopleIndex();
-    const normalized = rows.map((row) => normalizeScheduleRow(row, peopleIndex));
-    res.json(normalized);
+    const occurrencesByDate = loadSundayOccurrences(start, end);
+    const rows = [];
+    Object.values(occurrencesByDate).forEach((occurrences) => {
+        occurrences.forEach((occurrence) => {
+            rows.push({
+                id: occurrence.id,
+                date: occurrence.date,
+                service_time: occurrence.start_time,
+                location: occurrence.building_id || '',
+                celebrant: (occurrence.roles?.celebrant || []).join(', '),
+                preacher: (occurrence.roles?.preacher || []).join(', '),
+                organist: (occurrence.roles?.organist || []).join(', '),
+                lector: (occurrence.roles?.lector || []).join(', '),
+                usher: (occurrence.roles?.usher || []).join(', '),
+                acolyte: (occurrence.roles?.acolyte || []).join(', '),
+                chalice_bearer: (occurrence.roles?.lem || []).join(', '),
+                sound_engineer: (occurrence.roles?.sound || []).join(', '),
+                coffee_hour: (occurrence.roles?.coffeeHour || []).join(', '),
+                childcare: (occurrence.roles?.childcare || []).join(', ')
+            });
+        });
+    });
+    res.json(rows);
 });
 
 app.put('/api/schedule-roles', (req, res) => {
@@ -1385,6 +1434,9 @@ app.put('/api/schedule-roles', (req, res) => {
         location = ''
     } = req.body || {};
 
+    if (!date) {
+        return res.status(400).json({ error: 'Date is required' });
+    }
     const peopleIndex = buildPeopleIndex();
     const normalized = {
         celebrant: normalizeScheduleValue(celebrant, peopleIndex),
@@ -1398,114 +1450,56 @@ app.put('/api/schedule-roles', (req, res) => {
         coffeeHour: normalizeScheduleValue(coffeeHour, peopleIndex),
         childcare: normalizeScheduleValue(childcare, peopleIndex)
     };
-    if (!date) {
-        return res.status(400).json({ error: 'Date is required' });
-    }
 
-    const existing = db.prepare(
-        'SELECT 1 FROM schedule_roles WHERE date = ? AND service_time = ?'
-    ).get(date, service_time);
+    const occurrence = db.prepare(`
+        SELECT id FROM event_occurrences
+        WHERE event_id = 'sunday-service' AND date = ? AND start_time = ?
+    `).get(date, service_time);
 
-    if (existing) {
+    let occurrenceId = occurrence?.id;
+    if (!occurrenceId) {
+        const rite = service_time.startsWith('08') ? 'Rite I' : 'Rite II';
+        occurrenceId = `occ-${randomUUID()}`;
         db.prepare(`
-            UPDATE schedule_roles
-            SET celebrant = ?, preacher = ?, lector = ?, organist = ?, location = ?, usher = ?, acolyte = ?, chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?, childcare = ?
-            WHERE date = ? AND service_time = ?
+            INSERT INTO event_occurrences (
+                id, event_id, date, start_time, end_time, building_id, rite, is_default, notes
+            ) VALUES (?, 'sunday-service', ?, ?, NULL, ?, ?, 0, NULL)
         `).run(
-            normalized.celebrant,
-            normalized.preacher,
-            normalized.lector,
-            normalized.organist,
-            location || DEFAULT_LOCATION_BY_TIME[service_time] || '',
-            normalized.usher,
-            normalized.acolyte,
-            normalized.lem,
-            normalized.sound,
-            normalized.coffeeHour,
-            normalized.childcare,
-            date,
-            service_time
-        );
-    } else {
-        const teamDefaults = service_time === '10:00' ? getTeamDefaultsForDate(date) : {};
-        const defaultOrganist = normalized.organist || DEFAULT_ORGANIST_ID;
-        const defaultSound = service_time === '10:00'
-            ? (normalized.sound || teamDefaults.sound || DEFAULT_SOUND_ID)
-            : normalized.sound;
-        db.prepare(`
-            INSERT INTO schedule_roles (
-                date, service_time, celebrant, preacher, lector, organist, location, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
+            occurrenceId,
             date,
             service_time,
-            normalized.celebrant,
-            normalized.preacher,
-            normalized.lector,
-            defaultOrganist,
             location || DEFAULT_LOCATION_BY_TIME[service_time] || '',
-            normalized.usher || teamDefaults.usher || '',
-            normalized.acolyte || teamDefaults.acolyte || '',
-            normalized.lem || teamDefaults.lem || '',
-            defaultSound,
-            normalized.coffeeHour || teamDefaults.coffeeHour || '',
-            normalized.childcare || teamDefaults.childcare || ''
+            rite
         );
-    }
-
-    const linkedTime = service_time === '08:00' ? '10:00' : '08:00';
-    const linkedRow = db.prepare('SELECT 1 FROM schedule_roles WHERE date = ? AND service_time = ?').get(date, linkedTime);
-    if (linkedRow) {
-        db.prepare(`
-            UPDATE schedule_roles
-            SET celebrant = ?, preacher = ?, organist = ?
-            WHERE date = ? AND service_time = ?
-        `).run(normalized.celebrant, normalized.preacher, normalized.organist, date, linkedTime);
     } else {
-        const linkedDefaults = linkedTime === '10:00' ? getTeamDefaultsForDate(date) : {};
-        const defaultOrganist = normalized.organist || DEFAULT_ORGANIST_ID;
-        const linkedSound = linkedTime === '10:00'
-            ? (normalized.sound || linkedDefaults.sound || DEFAULT_SOUND_ID)
-            : '';
-
-        if (linkedTime === '10:00') {
-            db.prepare(`
-                INSERT INTO schedule_roles (
-                    date, service_time, celebrant, preacher, organist, location, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
-                )
-                VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)
-            `).run(
-                date,
-                linkedTime,
-                normalized.celebrant,
-                normalized.preacher,
-                defaultOrganist,
-                location || DEFAULT_LOCATION_BY_TIME[linkedTime] || '',
-                linkedDefaults.usher || '',
-                linkedDefaults.acolyte || '',
-                linkedDefaults.lem || '',
-                linkedSound,
-                linkedDefaults.coffeeHour || '',
-                linkedDefaults.childcare || ''
-            );
-        } else {
-            db.prepare(`
-                INSERT INTO schedule_roles (
-                    date, service_time, celebrant, preacher, organist, location, lector, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
-                )
-                VALUES (?, ?, ?, ?, ?, ?, '', '', '', '', '', '', '')
-            `).run(
-                date,
-                linkedTime,
-                normalized.celebrant,
-                normalized.preacher,
-                defaultOrganist,
-                location || DEFAULT_LOCATION_BY_TIME[linkedTime] || ''
-            );
-        }
+        db.prepare(`
+            UPDATE event_occurrences
+            SET building_id = ?
+            WHERE id = ?
+        `).run(location || DEFAULT_LOCATION_BY_TIME[service_time] || '', occurrenceId);
     }
 
+    const deleteAssignments = db.prepare(`
+        DELETE FROM assignments
+        WHERE occurrence_id = ? AND role_key = ?
+    `);
+    const insertAssignment = db.prepare(`
+        INSERT INTO assignments (id, occurrence_id, role_key, person_id)
+        VALUES (?, ?, ?, ?)
+    `);
+
+    Object.entries(normalized).forEach(([key, value]) => {
+        const roleKey = ROLE_FIELD_MAP[key];
+        if (!roleKey) return;
+        deleteAssignments.run(occurrenceId, roleKey);
+        const people = normalizeAssignmentList(value, peopleIndex);
+        const uniquePeople = Array.from(new Set(people));
+        uniquePeople.forEach((personId) => {
+            insertAssignment.run(`asgn-${randomUUID()}`, occurrenceId, roleKey, personId);
+        });
+    });
+
+    applyDefaultSundayAssignments(occurrenceId, date, service_time);
     res.json({ success: true, date, service_time });
 });
 
@@ -1683,10 +1677,36 @@ app.post('/api/deposit-slip', upload.array('checks', 30), async (req, res) => {
 // Get roles for a specific date
 app.get('/api/roles/:date', (req, res) => {
     const { date } = req.params;
-    const roles = db.prepare('SELECT * FROM schedule_roles WHERE date = ?').get(date);
-    const peopleIndex = buildPeopleIndex();
-    const normalized = roles ? normalizeScheduleRow(roles, peopleIndex) : {};
-    res.json(normalized);
+    const occurrence = db.prepare(`
+        SELECT o.id, o.date, o.start_time, o.building_id
+        FROM event_occurrences o
+        WHERE o.event_id = 'sunday-service' AND o.date = ? AND o.start_time = '10:00'
+        LIMIT 1
+    `).get(date);
+    if (!occurrence) return res.json({});
+    const assignments = db.prepare(`
+        SELECT role_key, person_id FROM assignments WHERE occurrence_id = ?
+    `).all(occurrence.id);
+    const roleMap = {};
+    assignments.forEach((row) => {
+        if (!roleMap[row.role_key]) roleMap[row.role_key] = [];
+        roleMap[row.role_key].push(row.person_id);
+    });
+    res.json({
+        date: occurrence.date,
+        service_time: occurrence.start_time,
+        location: occurrence.building_id || '',
+        celebrant: (roleMap.celebrant || []).join(', '),
+        preacher: (roleMap.preacher || []).join(', '),
+        organist: (roleMap.organist || []).join(', '),
+        lector: (roleMap.lector || []).join(', '),
+        usher: (roleMap.usher || []).join(', '),
+        acolyte: (roleMap.acolyte || []).join(', '),
+        chalice_bearer: (roleMap.lem || []).join(', '),
+        sound_engineer: (roleMap.sound || []).join(', '),
+        coffee_hour: (roleMap.coffeeHour || []).join(', '),
+        childcare: (roleMap.childcare || []).join(', ')
+    });
 });
 
 // Update roles
@@ -1714,56 +1734,51 @@ app.put('/api/roles/:date', (req, res) => {
         organist: normalizeScheduleValue(organist, peopleIndex),
         usher: normalizeScheduleValue(usher, peopleIndex),
         acolyte: normalizeScheduleValue(acolyte, peopleIndex),
-        chaliceBearer: normalizeScheduleValue(chaliceBearer, peopleIndex),
+        lem: normalizeScheduleValue(chaliceBearer, peopleIndex),
         sound: normalizeScheduleValue(sound, peopleIndex),
         coffeeHour: normalizeScheduleValue(coffeeHour, peopleIndex),
         childcare: normalizeScheduleValue(childcare, peopleIndex)
     };
 
-    // Check if entry exists
-    const exists = db.prepare('SELECT 1 FROM schedule_roles WHERE date = ?').get(date);
+    let occurrence = db.prepare(`
+        SELECT id FROM event_occurrences
+        WHERE event_id = 'sunday-service' AND date = ? AND start_time = '10:00'
+    `).get(date);
 
-    if (exists) {
+    if (!occurrence) {
+        occurrence = { id: `occ-${randomUUID()}` };
         db.prepare(`
-            UPDATE schedule_roles 
-            SET celebrant = ?, preacher = ?, lector = ?, organist = ?, location = ?, usher = ?, acolyte = ?, chalice_bearer = ?, sound_engineer = ?, coffee_hour = ?, childcare = ?
-            WHERE date = ?
+            INSERT INTO event_occurrences (
+                id, event_id, date, start_time, end_time, building_id, rite, is_default, notes
+            ) VALUES (?, 'sunday-service', ?, '10:00', NULL, ?, 'Rite II', 0, NULL)
         `).run(
-            normalized.celebrant,
-            normalized.preacher,
-            normalized.lector,
-            normalized.organist,
-            location || '',
-            normalized.usher,
-            normalized.acolyte,
-            normalized.chaliceBearer,
-            normalized.sound,
-            normalized.coffeeHour,
-            normalized.childcare,
-            date
+            occurrence.id,
+            date,
+            location || DEFAULT_LOCATION_BY_TIME['10:00'] || ''
         );
     } else {
         db.prepare(`
-            INSERT INTO schedule_roles (
-                date, celebrant, preacher, lector, organist, location, usher, acolyte, chalice_bearer, sound_engineer, coffee_hour, childcare
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-            date,
-            normalized.celebrant,
-            normalized.preacher,
-            normalized.lector,
-            normalized.organist,
-            location || '',
-            normalized.usher,
-            normalized.acolyte,
-            normalized.chaliceBearer,
-            normalized.sound,
-            normalized.coffeeHour,
-            normalized.childcare
-        );
+            UPDATE event_occurrences SET building_id = ? WHERE id = ?
+        `).run(location || DEFAULT_LOCATION_BY_TIME['10:00'] || '', occurrence.id);
     }
 
+    const deleteAssignments = db.prepare(`
+        DELETE FROM assignments WHERE occurrence_id = ? AND role_key = ?
+    `);
+    const insertAssignment = db.prepare(`
+        INSERT INTO assignments (id, occurrence_id, role_key, person_id)
+        VALUES (?, ?, ?, ?)
+    `);
+
+    Object.entries(normalized).forEach(([key, value]) => {
+        deleteAssignments.run(occurrence.id, key);
+        const people = normalizeAssignmentList(value, peopleIndex);
+        Array.from(new Set(people)).forEach((personId) => {
+            insertAssignment.run(`asgn-${randomUUID()}`, occurrence.id, key, personId);
+        });
+    });
+
+    applyDefaultSundayAssignments(occurrence.id, date, '10:00');
     res.json({ success: true, date });
 });
 

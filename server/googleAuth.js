@@ -3,9 +3,14 @@ import dotenv from 'dotenv';
 
 dotenv.config({ path: './server/.env' });
 
-const SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'];
+const SCOPES = [
+    'openid',
+    'email',
+    'profile',
+    'https://www.googleapis.com/auth/calendar.readonly'
+];
 
-export const oauth2Client = new google.auth.OAuth2(
+export const createOAuthClient = () => new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
     process.env.GOOGLE_REDIRECT_URI
@@ -13,7 +18,7 @@ export const oauth2Client = new google.auth.OAuth2(
 
 // Generate auth URL
 export const getAuthUrl = () => {
-    return oauth2Client.generateAuthUrl({
+    return createOAuthClient().generateAuthUrl({
         access_type: 'offline',
         scope: SCOPES,
         prompt: 'consent'
@@ -22,14 +27,16 @@ export const getAuthUrl = () => {
 
 // Exchange code for tokens
 export const getTokensFromCode = async (code) => {
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
+    const client = createOAuthClient();
+    const { tokens } = await client.getToken(code);
+    client.setCredentials(tokens);
     return tokens;
 };
 
-// Set credentials from stored tokens
-export const setStoredCredentials = (tokens) => {
-    oauth2Client.setCredentials(tokens);
+// Set credentials on a specific client
+export const setStoredCredentials = (client, tokens) => {
+    client.setCredentials(tokens);
+    return client;
 };
 
-export default oauth2Client;
+export default createOAuthClient;

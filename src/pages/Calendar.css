@@ -35,41 +35,6 @@
     color: var(--color-primary);
 }
 
-.btn-primary {
-    background: var(--color-primary);
-    color: white;
-    border: none;
-    border-radius: var(--radius-md);
-    padding: 0 var(--space-md);
-    height: 40px;
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    transition: background 0.2s;
-    cursor: pointer;
-}
-
-.btn-primary:hover {
-    background: var(--color-primary-light);
-}
-
-.btn-secondary {
-    background: transparent;
-    color: var(--color-text-secondary);
-    border: 1px solid rgba(0, 0, 0, 0.2);
-    border-radius: var(--radius-md);
-    padding: 0 var(--space-md);
-    height: 40px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.btn-secondary:hover {
-    background: var(--color-bg);
-    color: var(--color-text-main);
-}
 
 /* Calendar Card overrides */
 .calendar-card {

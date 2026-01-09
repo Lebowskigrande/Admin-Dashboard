@@ -9,13 +9,18 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "dev:client": "vite",
-    "dev:server": "node server/index.js"
+    "dev:server": "node server/index.js",
+    "db:migrate": "node server/db/migrate.js",
+    "db:fix-assignments": "node server/db/fix_assignments.js",
+    "db:merge-people": "node server/db/merge_people.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
     "cors": "^2.8.5",
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.3",
+    "drizzle-kit": "^0.31.8",
+    "drizzle-orm": "^0.45.1",
     "express": "^5.2.1",
     "googleapis": "^169.0.0",
     "multer": "^2.0.2",

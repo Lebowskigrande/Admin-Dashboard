@@ -1,11 +1,16 @@
 import { google } from 'googleapis';
-import oauth2Client from './googleAuth.js';
+import { createOAuthClient, setStoredCredentials } from './googleAuth.js';
 
-const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+const getCalendarClient = (tokens) => {
+    const client = createOAuthClient();
+    if (tokens) setStoredCredentials(client, tokens);
+    return google.calendar({ version: 'v3', auth: client });
+};
 
 // Fetch events from Google Calendar
-export const fetchGoogleCalendarEvents = async (calendarId = 'primary', timeMin = null) => {
+export const fetchGoogleCalendarEvents = async (tokens, calendarId = 'primary', timeMin = null) => {
     try {
+        const calendar = getCalendarClient(tokens);
         const date = timeMin || new Date(new Date().getFullYear(), new Date().getMonth(), 1);
         const response = await calendar.events.list({
             calendarId: calendarId,
@@ -23,8 +28,9 @@ export const fetchGoogleCalendarEvents = async (calendarId = 'primary', timeMin 
 };
 
 // Fetch user's calendar list
-export const fetchCalendarList = async () => {
+export const fetchCalendarList = async (tokens) => {
     try {
+        const calendar = getCalendarClient(tokens);
         const response = await calendar.calendarList.list();
         return response.data.items || [];
     } catch (error) {
@@ -34,8 +40,9 @@ export const fetchCalendarList = async () => {
 };
 
 // Create event in Google Calendar
-export const createGoogleCalendarEvent = async (calendarId = 'primary', eventData) => {
+export const createGoogleCalendarEvent = async (tokens, calendarId = 'primary', eventData) => {
     try {
+        const calendar = getCalendarClient(tokens);
         const response = await calendar.events.insert({
             calendarId: calendarId,
             resource: eventData,
@@ -48,4 +55,4 @@ export const createGoogleCalendarEvent = async (calendarId = 'primary', eventDat
     }
 };
 
-export default calendar;
+export { getCalendarClient };

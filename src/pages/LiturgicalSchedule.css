@@ -1,3 +1,5 @@
+@import '../styles/people-shared.css';
+
 .page-liturgical {
     display: flex;
     flex-direction: column;
@@ -304,69 +306,6 @@
     }
 }
 
-.role-chip-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-.person-chip-wrapper {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-}
-.person-chip {
-    display: inline-flex;
-    align-items: center;
-    padding: 4px 8px;
-    border-radius: 999px;
-    color: var(--color-text-primary);
-    font-size: 0.75rem;
-    font-weight: 600;
-    transition: background 0.15s ease, color 0.15s ease;
-    cursor: default;
-}
-.person-chip:hover {
-    filter: brightness(0.7);
-}
-
-.chip-selected {
-    box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.5);
-}
-
-.person-chip-clergy {
-    background: rgba(37, 99, 235, 0.2);
-    color: #1d4ed8;
-}
-
-.person-chip-staff {
-    background: rgba(5, 150, 105, 0.2);
-    color: #047857;
-}
-
-.person-chip-volunteer {
-    background: rgba(249, 115, 22, 0.2);
-    color: #c2410c;
-}
-.person-tooltip {
-    position: absolute;
-    top: calc(100% + 8px);
-    left: 0;
-    z-index: 9999;
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(-6px);
-    transition: opacity 0.15s ease, transform 0.15s ease;
-}
-.person-tooltip.open {
-    opacity: 1;
-    pointer-events: auto;
-    transform: translateY(0);
-    z-index: 9999;
-}
-
-.person-chip-wrapper.tooltip-open {
-    z-index: 9999;
-}
 
 .schedule-date-group.past {
     filter: grayscale(0.15);
@@ -390,9 +329,4 @@
 .schedule-date-group.past .person-tooltip.open .person-card {
     opacity: 1;
     filter: none;
-}
-.tooltip-person-card {
-    min-width: 240px;
-    max-width: 300px;
-    box-shadow: 0 18px 30px rgba(15, 23, 42, 0.18);
 }

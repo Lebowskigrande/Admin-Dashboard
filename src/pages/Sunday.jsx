@@ -246,9 +246,11 @@ const Sunday = () => {
     }, [currentDate, loadSunday, people.length]);
 
     useEffect(() => {
+        if (!currentDate) return;
         const loadLivestream = async () => {
             try {
-                const response = await fetch(`${API_URL}/youtube/upcoming`);
+                const dateStr = serializeDate(currentDate);
+                const response = await fetch(`${API_URL}/sunday/livestream?date=${dateStr}`);
                 if (!response.ok) throw new Error('Failed to load livestream');
                 const data = await response.json();
                 setLivestreamUrl(data?.url || '');
@@ -260,7 +262,7 @@ const Sunday = () => {
             }
         };
         loadLivestream();
-    }, []);
+    }, [currentDate]);
 
     const handleNavigate = async (direction) => {
         if (!currentDate) return;

@@ -1,478 +1,753 @@
-import { useEffect, useMemo, useState } from 'react';
-import { FaUsers, FaHandsHelping, FaPlus, FaPen, FaTrash, FaCross } from 'react-icons/fa';
-import Card from '../components/Card';
-import Modal from '../components/Modal';
-import { ROLE_DEFINITIONS } from '../models/roles';
-import { createPerson } from '../models/person';
-import { clearLiturgicalCache } from '../services/liturgicalService';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { API_URL } from '../services/apiConfig';
 import './People.css';
 
-const CATEGORY_CONFIG = [
-    {
-        key: 'clergy',
-        label: 'Clergy',
-        description: 'Ordained leaders who preside, preach, and provide sacramental care.',
-        icon: <FaCross />
-    },
-    {
-        key: 'staff',
-        label: 'Staff',
-        description: 'Paid and contract team members supporting parish operations and worship.',
-        icon: <FaUsers />
-    },
-    {
-        key: 'volunteer',
-        label: 'Volunteers',
-        description: 'Roster of trained parishioners available for liturgical and hospitality roles.',
-        icon: <FaHandsHelping />
-    }
+const CATEGORY_LABELS = {
+    clergy: 'Clergy',
+    staff: 'Staff',
+    volunteer: 'Volunteer'
+};
+
+const ROLE_OPTIONS = [
+    { value: 'celebrant', label: 'Celebrant' },
+    { value: 'preacher', label: 'Preacher' },
+    { value: 'officiant', label: 'Officiant' },
+    { value: 'lector', label: 'Lector' },
+    { value: 'lem', label: 'LEM' },
+    { value: 'acolyte', label: 'Acolyte' },
+    { value: 'thurifer', label: 'Thurifer' },
+    { value: 'usher', label: 'Usher' },
+    { value: 'altarGuild', label: 'Altar Guild' },
+    { value: 'choirmaster', label: 'Choirmaster' },
+    { value: 'organist', label: 'Organist' },
+    { value: 'sound', label: 'Sound' },
+    { value: 'coffeeHour', label: 'Coffee Hour' },
+    { value: 'buildingSupervisor', label: 'Building Supervisor' },
+    { value: 'childcare', label: 'Childcare' }
 ];
 
-const roleLabel = (key) => ROLE_DEFINITIONS.find((role) => role.key === key)?.label || key;
+const sortPeople = (list) => {
+    return [...list].sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
+};
 
-const defaultFormState = {
-    name: '',
+const parseCommaList = (value) => {
+    if (!value) return [];
+    return value
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+};
+
+const parseTeamList = (value) => {
+    return parseCommaList(value)
+        .map((entry) => Number(entry))
+        .filter((entry) => Number.isFinite(entry));
+};
+
+const formatTeams = (teams) => {
+    if (!Array.isArray(teams) || teams.length === 0) return '';
+    return teams.join(', ');
+};
+
+const roleLabel = (roleKey) => {
+    return ROLE_OPTIONS.find((role) => role.value === roleKey)?.label || roleKey;
+};
+
+const buildTeamRoleKeys = (roles, teams) => {
+    const roleSet = new Set(roles || []);
+    Object.keys(teams || {}).forEach((roleKey) => roleSet.add(roleKey));
+    return Array.from(roleSet);
+};
+
+const defaultPersonForm = () => ({
+    displayName: '',
     email: '',
     category: 'volunteer',
     roles: [],
-    tags: '',
-    vestryMember: false
-};
+    tagsText: '',
+    teams: {}
+});
 
 const People = () => {
     const [people, setPeople] = useState([]);
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [formState, setFormState] = useState(defaultFormState);
-    const [editingId, setEditingId] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    const [searchTerm, setSearchTerm] = useState('');
-    const [roleFilter, setRoleFilter] = useState('all');
-    const [tagFilter, setTagFilter] = useState('all');
-    const [categoryFilter, setCategoryFilter] = useState('all');
+
+    const [selectedId, setSelectedId] = useState('');
+    const [panelMode, setPanelMode] = useState('view');
+
+    const [filters, setFilters] = useState({
+        search: '',
+        category: '',
+        role: '',
+        tag: '',
+        team: ''
+    });
+
+    const [editForm, setEditForm] = useState(defaultPersonForm());
+    const [createForm, setCreateForm] = useState(defaultPersonForm());
+
+    const loadPeople = async () => {
+        setLoading(true);
+        setError('');
+        try {
+            const response = await fetch(`${API_URL}/people`);
+            if (!response.ok) throw new Error('Failed to load people');
+            const data = await response.json();
+            setPeople(sortPeople(Array.isArray(data) ? data : []));
+        } catch (err) {
+            console.error(err);
+            setError('Unable to load people records.');
+        } finally {
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
-        const loadPeople = async () => {
-            setLoading(true);
-            setError('');
-            try {
-                const response = await fetch(`${API_URL}/people`);
-                if (!response.ok) throw new Error('Failed to load people');
-                const data = await response.json();
-                setPeople(Array.isArray(data) ? data : []);
-            } catch (err) {
-                console.error('Failed to load people:', err);
-                setError('Unable to load people. Please refresh and try again.');
-            } finally {
-                setLoading(false);
-            }
-        };
-
         loadPeople();
     }, []);
 
-    const openAdd = () => {
-        setEditingId(null);
-        setFormState(defaultFormState);
-        setIsModalOpen(true);
+    const peopleById = useMemo(() => {
+        const map = new Map();
+        people.forEach((person) => map.set(person.id, person));
+        return map;
+    }, [people]);
+
+    const selectedPerson = selectedId ? peopleById.get(selectedId) : null;
+
+    useEffect(() => {
+        if (selectedPerson) return;
+        if (selectedId) setSelectedId('');
+        if (panelMode === 'edit') setPanelMode('view');
+    }, [selectedPerson, selectedId, panelMode]);
+
+    const categories = useMemo(() => {
+        const values = new Set(['clergy', 'staff', 'volunteer']);
+        people.forEach((person) => {
+            if (person.category) values.add(person.category);
+        });
+        return Array.from(values);
+    }, [people]);
+
+    const roles = useMemo(() => {
+        const values = new Set();
+        people.forEach((person) => {
+            (person.roles || []).forEach((role) => values.add(role));
+        });
+        return Array.from(values);
+    }, [people]);
+
+    const tags = useMemo(() => {
+        const values = new Set();
+        people.forEach((person) => {
+            (person.tags || []).forEach((tag) => values.add(tag));
+        });
+        return Array.from(values);
+    }, [people]);
+
+    const teams = useMemo(() => {
+        const values = new Set();
+        people.forEach((person) => {
+            Object.values(person.teams || {}).forEach((teamList) => {
+                if (!Array.isArray(teamList)) return;
+                teamList.forEach((team) => values.add(String(team)));
+            });
+        });
+        return Array.from(values);
+    }, [people]);
+    const filteredPeople = useMemo(() => {
+        const normalizedSearch = filters.search.toLowerCase().trim();
+        const teamValue = Number(filters.team);
+        const hasTeamFilter = Number.isFinite(teamValue);
+
+        return people.filter((person) => {
+            if (normalizedSearch) {
+                const haystack = [
+                    person.displayName,
+                    person.email,
+                    ...(person.tags || [])
+                ].join(' ').toLowerCase();
+                if (!haystack.includes(normalizedSearch)) return false;
+            }
+            if (filters.category && person.category !== filters.category) return false;
+            if (filters.role && !(person.roles || []).includes(filters.role)) return false;
+            if (filters.tag && !(person.tags || []).includes(filters.tag)) return false;
+            if (filters.team && !hasTeamFilter) return false;
+            if (filters.team && hasTeamFilter) {
+                const teamMatch = Object.values(person.teams || {}).some((teamList) => {
+                    if (!Array.isArray(teamList)) return false;
+                    return teamList.map(Number).includes(teamValue);
+                });
+                if (!teamMatch) return false;
+            }
+            return true;
+        });
+    }, [people, filters]);
+
+    const handleFilterChange = (key, value) => {
+        setFilters((prev) => ({ ...prev, [key]: value }));
     };
 
-    const openEdit = (person) => {
-        const tags = person.tags || [];
-        setEditingId(person.id);
-        setFormState({
-            name: person.displayName || '',
+    const resetFilters = () => {
+        setFilters({ search: '', category: '', role: '', tag: '', team: '' });
+    };
+
+    const beginCreate = () => {
+        setSelectedId('');
+        setCreateForm(defaultPersonForm());
+        setPanelMode('create');
+    };
+
+    const beginEdit = (person) => {
+        setEditForm({
+            displayName: person.displayName || '',
             email: person.email || '',
             category: person.category || 'volunteer',
-            roles: person.roles || [],
-            tags: tags.length ? tags.join(', ') : '',
-            vestryMember: tags.some((tag) => tag.toLowerCase() === 'vestry member')
+            roles: Array.isArray(person.roles) ? [...person.roles] : [],
+            tagsText: (person.tags || []).join(', '),
+            teams: { ...(person.teams || {}) }
         });
-        setIsModalOpen(true);
+        setPanelMode('edit');
     };
 
-    const closeModal = () => {
-        setIsModalOpen(false);
-    };
-
-    const parseTags = (value) => value
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean);
-
-    const handleRoleToggle = (roleKey) => {
-        setFormState((prev) => {
-            const exists = prev.roles.includes(roleKey);
-            return {
-                ...prev,
-                roles: exists
-                    ? prev.roles.filter((role) => role !== roleKey)
-                    : [...prev.roles, roleKey]
-            };
+    const handleRoleToggle = (roleKey, formSetter) => {
+        formSetter((prev) => {
+            const rolesSet = new Set(prev.roles || []);
+            if (rolesSet.has(roleKey)) {
+                rolesSet.delete(roleKey);
+            } else {
+                rolesSet.add(roleKey);
+            }
+            return { ...prev, roles: Array.from(rolesSet) };
         });
     };
 
-    const handleSubmit = async (event) => {
-        event.preventDefault();
-        const trimmedName = formState.name.trim();
-        if (!trimmedName) return;
+    const handleTeamChange = (roleKey, value, formSetter) => {
+        formSetter((prev) => ({
+            ...prev,
+            teams: {
+                ...(prev.teams || {}),
+                [roleKey]: parseTeamList(value)
+            }
+        }));
+    };
 
-        const tags = parseTags(formState.tags).filter((tag) => tag.toLowerCase() !== 'vestry member');
-        if (formState.category === 'volunteer' && formState.vestryMember) {
-            tags.push('Vestry Member');
-        }
-        const base = createPerson({ name: trimmedName, roles: formState.roles, tags });
+    const updatePersonInState = (updated) => {
+        setPeople((prev) => sortPeople(prev.map((person) => (person.id === updated.id ? updated : person))));
+    };
+
+    const handleSaveEdit = async () => {
+        if (!selectedPerson) return;
         const payload = {
-            displayName: base.displayName,
-            email: formState.email.trim(),
-            category: formState.category,
-            roles: base.roles,
-            tags: base.tags
+            displayName: editForm.displayName,
+            email: editForm.email,
+            category: editForm.category,
+            roles: editForm.roles || [],
+            tags: parseCommaList(editForm.tagsText),
+            teams: editForm.teams || {}
         };
-
         try {
-            const response = await fetch(
-                editingId
-                    ? `${API_URL}/people/${editingId}`
-                    : `${API_URL}/people`,
-                {
-                    method: editingId ? 'PUT' : 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                }
-            );
-
-            if (!response.ok) throw new Error('Failed to save person');
-            const saved = await response.json();
-
-            setPeople((prev) => {
-                if (editingId) {
-                    return prev.map((person) => (person.id === editingId ? saved : person));
-                }
-                return [...prev, saved];
+            const response = await fetch(`${API_URL}/people/${selectedPerson.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
             });
-
-            clearLiturgicalCache();
-            setIsModalOpen(false);
+            if (!response.ok) throw new Error('Failed to update person');
+            const updated = await response.json();
+            updatePersonInState(updated);
+            setPanelMode('view');
         } catch (err) {
-            console.error('Failed to save person:', err);
-            setError('Unable to save changes. Please try again.');
+            console.error(err);
+            setError('Unable to save changes.');
         }
     };
 
-    const handleDelete = async () => {
-        if (!editingId) return;
-        if (!confirm('Delete this person? This cannot be undone.')) return;
+    const handleCreate = async () => {
+        const payload = {
+            displayName: createForm.displayName,
+            email: createForm.email,
+            category: createForm.category,
+            roles: createForm.roles || [],
+            tags: parseCommaList(createForm.tagsText),
+            teams: createForm.teams || {}
+        };
         try {
-            const response = await fetch(`${API_URL}/people/${editingId}`, {
+            const response = await fetch(`${API_URL}/people`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) throw new Error('Failed to create person');
+            const created = await response.json();
+            setPeople((prev) => sortPeople([...prev, created]));
+            setSelectedId(created.id);
+            setPanelMode('view');
+        } catch (err) {
+            console.error(err);
+            setError('Unable to create person.');
+        }
+    };
+
+    const handleDelete = async (person) => {
+        if (!person) return;
+        const confirmed = window.confirm(`Delete ${person.displayName}? This cannot be undone.`);
+        if (!confirmed) return;
+        try {
+            const response = await fetch(`${API_URL}/people/${person.id}`, {
                 method: 'DELETE'
             });
             if (!response.ok) throw new Error('Failed to delete person');
-            setPeople((prev) => prev.filter((person) => person.id !== editingId));
-            clearLiturgicalCache();
-            setIsModalOpen(false);
+            setPeople((prev) => prev.filter((item) => item.id !== person.id));
+            setSelectedId('');
+            setPanelMode('view');
         } catch (err) {
-            console.error('Failed to delete person:', err);
-            setError('Unable to delete person. Please try again.');
+            console.error(err);
+            setError('Unable to delete person.');
         }
     };
 
-    const tagOptions = useMemo(() => {
-        const tags = new Set();
-        people.forEach((person) => {
-            (person.tags || []).forEach((tag) => tags.add(tag));
-        });
-        return Array.from(tags).sort((a, b) => a.localeCompare(b));
-    }, [people]);
+    const renderTagChips = (tagsList) => {
+        if (!tagsList || tagsList.length === 0) {
+            return <span className="panel-meta">No tags yet.</span>;
+        }
+        return (
+            <div className="tag-row">
+                {tagsList.map((tag) => (
+                    <span
+                        className={`tag-chip ${tag.toLowerCase() === 'vestry' ? 'tag-chip--vestry' : ''}`}
+                        key={tag}
+                    >
+                        {tag}
+                    </span>
+                ))}
+            </div>
+        );
+    };
 
-    const filteredPeople = useMemo(() => {
-        const query = searchTerm.trim().toLowerCase();
-        return people.filter((person) => {
-            if (categoryFilter !== 'all' && person.category !== categoryFilter) return false;
-            if (roleFilter !== 'all' && !(person.roles || []).includes(roleFilter)) return false;
-            if (tagFilter !== 'all' && !(person.tags || []).includes(tagFilter)) return false;
-            if (!query) return true;
+    const renderRoleChips = (rolesList) => {
+        if (!rolesList || rolesList.length === 0) {
+            return <span className="panel-meta">No roles assigned.</span>;
+        }
+        return (
+            <div className="role-chip-row">
+                {rolesList.map((role) => (
+                    <span className="role-chip" key={role}>
+                        {roleLabel(role)}
+                    </span>
+                ))}
+            </div>
+        );
+    };
 
-            const nameMatch = person.displayName?.toLowerCase().includes(query);
-            const emailMatch = person.email?.toLowerCase().includes(query);
-            const tagMatch = (person.tags || []).some((tag) => tag.toLowerCase().includes(query));
-            return nameMatch || emailMatch || tagMatch;
-        });
-    }, [people, searchTerm, roleFilter, tagFilter, categoryFilter]);
+    const renderTeamList = (teamsObj) => {
+        const roleKeys = buildTeamRoleKeys([], teamsObj);
+        if (roleKeys.length === 0) {
+            return <span className="panel-meta">No team assignments.</span>;
+        }
+        return (
+            <div className="team-grid">
+                {roleKeys.map((roleKey) => (
+                    <div className="team-chip" key={roleKey}>
+                        <span>{roleLabel(roleKey)}</span>
+                        <strong>{formatTeams(teamsObj?.[roleKey]) || '-'}</strong>
+                    </div>
+                ))}
+            </div>
+        );
+    };
 
-    const groupedPeople = useMemo(() => {
-        const collator = new Intl.Collator('en', { sensitivity: 'base' });
-        const sorted = [...filteredPeople].sort((a, b) => {
-            const lastA = (a.displayName || '').split(' ').slice(-1)[0];
-            const lastB = (b.displayName || '').split(' ').slice(-1)[0];
-            const lastCompare = collator.compare(lastA, lastB);
-            if (lastCompare !== 0) return lastCompare;
-            return collator.compare(a.displayName || '', b.displayName || '');
-        });
+    const renderDetailPanel = () => {
+        if (panelMode === 'create') {
+            return (
+                <div className="people-panel people-detail-panel">
+                    <div className="panel-title--row">
+                        <h2 className="panel-title">New Person</h2>
+                        <button className="btn-ghost" type="button" onClick={() => setPanelMode('view')}>
+                            Cancel
+                        </button>
+                    </div>
+                    <div className="people-form">
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label htmlFor="create-name">Display name</label>
+                                <input
+                                    id="create-name"
+                                    value={createForm.displayName}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, displayName: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="create-email">Email</label>
+                                <input
+                                    id="create-email"
+                                    value={createForm.email}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, email: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label htmlFor="create-category">Category</label>
+                                <select
+                                    id="create-category"
+                                    value={createForm.category}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, category: event.target.value }))}
+                                >
+                                    {categories.map((category) => (
+                                        <option key={category} value={category}>
+                                            {CATEGORY_LABELS[category] || category}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="create-tags">Tags (comma separated)</label>
+                                <input
+                                    id="create-tags"
+                                    value={createForm.tagsText}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, tagsText: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-group">
+                            <label>Roles</label>
+                            <div className="role-selector">
+                                {ROLE_OPTIONS.map((role) => (
+                                    <label className="role-option" key={role.value}>
+                                        <input
+                                            type="checkbox"
+                                            checked={(createForm.roles || []).includes(role.value)}
+                                            onChange={() => handleRoleToggle(role.value, setCreateForm)}
+                                        />
+                                        {role.label}
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="form-group">
+                            <label>Team assignments (comma separated team numbers)</label>
+                            <div className="team-grid">
+                                {buildTeamRoleKeys(createForm.roles, createForm.teams).map((roleKey) => (
+                                    <div className="form-group" key={roleKey}>
+                                        <label>{roleLabel(roleKey)}</label>
+                                        <input
+                                            value={formatTeams(createForm.teams?.[roleKey])}
+                                            onChange={(event) => handleTeamChange(roleKey, event.target.value, setCreateForm)}
+                                        />
+                                    </div>
+                                ))}
+                                {buildTeamRoleKeys(createForm.roles, createForm.teams).length === 0 && (
+                                    <span className="panel-meta">Select roles to add team assignments.</span>
+                                )}
+                            </div>
+                        </div>
+                        <div className="form-actions">
+                            <button className="btn-primary" type="button" onClick={handleCreate}>
+                                Save person
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
 
-        return CATEGORY_CONFIG.map((category) => ({
-            ...category,
-            people: sorted.filter((person) => person.category === category.key)
-        }));
-    }, [filteredPeople]);
-
-    const renderPersonCard = (person) => {
-        const tags = person.tags || [];
-        const extensionTag = tags.find((tag) => tag.startsWith('ext-'));
-        const titleTags = tags.filter((tag) => tag && tag !== extensionTag);
-        const metaChips = [...titleTags, ...(extensionTag ? [extensionTag] : [])];
-        const tagClassName = (tag) => {
-            if (tag.toLowerCase() === 'vestry member') return 'tag-chip tag-chip--vestry';
-            return 'tag-chip';
-        };
+        if (!selectedPerson) {
+            return (
+                <div className="people-panel people-detail-panel">
+                    <h2 className="panel-title">Person details</h2>
+                    <p className="panel-meta">Select someone from the list to see full details.</p>
+                    <div className="detail-actions">
+                        <button className="btn-primary" type="button" onClick={beginCreate}>
+                            Add person
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+        if (panelMode === 'edit') {
+            const teamRoleKeys = buildTeamRoleKeys(editForm.roles, editForm.teams);
+            return (
+                <div className="people-panel people-detail-panel">
+                    <div className="panel-title--row">
+                        <h2 className="panel-title">Edit profile</h2>
+                        <button className="btn-ghost" type="button" onClick={() => setPanelMode('view')}>
+                            Cancel
+                        </button>
+                    </div>
+                    <div className="people-form">
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label htmlFor="edit-name">Display name</label>
+                                <input
+                                    id="edit-name"
+                                    value={editForm.displayName}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, displayName: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="edit-email">Email</label>
+                                <input
+                                    id="edit-email"
+                                    value={editForm.email}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, email: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label htmlFor="edit-category">Category</label>
+                                <select
+                                    id="edit-category"
+                                    value={editForm.category}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, category: event.target.value }))}
+                                >
+                                    {categories.map((category) => (
+                                        <option key={category} value={category}>
+                                            {CATEGORY_LABELS[category] || category}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="edit-tags">Tags (comma separated)</label>
+                                <input
+                                    id="edit-tags"
+                                    value={editForm.tagsText}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, tagsText: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-group">
+                            <label>Roles</label>
+                            <div className="role-selector">
+                                {ROLE_OPTIONS.map((role) => (
+                                    <label className="role-option" key={role.value}>
+                                        <input
+                                            type="checkbox"
+                                            checked={(editForm.roles || []).includes(role.value)}
+                                            onChange={() => handleRoleToggle(role.value, setEditForm)}
+                                        />
+                                        {role.label}
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="form-group">
+                            <label>Team assignments (comma separated team numbers)</label>
+                            <div className="team-grid">
+                                {teamRoleKeys.map((roleKey) => (
+                                    <div className="form-group" key={roleKey}>
+                                        <label>{roleLabel(roleKey)}</label>
+                                        <input
+                                            value={formatTeams(editForm.teams?.[roleKey])}
+                                            onChange={(event) => handleTeamChange(roleKey, event.target.value, setEditForm)}
+                                        />
+                                    </div>
+                                ))}
+                                {teamRoleKeys.length === 0 && (
+                                    <span className="panel-meta">Select roles to add team assignments.</span>
+                                )}
+                            </div>
+                        </div>
+                        <div className="form-actions">
+                            <button className="btn-primary" type="button" onClick={handleSaveEdit}>
+                                Save changes
+                            </button>
+                            <button className="btn-danger" type="button" onClick={() => handleDelete(selectedPerson)}>
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
 
         return (
-        <Card key={person.id} className="person-card">
-            <div className="person-card__header">
-                <div className="person-main">
-                    <div className="person-name">{person.displayName}</div>
-                    {person.email && <div className="person-email">{person.email}</div>}
-                    {metaChips.length > 0 && (
-                        <div className="meta-chip-row">
-                            {metaChips.map((tag) => (
-                                <span key={tag} className={tagClassName(tag)}>{tag}</span>
-                            ))}
-                        </div>
-                    )}
-                    {tags.length > metaChips.length && (
-                        <div className="tag-row">
-                            {tags.filter((tag) => !metaChips.includes(tag)).map((tag) => (
-                                <span key={tag} className={tagClassName(tag)}>{tag}</span>
-                            ))}
-                        </div>
-                    )}
+            <div className="people-panel people-detail-panel">
+                <div className="panel-title--row">
+                    <div>
+                        <h2 className="panel-title">{selectedPerson.displayName}</h2>
+                        <div className="panel-meta">{selectedPerson.email || 'No email on file'}</div>
+                    </div>
+                    <div className="panel-actions">
+                        <button className="btn-ghost" type="button" onClick={() => beginEdit(selectedPerson)}>
+                            Edit
+                        </button>
+                        <button className="btn-ghost" type="button" onClick={() => handleDelete(selectedPerson)}>
+                            Delete
+                        </button>
+                    </div>
                 </div>
-                <button className="btn-ghost icon-only" onClick={() => openEdit(person)} aria-label="Edit person">
-                    <FaPen />
-                </button>
-            </div>
-            <div className="roles">
-                <span className="roles-label">Eligible roles</span>
-                <div className="role-chip-row">
-                    {person.roles.map((roleKey) => (
-                        <span key={roleKey} className="role-chip">{roleLabel(roleKey)}</span>
-                    ))}
+                <div className="detail-section">
+                    <span className="detail-label">Category</span>
+                    <span className={`category-chip category-${selectedPerson.category || 'volunteer'}`}>
+                        {CATEGORY_LABELS[selectedPerson.category] || selectedPerson.category || 'volunteer'}
+                    </span>
+                </div>
+                <div className="detail-section">
+                    <span className="detail-label">Roles</span>
+                    {renderRoleChips(selectedPerson.roles)}
+                </div>
+                <div className="detail-section">
+                    <span className="detail-label">Tags</span>
+                    {renderTagChips(selectedPerson.tags)}
+                </div>
+                <div className="detail-section">
+                    <span className="detail-label">Teams</span>
+                    {renderTeamList(selectedPerson.teams || {})}
                 </div>
             </div>
-        </Card>
         );
     };
 
     return (
-        <div className="page-people">
+        <section className="page-people">
             <header className="people-header">
                 <div>
-                    <p className="page-kicker">People database</p>
+                    <p className="page-kicker">People Directory</p>
                     <h1>People</h1>
                     <p className="page-subtitle">
-                        Clergy, staff, and volunteer pools with their eligible liturgical and hospitality roles.
+                        Maintain the canonical people database used across schedules, teams, and communications.
                     </p>
                 </div>
                 <div className="people-header-actions">
-                    <button className="btn-primary" onClick={openAdd}>
-                        <FaPlus /> Add Person
+                    <button className="btn-primary" type="button" onClick={beginCreate}>
+                        Add person
                     </button>
                 </div>
             </header>
 
-            <div className="people-filters">
+            <div className="people-filter-bar">
                 <div className="filter-row">
                     <div className="filter-group grow">
-                        <label>Search</label>
+                        <label htmlFor="people-search">Search</label>
                         <input
+                            id="people-search"
                             className="filter-input"
-                            type="text"
-                            value={searchTerm}
-                            onChange={(event) => setSearchTerm(event.target.value)}
-                            placeholder="Search by name, email, or tag"
+                            value={filters.search}
+                            placeholder="Search name, email, tags"
+                            onChange={(event) => handleFilterChange('search', event.target.value)}
                         />
                     </div>
                     <div className="filter-group">
-                        <label>Category</label>
+                        <label htmlFor="people-category">Category</label>
                         <select
+                            id="people-category"
                             className="filter-select"
-                            value={categoryFilter}
-                            onChange={(event) => setCategoryFilter(event.target.value)}
+                            value={filters.category}
+                            onChange={(event) => handleFilterChange('category', event.target.value)}
                         >
-                            <option value="all">All categories</option>
-                            {CATEGORY_CONFIG.map((category) => (
-                                <option key={category.key} value={category.key}>{category.label}</option>
+                            <option value="">All categories</option>
+                            {categories.map((category) => (
+                                <option key={category} value={category}>
+                                    {CATEGORY_LABELS[category] || category}
+                                </option>
                             ))}
                         </select>
                     </div>
                     <div className="filter-group">
-                        <label>Role</label>
+                        <label htmlFor="people-role">Role</label>
                         <select
+                            id="people-role"
                             className="filter-select"
-                            value={roleFilter}
-                            onChange={(event) => setRoleFilter(event.target.value)}
+                            value={filters.role}
+                            onChange={(event) => handleFilterChange('role', event.target.value)}
                         >
-                            <option value="all">All roles</option>
-                            {ROLE_DEFINITIONS.map((role) => (
-                                <option key={role.key} value={role.key}>{role.label}</option>
+                            <option value="">All roles</option>
+                            {ROLE_OPTIONS.filter((role) => roles.includes(role.value)).map((role) => (
+                                <option key={role.value} value={role.value}>
+                                    {role.label}
+                                </option>
                             ))}
                         </select>
                     </div>
                     <div className="filter-group">
-                        <label>Tag</label>
+                        <label htmlFor="people-tag">Tag</label>
                         <select
+                            id="people-tag"
                             className="filter-select"
-                            value={tagFilter}
-                            onChange={(event) => setTagFilter(event.target.value)}
+                            value={filters.tag}
+                            onChange={(event) => handleFilterChange('tag', event.target.value)}
                         >
-                            <option value="all">All tags</option>
-                            {tagOptions.map((tag) => (
-                                <option key={tag} value={tag}>{tag}</option>
+                            <option value="">All tags</option>
+                            {tags.map((tag) => (
+                                <option key={tag} value={tag}>
+                                    {tag}
+                                </option>
                             ))}
                         </select>
                     </div>
                     <div className="filter-group">
-                        <button
-                            className="btn-ghost"
-                            type="button"
-                            onClick={() => {
-                                setSearchTerm('');
-                                setCategoryFilter('all');
-                                setRoleFilter('all');
-                                setTagFilter('all');
-                            }}
+                        <label htmlFor="people-team">Team #</label>
+                        <select
+                            id="people-team"
+                            className="filter-select"
+                            value={filters.team}
+                            onChange={(event) => handleFilterChange('team', event.target.value)}
                         >
-                            Clear
-                        </button>
+                            <option value="">Any team</option>
+                            {teams.map((team) => (
+                                <option key={team} value={team}>
+                                    {team}
+                                </option>
+                            ))}
+                        </select>
                     </div>
                 </div>
-                {error && <div className="people-error">{error}</div>}
+                <div className="filter-actions">
+                    <button className="btn-secondary" type="button" onClick={resetFilters}>
+                        Clear filters
+                    </button>
+                </div>
             </div>
 
-            <div className="people-groups">
-                {loading ? (
-                    <Card className="people-loading">Loading people...</Card>
-                ) : groupedPeople.map((category) => {
-                    return (
-                        <section key={category.key} className="people-section">
-                            <div className="section-header">
-                                <div className="section-title">
-                                    <span className="section-icon">{category.icon}</span>
+            {error && <div className="people-error">{error}</div>}
+
+            <div className="people-workspace people-workspace--split">
+                <div className="people-panel people-list-panel">
+                    <div className="panel-title--row">
+                        <h2 className="panel-title">Directory</h2>
+                        <span className="panel-meta">
+                            {filteredPeople.length} of {people.length}
+                        </span>
+                    </div>
+                    {loading ? (
+                        <div className="people-loading">Loading people...</div>
+                    ) : filteredPeople.length === 0 ? (
+                        <div className="empty-card">No people match the current filters.</div>
+                    ) : (
+                        <div className="people-list">
+                            {filteredPeople.map((person) => (
+                                <button
+                                    className={`people-list-item ${person.id === selectedId ? 'active' : ''}`}
+                                    key={person.id}
+                                    type="button"
+                                    onClick={() => {
+                                        setSelectedId(person.id);
+                                        setPanelMode('view');
+                                    }}
+                                >
                                     <div>
-                                        <h2>{category.label}</h2>
-                                        <p className="section-description">{category.description}</p>
+                                        <div className="people-list-name">{person.displayName}</div>
+                                        {person.email && <div className="people-list-email">{person.email}</div>}
                                     </div>
-                                </div>
-                                <span className="section-count">{category.people.length} people</span>
-                            </div>
-
-                            <div className="person-grid">
-                                {category.people.length === 0 ? (
-                                    <Card className="empty-card">No people match these filters.</Card>
-                                ) : (
-                                    category.people.map(renderPersonCard)
-                                )}
-                            </div>
-                        </section>
-                    );
-                })}
-            </div>
-
-            <Modal
-                isOpen={isModalOpen}
-                onClose={closeModal}
-                title={editingId ? 'Edit Person' : 'Add Person'}
-            >
-                <form className="people-form" onSubmit={handleSubmit}>
-                    <div className="form-row">
-                        <div className="form-group">
-                            <label>Name</label>
-                            <input
-                                type="text"
-                                required
-                                value={formState.name}
-                                onChange={(event) => setFormState({ ...formState, name: event.target.value })}
-                                placeholder="Full name"
-                            />
-                        </div>
-                        <div className="form-group">
-                            <label>Email</label>
-                            <input
-                                type="email"
-                                value={formState.email}
-                                onChange={(event) => setFormState({ ...formState, email: event.target.value })}
-                                placeholder="name@example.com"
-                            />
-                        </div>
-                    </div>
-
-                    <div className="form-row">
-                        <div className="form-group">
-                            <label>Category</label>
-                            <select
-                                value={formState.category}
-                                onChange={(event) => setFormState({ ...formState, category: event.target.value })}
-                            >
-                                {CATEGORY_CONFIG.map((category) => (
-                                    <option key={category.key} value={category.key}>{category.label}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div className="form-group">
-                            <label>Tags</label>
-                            <input
-                                type="text"
-                                value={formState.tags}
-                                onChange={(event) => setFormState({ ...formState, tags: event.target.value })}
-                                placeholder="volunteer, choir, hospitality"
-                            />
-                        </div>
-                    </div>
-                    {formState.category === 'volunteer' && (
-                        <div className="form-group">
-                            <label>Titles</label>
-                            <label className="role-option">
-                                <input
-                                    type="checkbox"
-                                    checked={formState.vestryMember}
-                                    onChange={(event) => setFormState({ ...formState, vestryMember: event.target.checked })}
-                                />
-                                <span>Vestry Member</span>
-                            </label>
-                        </div>
-                    )}
-
-                    <div className="form-group">
-                        <label>Roles</label>
-                        <div className="role-selector">
-                            {ROLE_DEFINITIONS.map((role) => (
-                                <label key={role.key} className="role-option">
-                                    <input
-                                        type="checkbox"
-                                        checked={formState.roles.includes(role.key)}
-                                        onChange={() => handleRoleToggle(role.key)}
-                                    />
-                                    <span>{role.label}</span>
-                                </label>
+                                    <div className="people-list-meta">
+                                        {person.category && (
+                                            <span className={`category-chip category-${person.category}`}>
+                                                {CATEGORY_LABELS[person.category] || person.category}
+                                            </span>
+                                        )}
+                                        <span className="role-count">{(person.roles || []).length} roles</span>
+                                    </div>
+                                </button>
                             ))}
                         </div>
-                    </div>
+                    )}
+                </div>
 
-                    <div className="form-actions">
-                        <button type="button" className="btn-secondary" onClick={closeModal}>Cancel</button>
-                        {editingId && (
-                            <button type="button" className="btn-danger" onClick={handleDelete}>
-                                <FaTrash /> Delete
-                            </button>
-                        )}
-                        <button type="submit" className="btn-primary">
-                            {editingId ? 'Save Changes' : 'Add Person'}
-                        </button>
-                    </div>
-                </form>
-            </Modal>
-        </div>
+                {renderDetailPanel()}
+            </div>
+        </section>
     );
 };
 

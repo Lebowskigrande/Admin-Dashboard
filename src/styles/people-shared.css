@@ -1,0 +1,75 @@
+.role-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    overflow: visible;
+}
+
+.person-chip-wrapper {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.person-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 999px;
+    color: var(--color-text-main);
+    font-size: 0.75rem;
+    font-weight: 600;
+    transition: background 0.15s ease, color 0.15s ease;
+    cursor: default;
+}
+
+.person-chip:hover {
+    filter: brightness(0.7);
+}
+
+.chip-selected {
+    box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.5);
+}
+
+.person-chip-clergy {
+    background: var(--person-clergy-bg);
+    color: var(--person-clergy-text);
+}
+
+.person-chip-staff {
+    background: var(--person-staff-bg);
+    color: var(--person-staff-text);
+}
+
+.person-chip-volunteer {
+    background: var(--person-volunteer-bg);
+    color: var(--person-volunteer-text);
+}
+
+.person-tooltip {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 9999;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-6px);
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.person-tooltip.open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+    z-index: 9999;
+}
+
+.person-chip-wrapper.tooltip-open {
+    z-index: 9999;
+}
+
+.tooltip-person-card {
+    min-width: 240px;
+    max-width: 300px;
+    box-shadow: 0 18px 30px rgba(15, 23, 42, 0.18);
+}

@@ -126,6 +126,12 @@ const buildTeamAssignments = (people) => {
 };
 
 export const seedDatabase = () => {
+    const hasTable = (name) => {
+        const row = db.prepare(`
+            SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?
+        `).get(name);
+        return !!row;
+    };
     const liturgicalCount = db.prepare('SELECT count(*) as count FROM liturgical_days').get().count;
 
     if (liturgicalCount === 0) {
@@ -145,9 +151,11 @@ export const seedDatabase = () => {
         console.log(`Inserted ${liturgicalData.length} liturgical days.`);
     }
 
-    const scheduleCount = db.prepare('SELECT count(*) as count FROM schedule_roles').get().count;
+    const scheduleCount = hasTable('schedule_roles')
+        ? db.prepare('SELECT count(*) as count FROM schedule_roles').get().count
+        : 0;
 
-    if (scheduleCount === 0) {
+    if (scheduleCount === 0 && hasTable('schedule_roles')) {
         const workbookPeople = loadPeopleFromWorkbook();
         if (workbookPeople.length) {
             console.log('Seeding schedule data from teams...');
@@ -276,7 +284,7 @@ export const seedDatabase = () => {
         console.log('Seeding building data...');
         const buildings = [
             {
-                id: 'church',
+                id: 'sanctuary',
                 name: 'Church',
                 category: 'Worship',
                 capacity: 350,
@@ -300,7 +308,7 @@ export const seedDatabase = () => {
                 notes: 'Quiet weekday services and intimate gatherings.'
             },
             {
-                id: 'fellows-hall',
+                id: 'parish-hall',
                 name: 'Fellows Hall',
                 category: 'All Purpose',
                 capacity: 200,
@@ -312,7 +320,7 @@ export const seedDatabase = () => {
                 notes: 'Fellowship hall with stage, AV hookups, and kitchen access.'
             },
             {
-                id: 'office-school',
+                id: 'office',
                 name: 'Office/School',
                 category: 'All Purpose',
                 capacity: 120,
@@ -324,7 +332,7 @@ export const seedDatabase = () => {
                 notes: 'Administration offices, classrooms, and workroom.'
             },
             {
-                id: 'north-lot',
+                id: 'parking-north',
                 name: 'North Lot',
                 category: 'Parking',
                 capacity: 0,
@@ -336,7 +344,7 @@ export const seedDatabase = () => {
                 notes: 'Primary parking lot with ADA spaces.'
             },
             {
-                id: 'south-lot',
+                id: 'parking-south',
                 name: 'South Lot',
                 category: 'Parking',
                 capacity: 0,

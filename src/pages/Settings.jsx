@@ -30,7 +30,7 @@ const Settings = () => {
 
     const checkGoogleStatus = async () => {
         try {
-            const response = await fetch(`${API_URL}/google/status`);
+            const response = await fetch(`${API_URL}/google/status`, { credentials: 'include' });
             if (response.ok) {
                 const data = await response.json();
                 setGoogleConnected(data.connected);
@@ -48,7 +48,7 @@ const Settings = () => {
     const fetchCalendars = async () => {
         setLoadingCalendars(true);
         try {
-            const response = await fetch(`${API_URL}/google/calendars`);
+            const response = await fetch(`${API_URL}/google/calendars`, { credentials: 'include' });
             if (response.ok) {
                 const data = await response.json();
                 // Ensure data is an array
@@ -70,6 +70,7 @@ const Settings = () => {
             await fetch(`${API_URL}/google/calendars/select`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({
                     calendarId: calendar.id,
                     summary: calendar.summary,
@@ -97,7 +98,7 @@ const Settings = () => {
         if (!confirm('Disconnect Google Calendar? Events will no longer sync.')) return;
 
         try {
-            await fetch(`${API_URL}/google/disconnect`, { method: 'POST' });
+            await fetch(`${API_URL}/google/disconnect`, { method: 'POST', credentials: 'include' });
             setGoogleConnected(false);
             setCalendars([]);
         } catch (error) {

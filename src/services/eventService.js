@@ -19,7 +19,7 @@ export const getUnifiedEvents = async () => {
 };
 
 export const getGoogleEvents = async () => {
-    const response = await fetch(`${API_URL}/google/events`);
+    const response = await fetch(`${API_URL}/google/events`, { credentials: 'include' });
     if (!response.ok) throw new Error('Failed to fetch Google events');
     return response.json();
 };
