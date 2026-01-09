@@ -4,9 +4,11 @@ import dotenv from 'dotenv';
 import multer from 'multer';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { readFile, rm } from 'fs/promises';
-import { join, dirname, resolve, basename } from 'path';
+import { join, dirname, resolve, basename, extname } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import db from './db.js';
 import { seedDatabase } from './seed.js';
 import { getAuthUrl, getTokensFromCode, setStoredCredentials } from './googleAuth.js';
@@ -18,6 +20,7 @@ dotenv.config({ path: './server/.env' });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const execFileAsync = promisify(execFile);
 
 const app = express();
 const PORT = 3001;
@@ -528,6 +531,38 @@ app.get('/auth/google/callback', async (req, res) => {
 app.get('/api/google/status', (req, res) => {
     const tokens = db.prepare('SELECT * FROM google_tokens WHERE id = 1').get();
     res.json({ connected: !!tokens });
+});
+
+app.get('/api/youtube/upcoming', async (req, res) => {
+    const apiKey = process.env.YOUTUBE_API_KEY;
+    const channelId = process.env.YOUTUBE_CHANNEL_ID;
+    if (!apiKey || !channelId) {
+        return res.status(400).json({ error: 'Missing YouTube API configuration' });
+    }
+    try {
+        const params = new URLSearchParams({
+            part: 'id',
+            channelId,
+            eventType: 'upcoming',
+            type: 'video',
+            order: 'date',
+            maxResults: '1',
+            key: apiKey
+        });
+        const response = await fetch(`https://www.googleapis.com/youtube/v3/search?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch YouTube stream');
+        }
+        const data = await response.json();
+        const videoId = data?.items?.[0]?.id?.videoId || '';
+        if (!videoId) {
+            return res.json({ url: '' });
+        }
+        return res.json({ url: `https://www.youtube.com/watch?v=${videoId}` });
+    } catch (error) {
+        console.error('YouTube API error:', error);
+        return res.status(500).json({ error: 'Failed to fetch livestream' });
+    }
 });
 
 app.post('/api/google/disconnect', (req, res) => {
@@ -1479,6 +1514,7 @@ app.put('/api/schedule-roles', (req, res) => {
 app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
     const files = req.files || [];
     const filesById = new Map(files.map((file) => [file.fieldname, file]));
+    const convertedFiles = [];
     try {
         const order = JSON.parse(req.body?.order || '[]');
         if (!Array.isArray(order) || order.length === 0) {
@@ -1486,6 +1522,35 @@ app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
         }
 
         const packetDoc = await PDFDocument.create();
+
+        const ensurePdf = async (file) => {
+            const filePath = file.path;
+            const originalName = file.originalname || '';
+            const originalExt = extname(originalName).toLowerCase();
+            const isPdf = originalExt === '.pdf' || file.mimetype === 'application/pdf';
+            if (isPdf) return filePath;
+            const outputDir = dirname(filePath);
+            try {
+                await execFileAsync('soffice', [
+                    '--headless',
+                    '--convert-to',
+                    'pdf',
+                    '--outdir',
+                    outputDir,
+                    filePath
+                ]);
+                const baseName = originalExt ? basename(originalName, originalExt) : basename(filePath);
+                const outputPath = join(outputDir, `${baseName}.pdf`);
+                convertedFiles.push(outputPath);
+                return outputPath;
+            } catch (error) {
+                const message = error?.code === 'ENOENT'
+                    ? 'LibreOffice (soffice) is not installed or not on PATH. Upload PDFs or install LibreOffice.'
+                    : 'Unable to convert document to PDF.';
+                throw new Error(message);
+            }
+        };
+
         for (const item of order) {
             if (!item || !item.id) continue;
             const file = filesById.get(item.id);
@@ -1495,7 +1560,8 @@ app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
                 }
                 continue;
             }
-            const srcBytes = await readFile(file.path);
+            const pdfPath = await ensurePdf(file);
+            const srcBytes = await readFile(pdfPath);
             const srcDoc = await PDFDocument.load(srcBytes);
             const pages = await packetDoc.copyPages(srcDoc, srcDoc.getPageIndices());
             pages.forEach((page) => packetDoc.addPage(page));
@@ -1520,11 +1586,12 @@ app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
         res.send(Buffer.from(pdfBytes));
     } catch (error) {
         console.error('Vestry packet error:', error);
-        res.status(500).json({ error: 'Failed to build vestry packet' });
+        res.status(500).json({ error: error?.message || 'Failed to build vestry packet' });
     } finally {
-        await Promise.all(
-            files.map((file) => rm(file.path, { force: true }).catch(() => {}))
-        );
+        await Promise.all([
+            ...files.map((file) => rm(file.path, { force: true }).catch(() => {})),
+            ...convertedFiles.map((filePath) => rm(filePath, { force: true }).catch(() => {}))
+        ]);
     }
 });
 

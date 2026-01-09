@@ -5,6 +5,7 @@ const defaultDetails = {
     bulletinNotes: '',
     staffHours: [],
     notes: '',
+    livestreamEmailStatus: 'Not Started',
     roleOverrides: {}
 };
 

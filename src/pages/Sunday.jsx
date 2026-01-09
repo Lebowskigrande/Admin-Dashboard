@@ -12,6 +12,7 @@ import './People.css';
 const serializeDate = (date) => date.toISOString().slice(0, 10);
 
 const bulletinOptions = ['draft', 'review', 'ready', 'printed'];
+const livestreamOptions = ['Not Started', 'Created', 'Scheduled', 'Sent'];
 
 const apiRoleKeys = new Set([
     'celebrant',
@@ -72,6 +73,8 @@ const Sunday = () => {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
+    const [livestreamUrl, setLivestreamUrl] = useState('');
+    const [livestreamError, setLivestreamError] = useState('');
 
     const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
     const peopleByName = useMemo(() => {
@@ -241,6 +244,23 @@ const Sunday = () => {
         if (!currentDate || people.length === 0) return;
         loadSunday(currentDate);
     }, [currentDate, loadSunday, people.length]);
+
+    useEffect(() => {
+        const loadLivestream = async () => {
+            try {
+                const response = await fetch(`${API_URL}/youtube/upcoming`);
+                if (!response.ok) throw new Error('Failed to load livestream');
+                const data = await response.json();
+                setLivestreamUrl(data?.url || '');
+                setLivestreamError('');
+            } catch (err) {
+                console.error(err);
+                setLivestreamUrl('');
+                setLivestreamError('Unable to load livestream link.');
+            }
+        };
+        loadLivestream();
+    }, []);
 
     const handleNavigate = async (direction) => {
         if (!currentDate) return;
@@ -601,16 +621,43 @@ const Sunday = () => {
                     </div>
                 </Card>
                 <div className="summary-secondary">
-                    <Card className="readings-card">
-                        <h3>Readings</h3>
-                        <div className="readings-text">
-                            {(liturgicalInfo?.readings || 'Not set')
-                                .split(';')
-                                .map((reading) => reading.trim())
-                                .filter(Boolean)
-                                .map((reading, index) => (
-                                    <div key={`${reading}-${index}`}>{reading}</div>
-                                ))}
+                    <Card className="livestream-card">
+                        <div className="panel-header">
+                            <h3>Livestream Email</h3>
+                            {livestreamUrl ? (
+                                <a className="btn-link" href={livestreamUrl} target="_blank" rel="noreferrer">
+                                    YouTube Link
+                                </a>
+                            ) : (
+                                <span className="text-muted">No stream found</span>
+                            )}
+                        </div>
+                        {livestreamError && <div className="text-muted">{livestreamError}</div>}
+                        <div
+                            className="livestream-status"
+                            style={{ '--active-index': Math.max(0, livestreamOptions.indexOf(details.livestreamEmailStatus || 'Not Started')) }}
+                        >
+                            <span className="livestream-indicator" aria-hidden="true" />
+                            {livestreamOptions.map((option) => (
+                                <button
+                                    key={option}
+                                    type="button"
+                                    className={`livestream-pill ${details.livestreamEmailStatus === option ? 'active' : ''}`}
+                                    onClick={() => updateDetailField('livestreamEmailStatus', option)}
+                                >
+                                    {option}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="livestream-links">
+                            <a
+                                className="btn-secondary"
+                                href="https://login.constantcontact.com/"
+                                target="_blank"
+                                rel="noreferrer"
+                            >
+                                Create Campaign
+                            </a>
                         </div>
                     </Card>
                     <Card id="bulletin" className="sunday-panel bulletin-card">

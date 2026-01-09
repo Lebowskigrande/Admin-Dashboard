@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FaPlus, FaTrash } from 'react-icons/fa';
+import { FaDownload, FaPaperPlane, FaPlus, FaTrash } from 'react-icons/fa';
 import { addMonths, format } from 'date-fns';
 import Card from '../components/Card';
 import { API_URL } from '../services/apiConfig';
@@ -10,10 +10,7 @@ const BASE_PACKET_DOCS = [
     { id: 'agenda', label: 'Agenda', required: true },
     { id: 'minutes', label: 'Previous Minutes', required: true },
     { id: 'treasurer', label: 'Treasurer Report', required: true },
-    { id: 'church-pl', label: 'Church P&L', required: true },
-    { id: 'church-bs', label: 'Church Balance Sheet', required: true },
-    { id: 'joint-ledger', label: 'Joint Ledger', required: true },
-    { id: 'pledge-status', label: 'Pledge Status Report', required: true },
+    { id: 'church-financials', label: 'Church Financials (P&L, BS, Ledger, Pledges)', required: true },
     { id: 'school-pl', label: 'School P&L', required: true },
     { id: 'school-bs', label: 'School Balance Sheet', required: true }
 ];
@@ -40,6 +37,7 @@ const Vestry = () => {
     const [packetBusy, setPacketBusy] = useState(false);
     const [packetError, setPacketError] = useState('');
     const [packetUrl, setPacketUrl] = useState('');
+    const [packetFilename, setPacketFilename] = useState('Vestry packet.pdf');
     const [draggedId, setDraggedId] = useState(null);
     const [dragOverId, setDragOverId] = useState(null);
 
@@ -129,6 +127,7 @@ const Vestry = () => {
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
             setPacketUrl(url);
+            setPacketFilename(packetFilenameForMeeting);
         } catch (error) {
             console.error(error);
             setPacketError('Unable to build the vestry packet.');
@@ -158,8 +157,21 @@ const Vestry = () => {
         setSelectedMeeting((prev) => prev || nextMeeting);
     }, [nextMeeting]);
 
-    const coveredMonth = selectedMeeting ? format(addMonths(selectedMeeting, -1), 'MMMM') : '';
+    const coveredMonthDate = selectedMeeting ? addMonths(selectedMeeting, -1) : null;
+    const coveredMonth = coveredMonthDate ? format(coveredMonthDate, 'MMMM') : '';
     const checklistMonth = selectedMeeting ? selectedMeeting.getMonth() + 1 : null;
+    const packetFilenameForMeeting = coveredMonthDate
+        ? `${format(coveredMonthDate, 'yyyyMM')} Vestry packet.pdf`
+        : 'Vestry packet.pdf';
+    const meetingDateLabel = selectedMeeting ? format(selectedMeeting, 'MMMM d, yyyy') : 'the upcoming meeting';
+    const mailtoBody = [
+        'Dear Vestry members, pleased find attached the packet for the vestry meeting on',
+        `${meetingDateLabel} at 6:30 in the Library.`,
+        '',
+        'The zoom link for the meeting is: https://us02web.zoom.us/j/86038156275',
+        '',
+        'Thank you,'
+    ].join('\n');
 
     useEffect(() => {
         if (!checklistMonth) {
@@ -180,15 +192,51 @@ const Vestry = () => {
         loadChecklist();
     }, [checklistMonth]);
 
+    const packetChecklistDocs = useMemo(() => {
+        return checklistItems
+            .filter((item) => item.phase === 'Vestry Package')
+            .filter((item) => !item.task.toLowerCase().includes('certificate'))
+            .map((item) => ({
+                id: `checklist-${item.id}`,
+                label: item.task,
+                required: false,
+                sourceChecklistId: item.id
+            }));
+    }, [checklistItems]);
+
+    useEffect(() => {
+        setPacketItems((prev) => {
+            const prevById = new Map(prev.map((item) => [item.id, item]));
+            const customItems = prev.filter((item) => item.custom);
+            const baseItems = BASE_PACKET_DOCS.map((doc) => ({
+                ...doc,
+                file: prevById.get(doc.id)?.file || null
+            }));
+            const checklistItemsMapped = packetChecklistDocs.map((doc) => ({
+                ...doc,
+                file: prevById.get(doc.id)?.file || null
+            }));
+            return [...baseItems, ...checklistItemsMapped, ...customItems];
+        });
+    }, [packetChecklistDocs]);
+
     const checklistGroups = useMemo(() => {
         const phases = ['Pre-Vestry', 'Vestry Package', 'Post-Vestry'];
         const grouped = phases.map((phase) => ({
             phase,
-            items: checklistItems.filter((item) => item.phase === phase)
+            items: checklistItems.filter((item) => {
+                if (phase !== 'Vestry Package') return item.phase === phase;
+                return item.phase === phase && item.task.toLowerCase().includes('certificate');
+            })
         }));
         const other = checklistItems.filter((item) => !phases.includes(item.phase));
         if (other.length) grouped.push({ phase: 'Other', items: other });
-        return grouped;
+        return grouped
+            .map((group) => ({
+                ...group,
+                phase: group.phase === 'Vestry Package' ? 'Certificates' : group.phase
+            }))
+            .filter((group) => group.items.length > 0);
     }, [checklistItems]);
 
     const completedCount = checklistItems.filter((item) => checklistProgress[item.id]).length;
@@ -360,6 +408,22 @@ const Vestry = () => {
                             <button className="btn-primary" onClick={buildPacket} disabled={packetBusy}>
                                 {packetBusy ? 'Building...' : 'Build Packet'}
                             </button>
+                            {packetUrl && (
+                                <>
+                                    <a href={packetUrl} download={packetFilename} className="btn-icon" aria-label="Download packet">
+                                        <FaDownload />
+                                    </a>
+                                    <a
+                                        className="btn-icon"
+                                        href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent('vestry@saintedmunds.org')}&su=${encodeURIComponent('Vestry packet')}&body=${encodeURIComponent(mailtoBody)}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        aria-label="Send to Vestry"
+                                    >
+                                        <FaPaperPlane />
+                                    </a>
+                                </>
+                            )}
                         </div>
                     </div>
                     {packetError && <div className="alert error">{packetError}</div>}
@@ -407,7 +471,7 @@ const Vestry = () => {
                                 </div>
                                 <input
                                     type="file"
-                                    accept="application/pdf"
+                                    accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                     onChange={(event) => updatePacketItem(item.id, { file: event.target.files?.[0] || null })}
                                 />
                             {item.custom && (
@@ -418,13 +482,6 @@ const Vestry = () => {
                         </div>
                     ))}
                 </div>
-                    {packetUrl && (
-                        <div className="packet-download">
-                            <a href={packetUrl} download="vestry-packet.pdf" className="btn-secondary">
-                                Download Packet
-                            </a>
-                        </div>
-                    )}
                 </Card>
             </div>
         </div>
