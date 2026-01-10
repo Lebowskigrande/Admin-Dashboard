@@ -1,3 +1,5 @@
+@import '../styles/people-shared.css';
+
 .page-vestry {
     padding: 1.5rem;
     display: flex;
@@ -111,19 +113,6 @@
     gap: 0.45rem;
 }
 
-.pill {
-    background: #eef2ff;
-    color: #1e3a8a;
-    padding: 0.3rem 0.65rem;
-    border-radius: 999px;
-    font-size: 0.78rem;
-    font-weight: 600;
-}
-
-.vestry-pill {
-    background: #ffe4e6;
-    color: #9f1239;
-}
 
 .meeting-list {
     display: flex;

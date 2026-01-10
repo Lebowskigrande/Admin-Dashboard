@@ -5,6 +5,7 @@ import Card from '../components/Card';
 import { API_URL } from '../services/apiConfig';
 import { getVestryDetails, saveVestryDetails } from '../services/vestryDetails';
 import './Vestry.css';
+import './People.css';
 
 const BASE_PACKET_DOCS = [
     { id: 'agenda', label: 'Agenda', required: true },
@@ -40,6 +41,7 @@ const Vestry = () => {
     const [packetFilename, setPacketFilename] = useState('Vestry packet.pdf');
     const [draggedId, setDraggedId] = useState(null);
     const [dragOverId, setDragOverId] = useState(null);
+    const [openTooltipKey, setOpenTooltipKey] = useState(null);
 
     useEffect(() => {
         const loadMembers = async () => {
@@ -67,6 +69,18 @@ const Vestry = () => {
             if (packetUrl) URL.revokeObjectURL(packetUrl);
         };
     }, [packetUrl]);
+
+    useEffect(() => {
+        const handleClick = (event) => {
+            const target = event.target;
+            if (target.closest('.person-tooltip') || target.closest('.person-chip-wrapper')) return;
+            setOpenTooltipKey(null);
+        };
+        document.addEventListener('mousedown', handleClick);
+        return () => {
+            document.removeEventListener('mousedown', handleClick);
+        };
+    }, []);
 
     const updatePacketItem = (id, updates) => {
         setPacketItems((prev) => prev.map((item) => item.id === id ? { ...item, ...updates } : item));
@@ -244,6 +258,49 @@ const Vestry = () => {
     const requiredUploaded = requiredDocs.filter((item) => item.file).length;
     const optionalUploaded = packetItems.filter((item) => !item.required && item.file).length;
 
+    const renderTooltipCard = (person) => {
+        if (!person) return null;
+        const tags = person.tags || [];
+        const extensionTag = tags.find((tag) => tag.startsWith('ext-'));
+        const titleTags = tags.filter((tag) => tag && tag !== extensionTag);
+        const metaChips = [...titleTags, ...(extensionTag ? [extensionTag] : [])];
+
+        return (
+            <Card className="person-card tooltip-person-card">
+                <div className="person-card__header">
+                    <div className="person-main">
+                        <div className="person-name">{person.displayName}</div>
+                        {person.email && (
+                            <a className="person-email" href={`mailto:${person.email}`} target="_blank" rel="noreferrer">
+                                {person.email}
+                            </a>
+                        )}
+                        {(person.phonePrimary || person.phoneAlternate) && (
+                            <div className="person-phone">
+                                {person.phonePrimary && <span>{person.phonePrimary}</span>}
+                                {person.phoneAlternate && <span>{person.phoneAlternate}</span>}
+                            </div>
+                        )}
+                        {metaChips.length > 0 && (
+                            <div className="meta-chip-row">
+                                {metaChips.map((tag) => (
+                                    <span key={tag} className="tag-chip">{tag}</span>
+                                ))}
+                            </div>
+                        )}
+                        {tags.length > metaChips.length && (
+                            <div className="tag-row">
+                                {tags.filter((tag) => !metaChips.includes(tag)).map((tag) => (
+                                    <span key={tag} className="tag-chip">{tag}</span>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </Card>
+        );
+    };
+
     return (
         <div className="page-vestry">
             <header className="vestry-header">
@@ -257,7 +314,7 @@ const Vestry = () => {
             </header>
 
             <div className="vestry-grid">
-                <Card className="vestry-panel">
+                <Card className="vestry-panel allow-overflow">
                     <div className="panel-header compact">
                         <h2>{`Vestry Checklist${selectedMeeting ? `: ${format(selectedMeeting, 'MMMM')}` : ''}`}</h2>
                         <span className="panel-meta">{completedCount}/{checklistItems.length} done</span>
@@ -386,7 +443,21 @@ const Vestry = () => {
                             <span className="text-muted">No vestry members assigned.</span>
                         ) : (
                             vestryMembers.map((member) => (
-                                <span key={member.id} className="pill vestry-pill">{member.displayName}</span>
+                                <span
+                                    key={member.id}
+                                    className={`person-chip-wrapper ${openTooltipKey === member.id ? 'tooltip-open' : ''}`}
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        setOpenTooltipKey((prev) => (prev === member.id ? null : member.id));
+                                    }}
+                                >
+                                    <span className={`person-chip person-chip-${member.category || 'volunteer'}`}>
+                                        {member.displayName}
+                                    </span>
+                                    <span className={`person-tooltip ${openTooltipKey === member.id ? 'open' : ''}`}>
+                                        {renderTooltipCard(member)}
+                                    </span>
+                                </span>
                             ))
                         )}
                     </div>

@@ -48,6 +48,27 @@ const seedVestryChecklist = () => {
 
 seedVestryChecklist();
 
+const ensurePeopleColumns = () => {
+    const columns = sqlite.prepare('PRAGMA table_info(people)').all().map((col) => col.name);
+    const columnSet = new Set(columns);
+    const addColumn = (name) => {
+        if (!columnSet.has(name)) {
+            sqlite.exec(`ALTER TABLE people ADD COLUMN ${name} TEXT`);
+            columnSet.add(name);
+        }
+    };
+
+    addColumn('phone_primary');
+    addColumn('phone_alternate');
+    addColumn('address_line1');
+    addColumn('address_line2');
+    addColumn('city');
+    addColumn('state');
+    addColumn('postal_code');
+};
+
+ensurePeopleColumns();
+
 console.log('Database initialized at', dbPath);
 
 export { sqlite, db };

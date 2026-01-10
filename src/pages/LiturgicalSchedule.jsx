@@ -285,9 +285,15 @@ const LiturgicalSchedule = () => {
                     <div className="person-main">
                         <div className="person-name">{person.displayName}</div>
                         {person.email && (
-                            <a className="person-email" href={`mailto:${person.email}`}>
+                            <a className="person-email" href={`mailto:${person.email}`} target="_blank" rel="noreferrer">
                                 {person.email}
                             </a>
+                        )}
+                        {(person.phonePrimary || person.phoneAlternate) && (
+                            <div className="person-phone">
+                                {person.phonePrimary && <span>{person.phonePrimary}</span>}
+                                {person.phoneAlternate && <span>{person.phoneAlternate}</span>}
+                            </div>
                         )}
                         {metaChips.length > 0 && (
                             <div className="meta-chip-row">

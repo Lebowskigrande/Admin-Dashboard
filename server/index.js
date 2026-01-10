@@ -27,6 +27,7 @@ dotenv.config({ path: './server/.env' });
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const execFileAsync = promisify(execFile);
+const dbPath = join(__dirname, 'church.db');
 
 const app = express();
 const PORT = 3001;
@@ -89,6 +90,82 @@ const getUserTokens = (userId) => {
     return db.prepare(`
         SELECT * FROM user_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
     `).get(userId);
+};
+
+const DROPBOX_USER_ID = 'dropbox-local';
+
+const getDropboxTokens = () => {
+    return db.prepare(`
+        SELECT * FROM user_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
+    `).get(DROPBOX_USER_ID);
+};
+
+const saveDropboxTokens = (tokens) => {
+    const now = new Date().toISOString();
+    db.prepare('DELETE FROM user_tokens WHERE user_id = ?').run(DROPBOX_USER_ID);
+    db.prepare(`
+        INSERT INTO user_tokens (id, user_id, access_token, refresh_token, expiry_date, scope, token_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        `token-${randomUUID()}`,
+        DROPBOX_USER_ID,
+        tokens.access_token || null,
+        tokens.refresh_token || null,
+        tokens.expiry_date || null,
+        tokens.scope || null,
+        tokens.token_type || null,
+        now
+    );
+};
+
+const refreshDropboxToken = async (refreshToken) => {
+    const clientId = process.env.DROPBOX_APP_KEY;
+    const clientSecret = process.env.DROPBOX_APP_SECRET;
+    if (!clientId || !clientSecret) {
+        throw new Error('Missing Dropbox app credentials');
+    }
+    const params = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret
+    });
+    const response = await fetch('https://api.dropboxapi.com/oauth2/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString()
+    });
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Dropbox refresh failed');
+    }
+    const data = await response.json();
+    return {
+        access_token: data.access_token,
+        refresh_token: refreshToken,
+        token_type: data.token_type,
+        scope: data.scope,
+        expiry_date: data.expires_in ? Date.now() + data.expires_in * 1000 : null
+    };
+};
+
+const getDropboxAccessToken = async () => {
+    if (process.env.DROPBOX_ACCESS_TOKEN) {
+        return process.env.DROPBOX_ACCESS_TOKEN;
+    }
+    const tokens = getDropboxTokens();
+    if (!tokens || !tokens.access_token) {
+        throw new Error('Dropbox is not connected.');
+    }
+    if (tokens.expiry_date && Date.now() < tokens.expiry_date - 60 * 1000) {
+        return tokens.access_token;
+    }
+    if (!tokens.refresh_token) {
+        throw new Error('Dropbox refresh token missing.');
+    }
+    const refreshed = await refreshDropboxToken(tokens.refresh_token);
+    saveDropboxTokens(refreshed);
+    return refreshed.access_token;
 };
 
 // Run migrations and seeds
@@ -343,6 +420,66 @@ app.get('/api/google/status', (req, res) => {
     if (!req.user) return res.json({ connected: false });
     const tokens = getUserTokens(req.user.id);
     res.json({ connected: !!tokens });
+});
+
+// --- Dropbox OAuth Routes ---
+
+app.get('/auth/dropbox', (req, res) => {
+    const clientId = process.env.DROPBOX_APP_KEY;
+    const redirectUri = process.env.DROPBOX_REDIRECT_URI;
+    if (!clientId || !redirectUri) {
+        return res.status(400).send('Dropbox OAuth is not configured.');
+    }
+    const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        token_access_type: 'offline'
+    });
+    res.redirect(`https://www.dropbox.com/oauth2/authorize?${params.toString()}`);
+});
+
+app.get('/auth/dropbox/callback', async (req, res) => {
+    const { code } = req.query;
+    if (!code) {
+        return res.status(400).send('No authorization code provided');
+    }
+    try {
+        const clientId = process.env.DROPBOX_APP_KEY;
+        const clientSecret = process.env.DROPBOX_APP_SECRET;
+        const redirectUri = process.env.DROPBOX_REDIRECT_URI;
+        if (!clientId || !clientSecret || !redirectUri) {
+            return res.status(400).send('Dropbox OAuth is not configured.');
+        }
+        const params = new URLSearchParams({
+            grant_type: 'authorization_code',
+            code: String(code),
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uri: redirectUri
+        });
+        const response = await fetch('https://api.dropboxapi.com/oauth2/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString()
+        });
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText || 'Dropbox token exchange failed');
+        }
+        const data = await response.json();
+        saveDropboxTokens({
+            access_token: data.access_token,
+            refresh_token: data.refresh_token,
+            token_type: data.token_type,
+            scope: data.scope,
+            expiry_date: data.expires_in ? Date.now() + data.expires_in * 1000 : null
+        });
+        res.redirect(`${CLIENT_ORIGIN}/settings`);
+    } catch (error) {
+        console.error('Dropbox OAuth error:', error);
+        res.status(500).send('Dropbox authentication failed');
+    }
 });
 
 app.get('/api/me', (req, res) => {
@@ -695,6 +832,13 @@ app.get('/api/people', (req, res) => {
         id: row.id,
         displayName: row.display_name,
         email: row.email || '',
+        phonePrimary: row.phone_primary || '',
+        phoneAlternate: row.phone_alternate || '',
+        addressLine1: row.address_line1 || '',
+        addressLine2: row.address_line2 || '',
+        city: row.city || '',
+        state: row.state || '',
+        postalCode: row.postal_code || '',
         category: row.category || '',
         roles: normalizePersonRoles(row.roles),
         tags: parseJsonField(row.tags),
@@ -704,7 +848,21 @@ app.get('/api/people', (req, res) => {
 });
 
 app.post('/api/people', (req, res) => {
-    const { displayName, email = '', category = 'volunteer', roles = [], tags = [], teams = {} } = req.body || {};
+    const {
+        displayName,
+        email = '',
+        phonePrimary = '',
+        phoneAlternate = '',
+        addressLine1 = '',
+        addressLine2 = '',
+        city = '',
+        state = '',
+        postalCode = '',
+        category = 'volunteer',
+        roles = [],
+        tags = [],
+        teams = {}
+    } = req.body || {};
 
     const normalizedName = normalizeName(displayName);
     if (!normalizedName) {
@@ -718,12 +876,23 @@ app.post('/api/people', (req, res) => {
     const normalizedTags = normalizeTags(tags);
 
     db.prepare(`
-        INSERT INTO people (id, display_name, email, category, roles, tags, teams)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO people (
+            id, display_name, email, phone_primary, phone_alternate,
+            address_line1, address_line2, city, state, postal_code,
+            category, roles, tags, teams
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         id,
         normalizedName,
         email,
+        phonePrimary,
+        phoneAlternate,
+        addressLine1,
+        addressLine2,
+        city,
+        state,
+        postalCode,
         category,
         JSON.stringify(normalizedRoles),
         JSON.stringify(normalizedTags),
@@ -743,7 +912,21 @@ app.post('/api/people', (req, res) => {
 
 app.put('/api/people/:id', (req, res) => {
     const { id } = req.params;
-    const { displayName, email = '', category = 'volunteer', roles = [], tags = [], teams = {} } = req.body || {};
+    const {
+        displayName,
+        email = '',
+        phonePrimary = '',
+        phoneAlternate = '',
+        addressLine1 = '',
+        addressLine2 = '',
+        city = '',
+        state = '',
+        postalCode = '',
+        category = 'volunteer',
+        roles = [],
+        tags = [],
+        teams = {}
+    } = req.body || {};
 
     const normalizedName = normalizeName(displayName);
     if (!normalizedName) {
@@ -762,6 +945,13 @@ app.put('/api/people/:id', (req, res) => {
         UPDATE people SET
             display_name = ?,
             email = ?,
+            phone_primary = ?,
+            phone_alternate = ?,
+            address_line1 = ?,
+            address_line2 = ?,
+            city = ?,
+            state = ?,
+            postal_code = ?,
             category = ?,
             roles = ?,
             tags = ?,
@@ -770,6 +960,13 @@ app.put('/api/people/:id', (req, res) => {
     `).run(
         normalizedName,
         email,
+        phonePrimary,
+        phoneAlternate,
+        addressLine1,
+        addressLine2,
+        city,
+        state,
+        postalCode,
         category,
         JSON.stringify(normalizedRoles),
         JSON.stringify(normalizedTags),
@@ -1606,6 +1803,40 @@ app.get('/api/vestry/checklist', (req, res) => {
         ORDER BY sort_order, id
     `).all(month);
     return res.json(rows);
+});
+
+app.post('/api/people/backup-db', async (req, res) => {
+    try {
+        const token = await getDropboxAccessToken();
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `church-db-${timestamp}.db`;
+        const dropboxPath = `/Parish Administrator/Dashboard/${filename}`;
+        const dbBuffer = await readFile(dbPath);
+        const response = await fetch('https://content.dropboxapi.com/2/files/upload', {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/octet-stream',
+                'Dropbox-API-Arg': JSON.stringify({
+                    path: dropboxPath,
+                    mode: 'add',
+                    autorename: true,
+                    mute: false
+                })
+            },
+            body: dbBuffer
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText || 'Dropbox upload failed');
+        }
+
+        return res.json({ path: dropboxPath, name: filename });
+    } catch (error) {
+        console.error('Dropbox backup error:', error);
+        return res.status(500).json({ error: error?.message || 'Failed to back up database' });
+    }
 });
 
 // --- Deposit Slip OCR ---

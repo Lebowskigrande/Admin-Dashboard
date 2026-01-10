@@ -57,6 +57,14 @@
     transition: opacity 0.15s ease, transform 0.15s ease;
 }
 
+.person-phone {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.8rem;
+    color: var(--color-text-secondary);
+}
+
 .person-tooltip.open {
     opacity: 1;
     pointer-events: auto;
