@@ -3,7 +3,7 @@ import { promisify } from 'util';
 import { mkdir, readdir, readFile, rm, writeFile } from 'fs/promises';
 import { join, basename, dirname } from 'path';
 import { tmpdir } from 'os';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 const execFileAsync = promisify(execFile);
 
@@ -90,7 +90,16 @@ const parseNumber = (value) => {
     return Number.isFinite(number) ? number : null;
 };
 
-const formatCurrency = (amount) => amount.toFixed(2);
+const formatCurrency = (amount) => {
+    const numeric = Number(amount);
+    if (!Number.isFinite(numeric)) return '';
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    }).format(numeric);
+};
 
 export const convertPdfToImages = async (pdfPath, outputDir) => {
     await ensureCommand('pdftoppm');
@@ -754,14 +763,134 @@ const fillField = (form, fieldName, value) => {
     field.setText(value ?? '');
 };
 
-export const buildDepositSlipPdf = async ({ templatePath, outputPath, checks, fieldMap, totalOverride }) => {
+const fillFields = (form, fieldNames, value) => {
+    if (!fieldNames) return;
+    const names = Array.isArray(fieldNames) ? fieldNames : [fieldNames];
+    names.filter(Boolean).forEach((name) => fillField(form, name, value));
+};
+
+const drawFundsReport = async (pdfDoc, entries = [], totalAmount) => {
+    const page = pdfDoc.getPage(0);
+    if (!page) return;
+
+    const normalizedEntries = (entries || [])
+        .map((entry) => {
+            const code = String(entry?.code || '').trim();
+            const amount = Number(entry?.amount);
+            if (!code || !Number.isFinite(amount)) return null;
+            return { code, amount };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.code.localeCompare(b.code));
+
+    const totalForReport = Number.isFinite(totalAmount)
+        ? totalAmount
+        : normalizedEntries.reduce((sum, item) => sum + item.amount, 0);
+
+    const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const { width, height } = page.getSize();
+    const rowHeight = 18;
+    const rows = [
+        { left: 'Fund', right: 'Amount', font: fontBold, size: 10 },
+        ...normalizedEntries.map((item) => ({
+            left: item.code,
+            right: formatCurrency(item.amount),
+            font: fontRegular,
+            size: 10
+        })),
+        { left: 'Total', right: formatCurrency(totalForReport), font: fontBold, size: 10 }
+    ];
+
+    const tableWidth = Math.min(260, width - 120);
+    const rowsCount = rows.length;
+    const tableHeight = rowsCount * rowHeight;
+    const tableX = (width - tableWidth) / 2;
+    const tableTop = height / 2 + tableHeight / 2;
+    const tableBottom = tableTop - tableHeight;
+    const tableRight = tableX + tableWidth;
+    const columnDivider = tableX + tableWidth * 0.5;
+
+    const title = 'Funds Report';
+    const titleFontSize = 14;
+    const titleWidth = fontBold.widthOfTextAtSize(title, titleFontSize);
+    const titleX = (width - titleWidth) / 2;
+    const titleY = tableTop + 24;
+    page.drawText(title, {
+        x: titleX,
+        y: titleY,
+        size: titleFontSize,
+        font: fontBold,
+        color: rgb(0.1, 0.1, 0.1)
+    });
+
+    const drawHorizontal = (y) => {
+        page.drawLine({
+            start: { x: tableX, y },
+            end: { x: tableRight, y },
+            thickness: 0.5,
+            color: rgb(0.2, 0.2, 0.2)
+        });
+    };
+    const drawVertical = (x) => {
+        page.drawLine({
+            start: { x, y: tableTop },
+            end: { x, y: tableBottom },
+            thickness: 0.5,
+            color: rgb(0.2, 0.2, 0.2)
+        });
+    };
+
+    for (let i = 0; i <= rowsCount; i += 1) {
+        drawHorizontal(tableTop - i * rowHeight);
+    }
+    drawVertical(tableX);
+    drawVertical(columnDivider);
+    drawVertical(tableRight);
+
+    const rightColumnWidth = tableRight - columnDivider;
+    const leftPadding = 6;
+    const rightPadding = 6;
+
+    rows.forEach((row, index) => {
+        const rowTop = tableTop - index * rowHeight;
+        const textHeight = row.font.heightAtSize(row.size);
+        let baseline = rowTop - rowHeight + (rowHeight + textHeight) / 2;
+        baseline -= 11;
+        const leftX = tableX + leftPadding;
+        const rightText = row.right || '';
+        const rightWidth = row.font.widthOfTextAtSize(rightText, row.size);
+        const rightX = columnDivider + rightColumnWidth - rightPadding - rightWidth;
+        page.drawText(row.left, {
+            x: leftX,
+            y: baseline,
+            size: row.size,
+            font: row.font,
+            color: rgb(0.1, 0.1, 0.1)
+        });
+        page.drawText(rightText, {
+            x: rightX,
+            y: baseline,
+            size: row.size,
+            font: row.font,
+            color: rgb(0.1, 0.1, 0.1)
+        });
+    });
+};
+
+export const buildDepositSlipPdf = async ({ templatePath, outputPath, checks, fieldMap, totals = {}, fundsReport = {} }) => {
     const templateBytes = await readFile(templatePath);
     const pdfDoc = await PDFDocument.load(templateBytes);
     const form = pdfDoc.getForm();
 
-    const total = Number.isFinite(totalOverride)
-        ? totalOverride
-        : checks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
+    const cashValue = Number.isFinite(totals.cash) ? totals.cash : 0;
+    const sumOfChecks = checks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
+    const totalValue = Number.isFinite(totals.total)
+        ? totals.total
+        : Number.isFinite(totals.subtotal)
+            ? totals.subtotal
+            : sumOfChecks + cashValue;
+    const subtotalValue = Number.isFinite(totals.subtotal) ? totals.subtotal : totalValue;
 
     const checkFields = fieldMap?.checks || [];
     checkFields.forEach((mapping, index) => {
@@ -771,13 +900,21 @@ export const buildDepositSlipPdf = async ({ templatePath, outputPath, checks, fi
         fillField(form, mapping.amount, check.amount != null ? formatCurrency(check.amount) : '');
     });
 
+    if (fieldMap?.cash) {
+        fillFields(form, fieldMap.cash, formatCurrency(cashValue));
+    }
+    if (fieldMap?.subtotal) {
+        fillFields(form, fieldMap.subtotal, formatCurrency(subtotalValue));
+    }
     if (fieldMap?.total) {
-        fillField(form, fieldMap.total, formatCurrency(total));
+        fillFields(form, fieldMap.total, formatCurrency(totalValue));
     }
 
     if (fieldMap?.date) {
         fillField(form, fieldMap.date, new Date().toLocaleDateString('en-US'));
     }
+
+    await drawFundsReport(pdfDoc, fundsReport.entries, fundsReport.total ?? totalValue);
 
     const pdfBytes = await pdfDoc.save();
     await mkdir(dirname(outputPath), { recursive: true });

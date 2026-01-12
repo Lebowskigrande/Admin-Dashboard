@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FaDownload } from 'react-icons/fa';
 import Card from '../components/Card';
 import { API_URL } from '../services/apiConfig';
@@ -12,6 +12,17 @@ const createChecks = () =>
         budget: ''
     }));
 
+const DEPOSIT_STORAGE_KEY = 'deposit-slip-checks';
+
+const normalizeStorageAmount = (value) => {
+    if (value == null) return '';
+    const trimmed = String(value).trim();
+    if (!trimmed) return '';
+    const numeric = Number(trimmed);
+    if (!Number.isFinite(numeric)) return '';
+    return numeric.toFixed(2);
+};
+
 const formatCurrency = (value) => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return '$0.00';
@@ -21,6 +32,33 @@ const formatCurrency = (value) => {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
     }).format(numeric);
+};
+
+const normalizeAmountInput = (value) => {
+    const trimmed = String(value ?? '').trim();
+    if (!trimmed) return '';
+    const numeric = Number(trimmed);
+    if (!Number.isFinite(numeric)) return '';
+    return numeric.toFixed(2);
+};
+
+const buildPayloadAmount = (value) => {
+    const normalized = normalizeAmountInput(value);
+    if (!normalized) return '';
+    return `$${normalized}`;
+};
+
+const loadSavedChecks = () => {
+    if (typeof window === 'undefined') return null;
+    const stored = window.localStorage.getItem(DEPOSIT_STORAGE_KEY);
+    if (!stored) return null;
+    try {
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) return null;
+        return parsed;
+    } catch {
+        return null;
+    }
 };
 
 const base64ToBlob = (base64, contentType = 'application/pdf') => {
@@ -33,10 +71,27 @@ const base64ToBlob = (base64, contentType = 'application/pdf') => {
 };
 
 const Finance = () => {
-    const [checks, setChecks] = useState(createChecks());
+    const [checks, setChecks] = useState(() => {
+        const saved = loadSavedChecks();
+        const template = createChecks();
+        if (!saved || !saved.length) return template;
+        return template.map((entry, index) => {
+            const savedEntry = saved[index];
+            if (!savedEntry) return entry;
+            return {
+                ...entry,
+                checkNumber: savedEntry.checkNumber != null ? String(savedEntry.checkNumber) : entry.checkNumber,
+                amount: normalizeStorageAmount(savedEntry.amount) || entry.amount,
+                budget: savedEntry.budget != null ? String(savedEntry.budget) : entry.budget
+            };
+        });
+    });
     const [slipUrl, setSlipUrl] = useState('');
     const [slipBusy, setSlipBusy] = useState(false);
     const [slipError, setSlipError] = useState('');
+    const [saveMessage, setSaveMessage] = useState('');
+    const saveMessageTimeoutRef = useRef(null);
+    const pdfInputRef = useRef(null);
 
     const updateCheck = (index, field, value) => {
         setChecks((prev) => {
@@ -44,6 +99,58 @@ const Finance = () => {
             next[index] = { ...next[index], [field]: value };
             return next;
         });
+    };
+
+    const handleSaveDepositData = () => {
+        if (typeof window === 'undefined') {
+            setSaveMessage('Unable to save deposit data.');
+            return;
+        }
+        try {
+            window.localStorage.setItem(DEPOSIT_STORAGE_KEY, JSON.stringify(checks));
+            setSaveMessage('Deposit data saved locally.');
+        } catch (error) {
+            console.error('Failed to save deposit data:', error);
+            setSaveMessage('Unable to save deposit data.');
+        } finally {
+            if (saveMessageTimeoutRef.current) {
+                clearTimeout(saveMessageTimeoutRef.current);
+            }
+            saveMessageTimeoutRef.current = window.setTimeout(() => {
+                setSaveMessage('');
+                saveMessageTimeoutRef.current = null;
+            }, 4000);
+        }
+    };
+
+    const handleBuildDepositFromPdf = async (event) => {
+        const file = event.target?.files?.[0];
+        if (!file) return;
+        event.target.value = '';
+        setSlipError('');
+        setSlipUrl('');
+        setSlipBusy(true);
+        try {
+            const formData = new FormData();
+            formData.append('checksPdf', file);
+            const response = await fetch(`${API_URL}/deposit-slip/pdf`, {
+                method: 'POST',
+                body: formData
+            });
+            if (!response.ok) throw new Error('Failed to build deposit slip from PDF');
+            const data = await response.json();
+            if (!data?.pdfBase64) throw new Error('Missing PDF data');
+            const blob = base64ToBlob(data.pdfBase64, 'application/pdf');
+            setSlipUrl((prev) => {
+                if (prev) URL.revokeObjectURL(prev);
+                return URL.createObjectURL(blob);
+            });
+        } catch (error) {
+            console.error('Deposit slip PDF error:', error);
+            setSlipError('Unable to build deposit slip from the uploaded PDF.');
+        } finally {
+            setSlipBusy(false);
+        }
     };
 
     useEffect(() => {
@@ -57,6 +164,12 @@ const Finance = () => {
         };
     }, [slipUrl]);
 
+    useEffect(() => () => {
+        if (saveMessageTimeoutRef.current) {
+            clearTimeout(saveMessageTimeoutRef.current);
+        }
+    }, []);
+
     const budgetTotals = useMemo(() => {
         return checks.reduce((acc, check) => {
             const budget = String(check.budget || '').trim();
@@ -66,6 +179,12 @@ const Finance = () => {
             return acc;
         }, {});
     }, [checks]);
+
+    const fundsReportEntries = useMemo(() => {
+        return Object.entries(budgetTotals)
+            .map(([code, total]) => ({ code, amount: total }))
+            .sort((a, b) => a.code.localeCompare(b.code));
+    }, [budgetTotals]);
 
     const cashTotal = useMemo(() => {
         return checks.reduce((sum, check) => {
@@ -92,12 +211,22 @@ const Finance = () => {
         try {
             const payloadChecks = checks.map((entry) => ({
                 checkNumber: entry.checkNumber || '',
-                amount: entry.amount || ''
+                amount: buildPayloadAmount(entry.amount)
             }));
             const response = await fetch(`${API_URL}/deposit-slip/manual`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ checks: payloadChecks })
+                body: JSON.stringify({
+                    checks: payloadChecks,
+                    totals: {
+                        cash: cashTotal,
+                        subtotal: overallTotal,
+                        total: overallTotal
+                    },
+                    fundsReport: {
+                        entries: fundsReportEntries
+                    }
+                })
             });
             if (!response.ok) throw new Error('Failed to build deposit slip');
             const data = await response.json();
@@ -127,17 +256,41 @@ const Finance = () => {
                         <h2>Deposit Slip Builder</h2>
                         <p>Enter up to 18 checks with check number, amount, and budget code information.</p>
                     </div>
-                    <button
-                        type="button"
-                        className="deposit-download-button"
-                        onClick={handleGenerateDepositSlip}
-                        disabled={slipBusy || overallTotal <= 0}
-                        aria-label="Download deposit slip"
-                    >
-                        <FaDownload />
-                    </button>
+                    <div className="deposit-header-actions">
+                        <button
+                            type="button"
+                            className="deposit-build-button"
+                            onClick={() => pdfInputRef.current?.click()}
+                            disabled={slipBusy}
+                        >
+                            Build deposit
+                        </button>
+                        <button
+                            type="button"
+                            className="deposit-save-button"
+                            onClick={handleSaveDepositData}
+                        >
+                            Save deposit data
+                        </button>
+                        <button
+                            type="button"
+                            className="deposit-download-button"
+                            onClick={handleGenerateDepositSlip}
+                            disabled={slipBusy || overallTotal <= 0}
+                            aria-label="Download deposit slip"
+                        >
+                            <FaDownload />
+                        </button>
+                    </div>
                 </div>
-                    <div className="deposit-builder-body">
+                <input
+                    ref={pdfInputRef}
+                    type="file"
+                    accept="application/pdf"
+                    style={{ display: 'none' }}
+                    onChange={handleBuildDepositFromPdf}
+                />
+                <div className="deposit-builder-body">
                         <div className="deposit-checks-table-wrapper">
                             <table className="deposit-checks-table">
                             <thead>
@@ -172,6 +325,7 @@ const Finance = () => {
                                                     step="0.01"
                                                     value={check.amount}
                                                     onChange={(event) => updateCheck(index, 'amount', event.target.value)}
+                                                    onBlur={(event) => updateCheck(index, 'amount', normalizeAmountInput(event.target.value))}
                                                     placeholder="0.00"
                                                 />
                                             </div>
@@ -214,6 +368,7 @@ const Finance = () => {
                             <strong>{formatCurrency(overallTotal)}</strong>
                         </div>
                         <div className="deposit-status-area">
+                            {saveMessage && <p className="deposit-save-message">{saveMessage}</p>}
                             {slipError && <div className="alert error">{slipError}</div>}
                         </div>
                     </div>

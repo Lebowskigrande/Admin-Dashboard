@@ -20,7 +20,7 @@ import { getAuthUrl, getTokensFromCode } from './googleAuth.js';
 import { fetchGoogleCalendarEvents, fetchCalendarList } from './googleCalendar.js';
 import { google } from 'googleapis';
 import { syncGoogleEvents } from './eventEngine.js';
-import { buildDepositSlipPdf, extractChecksFromImages } from './depositSlip.js';
+import { buildDepositSlipPdf, convertPdfToImages, extractChecksFromImages } from './depositSlip.js';
 
 dotenv.config({ path: './server/.env' });
 
@@ -197,6 +197,7 @@ const app = express();
 const PORT = 3001;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const upload = multer({ dest: join(tmpdir(), 'deposit-slip-uploads') });
+const pdfUpload = multer({ dest: join(tmpdir(), 'deposit-slip-pdf-uploads') });
 const vestryUpload = multer({ dest: join(tmpdir(), 'vestry-packet-uploads') });
 
 app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
@@ -2963,6 +2964,33 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
             }
         });
 
+        const parseCurrencyOverride = (value) => {
+            if (value == null) return null;
+            const normalized = String(value).trim().replace(/[^0-9.-]/g, '');
+            const parsed = Number.parseFloat(normalized);
+            return Number.isFinite(parsed) ? parsed : null;
+        };
+        const clientTotals = req.body?.totals || {};
+        const manualSubtotal = manualChecks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
+        const cashOverride = parseCurrencyOverride(clientTotals.cash);
+        const subtotalOverride = parseCurrencyOverride(clientTotals.subtotal);
+        const totalOverride = parseCurrencyOverride(clientTotals.total);
+        const cashValue = cashOverride != null ? cashOverride : cashTotal;
+        const subtotalValue = subtotalOverride != null ? subtotalOverride : manualSubtotal;
+        const totalValue = totalOverride != null ? totalOverride : subtotalValue + cashValue;
+        const rawFundsReportEntries = Array.isArray(req.body?.fundsReport?.entries)
+            ? req.body.fundsReport.entries
+            : [];
+        const fundsReportEntries = rawFundsReportEntries
+            .map((entry) => {
+                const code = String(entry?.code || '').trim();
+                const amount = parseCurrencyOverride(entry?.amount);
+                if (!code || amount == null) return null;
+                return { code, amount };
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.code.localeCompare(b.code));
+
         outputDir = join(tmpdir(), `deposit-slip-${Date.now()}`);
         const outputPath = join(outputDir, 'deposit-slip.pdf');
 
@@ -2971,14 +2999,22 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
             outputPath,
             checks: manualChecks,
             fieldMap: config.fieldMap || {},
-            totalOverride: cashTotal
+            totals: {
+                cash: cashValue,
+                subtotal: subtotalValue,
+                total: totalValue
+            },
+            fundsReport: {
+                entries: fundsReportEntries,
+                total: totalValue
+            }
         });
 
         const pdfBytes = await readFile(outputPath);
         const pdfBase64 = pdfBytes.toString('base64');
         res.json({
             pdfBase64,
-            cashTotal: Number.isFinite(cashTotal) ? cashTotal : 0
+            cashTotal: Number.isFinite(cashValue) ? cashValue : 0
         });
     } catch (error) {
         console.error('Manual deposit slip error:', error);
@@ -2991,6 +3027,135 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
         }
     }
 });
+
+app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res) => {
+    let conversionDir = null;
+    let uploadedPath = req.file?.path || null;
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'A PDF file is required' });
+        }
+        const configPath = resolve(__dirname, 'depositSlipConfig.json');
+        const config = JSON.parse(await readFile(configPath, 'utf8'));
+        const templatePath = resolve(__dirname, '..', config.templatePath || 'deposit slip template.pdf');
+
+        conversionDir = join(tmpdir(), `deposit-slip-pdf-${Date.now()}`);
+        await mkdir(conversionDir, { recursive: true });
+        const images = await convertPdfToImages(uploadedPath, conversionDir);
+        const checks = await extractChecksFromImages(images, {
+            ocrRegions: config.ocrRegions,
+            includeOcrLines: true,
+            ocrEngines: config.ocrEngines,
+            ocrRegionOrigin: config.ocrRegionOrigin,
+            ocrRegionAnchor: config.ocrRegionAnchor,
+            ocrModel: config.ocrModel,
+            ocrCropMaxSize: config.ocrCropMaxSize,
+            ocrPreviewOnly: config.ocrPreviewOnly === true,
+            ocrAlign: config.ocrAlign
+        });
+        const validChecks = checks.filter((check) => Number.isFinite(check.amount));
+        const subtotal = validChecks.reduce((sum, check) => sum + check.amount, 0);
+
+        const depositPath = join(conversionDir, 'deposit-slip.pdf');
+        await buildDepositSlipPdf({
+            templatePath,
+            outputPath: depositPath,
+            checks: validChecks,
+            fieldMap: config.fieldMap || {},
+            totals: {
+                cash: 0,
+                subtotal,
+                total: subtotal
+            },
+            fundsReport: {
+                entries: [],
+                total: subtotal
+            }
+        });
+
+        const depositBytes = await readFile(depositPath);
+        const depositDoc = await PDFDocument.load(depositBytes);
+        const finalDoc = await PDFDocument.create();
+        const [depositPage] = await finalDoc.copyPages(depositDoc, [0]);
+        finalDoc.addPage(depositPage);
+
+        const checkAssets = checks.map((check, index) => ({
+            ...check,
+            imagePath: images[index]
+        }));
+        await addCheckGridPages(finalDoc, checkAssets, {
+            pageWidth: depositPage.getWidth(),
+            pageHeight: depositPage.getHeight()
+        });
+
+        const finalBytes = await finalDoc.save();
+        res.json({ pdfBase64: finalBytes.toString('base64') });
+    } catch (error) {
+        console.error('PDF deposit slip error:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to build deposit slip from PDF' });
+        }
+    } finally {
+        if (conversionDir) {
+            await rm(conversionDir, { recursive: true, force: true }).catch(() => {});
+        }
+        if (uploadedPath) {
+            await rm(uploadedPath, { force: true }).catch(() => {});
+        }
+    }
+});
+
+const addCheckGridPages = async (pdfDoc, checks, options = {}) => {
+    const {
+        pageWidth = 612,
+        pageHeight = 792,
+        margin = 36,
+        columns = 2,
+        rows = 3,
+        colGap = 12,
+        rowGap = 12
+    } = options;
+    const perPage = columns * rows;
+    if (!checks || checks.length === 0) return;
+    let page = null;
+    let drawn = 0;
+    for (let index = 0; index < checks.length; index += 1) {
+        const entry = checks[index];
+        const base64 = entry?.alignedPreviewBase64;
+        let imageBytes = null;
+        if (base64) {
+            imageBytes = Buffer.from(base64, 'base64');
+        } else if (entry?.imagePath) {
+            try {
+                imageBytes = await readFile(entry.imagePath);
+            } catch {
+                imageBytes = null;
+            }
+        }
+        if (!imageBytes) continue;
+        if (drawn % perPage === 0) {
+            page = pdfDoc.addPage([pageWidth, pageHeight]);
+        }
+        const position = drawn % perPage;
+        const column = position % columns;
+        const row = Math.floor(position / columns);
+        const cellWidth = (pageWidth - margin * 2 - colGap * (columns - 1)) / columns;
+        const cellHeight = (pageHeight - margin * 2 - rowGap * (rows - 1)) / rows;
+        const targetX = margin + column * (cellWidth + colGap);
+        const targetYTop = pageHeight - margin - row * (cellHeight + rowGap);
+        const image = await pdfDoc.embedPng(imageBytes);
+        const scaled = image.scale(Math.min(cellWidth / image.width, cellHeight / image.height, 1));
+        const offsetX = targetX + (cellWidth - scaled.width) / 2;
+        const offsetY = targetYTop - scaled.height;
+        page.drawImage(image, {
+            x: offsetX,
+            y: offsetY,
+            width: scaled.width,
+            height: scaled.height
+        });
+        drawn += 1;
+    }
+};
 
 // Get roles for a specific date
 app.get('/api/roles/:date', (req, res) => {

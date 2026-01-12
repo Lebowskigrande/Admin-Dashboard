@@ -166,6 +166,12 @@
     margin-top: 6px;
 }
 
+.deposit-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
 .deposit-builder-body {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(220px, 0.6fr);
@@ -275,6 +281,12 @@
     min-height: 40px;
 }
 
+.deposit-save-message {
+    margin: 0;
+    font-size: 0.85rem;
+    color: #0f766e;
+}
+
 .deposit-download-button {
     border: none;
     background: var(--color-primary);
@@ -297,6 +309,43 @@
 }
 
 .deposit-download-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.deposit-save-button {
+    border: 1px solid #7dd3fc;
+    background: #e0f2fe;
+    color: #0369a1;
+    border-radius: 999px;
+    padding: 0.4rem 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.deposit-save-button:hover {
+    background: #bae6fd;
+    transform: translateY(-1px);
+}
+
+.deposit-build-button {
+    border: 1px solid #fde68a;
+    background: #fef9c3;
+    color: #92400e;
+    border-radius: 999px;
+    padding: 0.4rem 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.deposit-build-button:hover:not(:disabled) {
+    background: #fef08a;
+    transform: translateY(-1px);
+}
+
+.deposit-build-button:disabled {
     opacity: 0.6;
     cursor: not-allowed;
 }

@@ -23,7 +23,9 @@
     "micrTessLang": "eng"
   },
   "fieldMap": {
-    "total": "Cash",
+    "cash": "Cash",
+    "subtotal": "Subtotal",
+    "total": "Total",
     "date": "Date",
     "checks": [
       { "number": "ChkNum1", "amount": "ChkAmt1" },

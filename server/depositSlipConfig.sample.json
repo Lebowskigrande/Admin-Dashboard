@@ -23,8 +23,10 @@
     "micrTessLang": "eng"
   },
   "fieldMap": {
+    "cash": "cash_amount",
+    "subtotal": "total_subtotal",
+    "total": ["total_amount", "total_total"],
     "date": "deposit_date",
-    "total": "total_amount",
     "checks": [
       { "number": "check1_number", "amount": "check1_amount" },
       { "number": "check2_number", "amount": "check2_amount" },
