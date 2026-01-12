@@ -77,6 +77,27 @@ export const buildings = sqliteTable('buildings', {
     notes: text('notes')
 });
 
+export const rooms = sqliteTable('rooms', {
+    id: text('id').primaryKey(),
+    buildingId: text('building_id').notNull(),
+    name: text('name').notNull(),
+    floor: integer('floor'),
+    capacity: integer('capacity'),
+    rentalRate: real('rental_rate'),
+    notes: text('notes')
+});
+
+export const preferredVendors = sqliteTable('preferred_vendors', {
+    id: text('id').primaryKey(),
+    service: text('service'),
+    vendor: text('vendor').notNull(),
+    contact: text('contact'),
+    phone: text('phone'),
+    email: text('email'),
+    notes: text('notes'),
+    contract: text('contract')
+});
+
 export const eventCategories = sqliteTable('event_categories', {
     id: integer('id').primaryKey({ autoIncrement: true }),
     name: text('name').notNull(),

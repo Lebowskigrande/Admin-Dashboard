@@ -754,12 +754,14 @@ const fillField = (form, fieldName, value) => {
     field.setText(value ?? '');
 };
 
-export const buildDepositSlipPdf = async ({ templatePath, outputPath, checks, fieldMap }) => {
+export const buildDepositSlipPdf = async ({ templatePath, outputPath, checks, fieldMap, totalOverride }) => {
     const templateBytes = await readFile(templatePath);
     const pdfDoc = await PDFDocument.load(templateBytes);
     const form = pdfDoc.getForm();
 
-    const total = checks.reduce((sum, check) => sum + (check.amount || 0), 0);
+    const total = Number.isFinite(totalOverride)
+        ? totalOverride
+        : checks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
 
     const checkFields = fieldMap?.checks || [];
     checkFields.forEach((mapping, index) => {

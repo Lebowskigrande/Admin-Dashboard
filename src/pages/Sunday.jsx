@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { format, parseISO } from 'date-fns';
+import { format, isSameDay, parseISO } from 'date-fns';
 import Card from '../components/Card';
 import { API_URL } from '../services/apiConfig';
 import { ROLE_DEFINITIONS } from '../models/roles';
 import { clearLiturgicalCache, getFollowingSunday, getLiturgicalDay, getNextSunday, getPreviousSunday, getServicesByDate } from '../services/liturgicalService';
 import { getSundayDetails, saveSundayDetails } from '../services/sundayDetails';
+import { useEvents } from '../context/EventsContext';
+import { FaFolderOpen, FaYoutube, FaUpload, FaPrint, FaSyncAlt } from 'react-icons/fa';
 import './Sunday.css';
 import './People.css';
 
 const serializeDate = (date) => date.toISOString().slice(0, 10);
 
-const bulletinOptions = ['draft', 'review', 'ready', 'printed'];
-const livestreamOptions = ['Not Started', 'Created', 'Scheduled', 'Sent'];
+const bulletinOptions = ['Not Started', 'draft', 'review', 'ready', 'printed'];
+const insertOptions = ['Not Started', 'draft', 'review', 'ready', 'printed', 'stuffed'];
 
 const apiRoleKeys = new Set([
     'celebrant',
@@ -59,6 +61,7 @@ const roleLabel = (key) => ROLE_DEFINITIONS.find((role) => role.key === key)?.la
 const Sunday = () => {
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
+    const { events } = useEvents();
     const [currentDate, setCurrentDate] = useState(null);
     const [liturgicalInfo, setLiturgicalInfo] = useState(null);
     const [services, setServices] = useState([]);
@@ -75,6 +78,20 @@ const Sunday = () => {
     const [error, setError] = useState('');
     const [livestreamUrl, setLivestreamUrl] = useState('');
     const [livestreamError, setLivestreamError] = useState('');
+    const [ccFromEmails, setCcFromEmails] = useState([]);
+    const [ccFromEmail, setCcFromEmail] = useState('office-saintedmunds.org@shared1.ccsend.com');
+    const [ccFromEmailError, setCcFromEmailError] = useState('');
+    const [docsLoading, setDocsLoading] = useState(false);
+    const [uploadingBulletin, setUploadingBulletin] = useState(false);
+    const [uploadError, setUploadError] = useState('');
+    const [emailBusy, setEmailBusy] = useState(false);
+    const [emailError, setEmailError] = useState('');
+    const [bulletinDoc, setBulletinDoc] = useState({ exists: false, preview: '', path: '', name: '' });
+    const [bulletin8Doc, setBulletin8Doc] = useState({ exists: false, preview: '', path: '', name: '' });
+    const [insertDoc, setInsertDoc] = useState({ exists: false, preview: '', path: '', name: '' });
+    const [statusDrafts, setStatusDrafts] = useState({});
+    const [statusExpandedKey, setStatusExpandedKey] = useState(null);
+    const [selectedEventId, setSelectedEventId] = useState(null);
 
     const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
     const peopleByName = useMemo(() => {
@@ -264,6 +281,80 @@ const Sunday = () => {
         loadLivestream();
     }, [currentDate]);
 
+    const loadCcFromEmails = useCallback(async (keepCurrent = true) => {
+        setCcFromEmailError('');
+        try {
+            const response = await fetch(`${API_URL}/constant-contact/from-emails`);
+            if (!response.ok) {
+                if (response.status === 401) return;
+                throw new Error('Failed to load Constant Contact emails');
+            }
+            const data = await response.json().catch(() => ({}));
+            const emails = Array.isArray(data?.emails)
+                ? data.emails
+                : Array.isArray(data?.email_addresses)
+                    ? data.email_addresses
+                    : Array.isArray(data?.results)
+                        ? data.results
+                        : [];
+            const normalize = (value) => (value || '').toLowerCase().trim();
+            const confirmed = emails.filter((entry) => {
+                const status = (entry?.status || '').toLowerCase();
+                return status === 'confirmed' || status === 'verified' || status === 'active';
+            });
+            const pickFirst = (list) => {
+                for (const entry of list) {
+                    const candidate = entry?.email_address || entry?.email || entry?.address || '';
+                    if (candidate) return candidate;
+                }
+                return '';
+            };
+            setCcFromEmails(emails);
+            setCcFromEmail((prev) => {
+                const prevNormalized = normalize(prev);
+                const hasPrev = prevNormalized && emails.some((entry) => {
+                    const candidate = normalize(entry?.email_address || entry?.email || entry?.address);
+                    return candidate === prevNormalized;
+                });
+                if (keepCurrent && hasPrev) return prev;
+                return pickFirst(confirmed) || pickFirst(emails) || prev;
+            });
+        } catch (err) {
+            console.error(err);
+            setCcFromEmails([]);
+            setCcFromEmailError('Unable to load sender emails.');
+        }
+    }, []);
+
+    useEffect(() => {
+        loadCcFromEmails(true);
+    }, [loadCcFromEmails]);
+
+    useEffect(() => {
+        if (!currentDate) return;
+        const loadDocs = async () => {
+            setDocsLoading(true);
+            try {
+                const dateStr = serializeDate(currentDate);
+                const name = liturgicalInfo?.name || liturgicalInfo?.feast || '';
+                const response = await fetch(`${API_URL}/sunday/documents?date=${dateStr}&name=${encodeURIComponent(name)}`);
+                if (!response.ok) throw new Error('Failed to load document status');
+                const data = await response.json();
+                setBulletinDoc(data?.bulletin10 || { exists: false, preview: '', path: '', name: '' });
+                setBulletin8Doc(data?.bulletin8 || { exists: false, preview: '', path: '', name: '' });
+                setInsertDoc(data?.insert || { exists: false, preview: '', path: '', name: '' });
+            } catch (err) {
+                console.error(err);
+                setBulletinDoc({ exists: false, preview: '', path: '', name: '' });
+                setBulletin8Doc({ exists: false, preview: '', path: '', name: '' });
+                setInsertDoc({ exists: false, preview: '', path: '', name: '' });
+            } finally {
+                setDocsLoading(false);
+            }
+        };
+        loadDocs();
+    }, [currentDate, liturgicalInfo?.feast, liturgicalInfo?.name]);
+
     const handleNavigate = async (direction) => {
         if (!currentDate) return;
         const newDate = direction === 'prev'
@@ -391,10 +482,164 @@ const Sunday = () => {
         }
     };
 
+    const openFileLocation = async (path) => {
+        if (!path) return;
+        try {
+            await fetch(`${API_URL}/files/open`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path })
+            });
+        } catch (err) {
+            console.error(err);
+        }
+    };
+
+    const printFile = async (path) => {
+        if (!path) return;
+        try {
+            await fetch(`${API_URL}/files/print`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path })
+            });
+        } catch (err) {
+            console.error(err);
+        }
+    };
+
+    const renderStatusStack = (key, options, selected, onSelect, disabled) => {
+        const resolvedSelected = options.includes(selected) ? selected : options[0];
+        const activeIndex = Math.max(0, options.indexOf(resolvedSelected));
+        const draft = statusDrafts[key];
+        const displaySelected = draft || resolvedSelected;
+        const expanded = statusExpandedKey === key;
+        return (
+            <div
+                className={`status-stack ${disabled ? 'disabled' : ''} ${expanded ? 'expanded' : ''}`}
+                style={{ '--active-index': activeIndex, '--stack-count': options.length - 1 }}
+                onMouseEnter={() => {
+                    if (!disabled) setStatusExpandedKey(key);
+                }}
+                onMouseLeave={() => {
+                    if (statusDrafts[key]) {
+                        onSelect(statusDrafts[key]);
+                        setStatusDrafts((prev) => ({ ...prev, [key]: null }));
+                    }
+                    setStatusExpandedKey(null);
+                }}
+            >
+                <span className="status-anchor" aria-hidden="true">
+                    {displaySelected}
+                </span>
+                {options.map((option, index) => (
+                    <button
+                        key={option}
+                        type="button"
+                        className={`status-option ${displaySelected === option ? 'active' : ''}`}
+                        style={{ '--index': index }}
+                        onClick={() => {
+                            if (disabled) return;
+                            setStatusDrafts((prev) => ({ ...prev, [key]: option }));
+                        }}
+                        disabled={disabled}
+                    >
+                        {option}
+                    </button>
+                ))}
+            </div>
+        );
+    };
+
+    const handleUploadBulletin = async () => {
+        if (!bulletinDoc?.path || uploadingBulletin) return;
+        setUploadingBulletin(true);
+        setUploadError('');
+        try {
+            const response = await fetch(`${API_URL}/bulletins/upload`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: bulletinDoc.path })
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                throw new Error(payload?.error || 'Upload failed');
+            }
+            const data = await response.json();
+            updateDetailField('bulletinUploaded', true);
+            updateDetailField('bulletinUploadUrl', data?.url || '');
+            updateDetailField('bulletinImageUrl', data?.imageUrl || '');
+        } catch (err) {
+            console.error(err);
+            setUploadError('Upload failed.');
+        } finally {
+            setUploadingBulletin(false);
+        }
+    };
+
+    const handleCreateEmail = async () => {
+        if (emailBusy) return;
+        setEmailBusy(true);
+        setEmailError('');
+        try {
+            if (!currentDate) throw new Error('Missing date');
+            const payload = {
+                date: format(currentDate, 'MMMM d, yyyy'),
+                sundayName: liturgicalInfo?.name || liturgicalInfo?.feast || 'Sunday',
+                youtubeLink: livestreamUrl,
+                pdfUrl: details.bulletinUploadUrl,
+                imageUrl: details.bulletinImageUrl,
+                fromEmail: ccFromEmail || undefined
+            };
+            const response = await fetch(`${API_URL}/constant-contact/email`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data?.error || 'Email creation failed');
+            }
+            updateDetailField('emailCreated', true);
+            updateDetailField('emailScheduled', true);
+        } catch (err) {
+            console.error(err);
+            setEmailError('Unable to create Constant Contact email.');
+        } finally {
+            setEmailBusy(false);
+        }
+    };
+
+    const handleTestEmail = async () => {
+        if (emailBusy) return;
+        setEmailBusy(true);
+        setEmailError('');
+        try {
+            const response = await fetch(`${API_URL}/constant-contact/email`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ testEmpty: true, fromEmail: ccFromEmail || undefined })
+            });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                throw new Error(data?.error || 'Test email failed');
+            }
+        } catch (err) {
+            console.error(err);
+            setEmailError('Unable to create test email.');
+        } finally {
+            setEmailBusy(false);
+        }
+    };
+
     const renderTooltipCard = (person) => {
         if (!person) return null;
         const tags = person.tags || [];
         const extensionTag = tags.find((tag) => tag.startsWith('ext-'));
+        const phoneTag = tags.find((tag) => /^phone[:\-]/i.test(tag)) || tags.find((tag) => /^tel[:\-]/i.test(tag));
+        const rawPhone = phoneTag ? phoneTag.replace(/^phone[:\-]\s*/i, '').replace(/^tel[:\-]\s*/i, '').trim() : '';
+        const barePhoneTag = tags.find((tag) => !tag.startsWith('ext-') && /\d{3}[^0-9]?\d{3}[^0-9]?\d{4}/.test(tag || ''));
+        const phoneLabel = rawPhone || barePhoneTag || (extensionTag ? `Ext ${extensionTag.replace(/^ext-/, '')}` : '');
         const titleTags = tags.filter((tag) => tag && tag !== extensionTag);
         const metaChips = [...titleTags, ...(extensionTag ? [extensionTag] : [])];
 
@@ -404,15 +649,12 @@ const Sunday = () => {
                     <div className="person-main">
                         <div className="person-name">{person.displayName}</div>
                         {person.email && (
-                            <a className="person-email" href={`mailto:${person.email}`} target="_blank" rel="noreferrer">
+                            <a className="person-email" href={`mailto:${person.email}`}>
                                 {person.email}
                             </a>
                         )}
-                        {(person.phonePrimary || person.phoneAlternate) && (
-                            <div className="person-phone">
-                                {person.phonePrimary && <span>{person.phonePrimary}</span>}
-                                {person.phoneAlternate && <span>{person.phoneAlternate}</span>}
-                            </div>
+                        {phoneLabel && (
+                            <div className="person-phone">{phoneLabel}</div>
                         )}
                         {metaChips.length > 0 && (
                             <div className="meta-chip-row">
@@ -441,6 +683,43 @@ const Sunday = () => {
             </Card>
         );
     };
+
+    const bulletin10Status = bulletinDoc?.exists ? (details.bulletinStatus10 || 'draft') : 'Not Started';
+    const bulletin8Status = bulletin8Doc?.exists ? (details.bulletinStatus8 || 'draft') : 'Not Started';
+    const insertStatus = insertDoc.exists ? (details.bulletinInsertStatus || 'Not Started') : 'Not Started';
+    const bulletin10Display = bulletinDoc?.exists ? bulletin10Status : 'Not Started';
+    const bulletin8Display = bulletin8Doc?.exists ? bulletin8Status : 'Not Started';
+    const insertDisplay = insertDoc.exists ? insertStatus : 'Not Started';
+    const isBulletin10Complete = (statusDrafts.bulletin10 || bulletin10Status) === 'printed';
+    const isBulletin8Complete = (statusDrafts.bulletin8 || bulletin8Status) === 'printed';
+    const isInsertComplete = (statusDrafts.insert || insertStatus) === 'stuffed';
+    const sundayEvents = useMemo(() => {
+        if (!currentDate) return [];
+        return events
+            .filter((event) => {
+                if (!event?.date) return false;
+                if (!isSameDay(event.date, currentDate)) return false;
+                if (event.source === 'liturgical') return false;
+                if (event.type_slug === 'weekly-service') return false;
+                if (event.id === 'sunday-service') return false;
+                return true;
+            })
+            .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+    }, [currentDate, events]);
+
+    useEffect(() => {
+        if (!sundayEvents.length) {
+            setSelectedEventId(null);
+            return;
+        }
+        if (!selectedEventId || !sundayEvents.some((event) => event.id === selectedEventId)) {
+            setSelectedEventId(sundayEvents[0].id);
+        }
+    }, [selectedEventId, sundayEvents]);
+
+    const selectedEvent = useMemo(() => (
+        sundayEvents.find((event) => event.id === selectedEventId) || null
+    ), [sundayEvents, selectedEventId]);
 
     const servicePanels = useMemo(() => {
         return services.map((service) => (
@@ -590,8 +869,21 @@ const Sunday = () => {
     return (
         <div className="page-sunday">
             <header className="sunday-header">
-                <div>
-                    <h1>Sunday Planner</h1>
+                <div className="sunday-title">
+                    <h1>Sunday Planner: {currentDate ? format(currentDate, 'MMMM d, yyyy') : ''}</h1>
+                    <div className="sunday-subtitle">{liturgicalInfo?.name || liturgicalInfo?.feast || 'Sunday'}</div>
+                    <div className="sunday-nav">
+                        <button className="nav-icon" onClick={() => handleNavigate('prev')} aria-label="Previous Sunday">
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </button>
+                        <button className="nav-icon" onClick={() => handleNavigate('next')} aria-label="Next Sunday">
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </button>
+                    </div>
                 </div>
                 <button className="btn-primary" onClick={saveSunday} disabled={saving}>
                     {saving ? 'Saving...' : 'Save Updates'}
@@ -600,95 +892,337 @@ const Sunday = () => {
 
             {error && <div className="alert error">{error}</div>}
 
-            <div className="sunday-summary-row">
-                <Card className="sunday-summary-card">
-                    <div className="summary-header">
-                        <button className="nav-icon" onClick={() => handleNavigate('prev')} aria-label="Previous Sunday">
-                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                        </button>
-                        <div className="summary-date">
-                            <h2>{currentDate ? format(currentDate, 'MMMM d, yyyy') : ''}</h2>
-                            <div className={`liturgical-badge badge-${liturgicalInfo?.color}`}>{liturgicalInfo?.name || liturgicalInfo?.feast || 'Sunday'}</div>
-                            <div className="summary-notes">
-                                <span className="summary-notes-label">Notes</span>
-                                <textarea
-                                    value={details.notes || ''}
-                                    onChange={(event) => updateDetailField('notes', event.target.value)}
-                                    rows={2}
-                                    placeholder="Add notes for the Sunday..."
-                                />
-                            </div>
+            <div className="top-panel-row">
+                <Card
+                    id="bulletin-10am"
+                    className={`sunday-panel bulletin-card ${(statusDrafts.bulletin10 || bulletin10Status) === 'printed' ? 'panel-complete' : ''}`}
+                >
+                    {isBulletin10Complete && <span className="check-badge panel-check" aria-hidden="true">✓</span>}
+                    <div className="panel-header">
+                        <h3>10am Bulletin</h3>
+                        <div className="panel-actions">
+                            <button
+                                type="button"
+                                className="btn-icon btn-icon-ghost"
+                                onClick={() => openFileLocation(bulletinDoc?.path)}
+                                disabled={!bulletinDoc?.exists}
+                                aria-label="Open 10am bulletin folder"
+                                title="Open File Location"
+                            >
+                                <FaFolderOpen />
+                            </button>
+                            <button
+                                type="button"
+                                className="btn-icon btn-icon-ghost"
+                                onClick={() => printFile(bulletinDoc?.path)}
+                                disabled={!bulletinDoc?.exists}
+                                aria-label="Print 10am bulletin"
+                                title="Print"
+                            >
+                                <FaPrint />
+                            </button>
+                            <button
+                                type="button"
+                                className="btn-icon btn-icon-ghost"
+                                onClick={handleUploadBulletin}
+                                disabled={!bulletinDoc?.exists || uploadingBulletin}
+                                aria-label="Upload 10am bulletin"
+                                title="Upload to WordPress"
+                            >
+                                {uploadingBulletin ? <span className="btn-icon-loading" aria-hidden="true" /> : <FaUpload />}
+                            </button>
                         </div>
-                        <button className="nav-icon" onClick={() => handleNavigate('next')} aria-label="Next Sunday">
-                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                        </button>
+                    </div>
+                    <div className="doc-preview">
+                        {docsLoading && <span className="doc-spinner" aria-hidden="true" />}
+                        {bulletinDoc?.preview ? (
+                            <img src={bulletinDoc.preview} alt="10am bulletin preview" />
+                        ) : docsLoading ? null : (
+                            <div className="doc-preview-empty">No bulletin preview</div>
+                        )}
+                    </div>
+                    <div className="status-row">
+                        <span className="status-label">Status</span>
+                        {renderStatusStack(
+                            'bulletin10',
+                            bulletinOptions,
+                            bulletin10Display,
+                            (option) => updateDetailField('bulletinStatus10', option),
+                            !bulletinDoc?.exists
+                        )}
+                    </div>
+                    {uploadError && <div className="text-muted">{uploadError}</div>}
+                </Card>
+                <Card
+                    id="bulletin-8am"
+                    className={`sunday-panel bulletin-card ${(statusDrafts.bulletin8 || bulletin8Status) === 'printed' ? 'panel-complete' : ''}`}
+                >
+                    {isBulletin8Complete && <span className="check-badge panel-check" aria-hidden="true">✓</span>}
+                    <div className="panel-header">
+                        <h3>8am Bulletin</h3>
+                        <div className="panel-actions">
+                            <button
+                                type="button"
+                                className="btn-icon btn-icon-ghost"
+                                onClick={() => openFileLocation(bulletin8Doc?.path)}
+                                disabled={!bulletin8Doc?.exists}
+                                aria-label="Open 8am bulletin folder"
+                                title="Open File Location"
+                            >
+                                <FaFolderOpen />
+                            </button>
+                            <button
+                                type="button"
+                                className="btn-icon btn-icon-ghost"
+                                onClick={() => printFile(bulletin8Doc?.path)}
+                                disabled={!bulletin8Doc?.exists}
+                                aria-label="Print 8am bulletin"
+                                title="Print"
+                            >
+                                <FaPrint />
+                            </button>
+                        </div>
+                    </div>
+                    <div className="doc-preview">
+                        {docsLoading && <span className="doc-spinner" aria-hidden="true" />}
+                        {bulletin8Doc?.preview ? (
+                            <img src={bulletin8Doc.preview} alt="8am bulletin preview" />
+                        ) : docsLoading ? null : (
+                            <div className="doc-preview-empty">No bulletin preview</div>
+                        )}
+                    </div>
+                    <div className="status-row">
+                        <span className="status-label">Status</span>
+                        {renderStatusStack(
+                            'bulletin8',
+                            bulletinOptions,
+                            bulletin8Display,
+                            (option) => updateDetailField('bulletinStatus8', option),
+                            !bulletin8Doc?.exists
+                        )}
                     </div>
                 </Card>
-                <div className="summary-secondary">
-                    <Card className="livestream-card">
-                        <div className="panel-header">
-                            <h3>Livestream Email</h3>
-                            {livestreamUrl ? (
-                                <a className="btn-link" href={livestreamUrl} target="_blank" rel="noreferrer">
-                                    YouTube Link
-                                </a>
+                <Card
+                    className={`sunday-panel insert-card ${(statusDrafts.insert || insertStatus) === 'stuffed' ? 'panel-complete' : ''}`}
+                >
+                    {isInsertComplete && <span className="check-badge panel-check" aria-hidden="true">✓</span>}
+                    <div className="panel-header">
+                        <h3>Insert</h3>
+                        <div className="panel-actions">
+                            <button
+                                type="button"
+                                className="btn-icon btn-icon-ghost"
+                                onClick={() => openFileLocation(insertDoc.path)}
+                                disabled={!insertDoc.exists}
+                                aria-label="Open insert folder"
+                                title="Open File Location"
+                            >
+                                <FaFolderOpen />
+                            </button>
+                            <button
+                                type="button"
+                                className="btn-icon btn-icon-ghost"
+                                onClick={() => printFile(insertDoc.path)}
+                                disabled={!insertDoc.exists}
+                                aria-label="Print insert"
+                                title="Print"
+                            >
+                                <FaPrint />
+                            </button>
+                        </div>
+                    </div>
+                    <div className="doc-preview">
+                        {docsLoading && <span className="doc-spinner" aria-hidden="true" />}
+                        {insertDoc.preview ? (
+                            <img src={insertDoc.preview} alt="Insert preview" />
+                        ) : docsLoading ? null : (
+                            <div className="doc-preview-empty">No insert preview</div>
+                        )}
+                    </div>
+                    <div className="status-row">
+                        <span className="status-label">Status</span>
+                        {renderStatusStack(
+                            'insert',
+                            insertOptions,
+                            insertDisplay,
+                            (option) => updateDetailField('bulletinInsertStatus', option),
+                            !insertDoc.exists
+                        )}
+                    </div>
+                </Card>
+                <Card className="sunday-panel livestream-card">
+                    <div className="panel-header">
+                        <h3>Livestream Email</h3>
+                    </div>
+                    <div className="email-checklist-wrapper">
+                        <div className="email-checklist">
+                            <div className={`check-item ${livestreamUrl ? 'done' : ''}`}>
+                                <span className={`check-badge check-badge--sm ${livestreamUrl ? '' : 'check-badge--empty'}`} aria-hidden="true">
+                                    {livestreamUrl ? '✓' : ''}
+                                </span>
+                                <span>Livestream setup</span>
+                                {livestreamUrl && (
+                                    <a
+                                        className="btn-icon btn-icon-ghost youtube-link"
+                                        href={livestreamUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        aria-label="Open YouTube livestream"
+                                        title="Open YouTube"
+                                    >
+                                        <FaYoutube />
+                                    </a>
+                                )}
+                            </div>
+                            <div className={`check-item ${details.bulletinUploaded || details.bulletinUploadUrl ? 'done' : ''}`}>
+                                <span className={`check-badge check-badge--sm ${details.bulletinUploaded || details.bulletinUploadUrl ? '' : 'check-badge--empty'}`} aria-hidden="true">
+                                    {details.bulletinUploaded || details.bulletinUploadUrl ? '✓' : ''}
+                                </span>
+                                <span>Bulletin uploaded</span>
+                            </div>
+                        <button
+                            type="button"
+                            className={`check-item check-action ${details.emailCreated ? 'done' : ''}`}
+                            disabled={
+                                !livestreamUrl ||
+                                !(details.bulletinUploaded || details.bulletinUploadUrl) ||
+                                !details.bulletinImageUrl ||
+                                emailBusy
+                            }
+                            onClick={handleCreateEmail}
+                        >
+                            <span className={`check-badge check-badge--sm ${details.emailCreated ? '' : 'check-badge--empty'}`} aria-hidden="true">
+                                {details.emailCreated ? '✓' : ''}
+                            </span>
+                            <span>{emailBusy ? 'Creating email...' : 'Create email'}</span>
+                        </button>
+                        <button
+                            type="button"
+                            className="check-item check-action"
+                            disabled={emailBusy}
+                            onClick={handleTestEmail}
+                        >
+                            <span className="check-badge check-badge--sm check-badge--empty" aria-hidden="true" />
+                            <span>{emailBusy ? 'Testing email...' : 'Test empty email'}</span>
+                        </button>
+                            <div className={`check-item ${details.emailScheduled ? 'done' : ''}`}>
+                                <span className={`check-badge check-badge--sm ${details.emailScheduled ? '' : 'check-badge--empty'}`} aria-hidden="true">
+                                    {details.emailScheduled ? '✓' : ''}
+                                </span>
+                                <span>Email scheduled</span>
+                            </div>
+                            <div className={`check-item ${details.emailSent ? 'done' : ''}`}>
+                                <span className={`check-badge check-badge--sm ${details.emailSent ? '' : 'check-badge--empty'}`} aria-hidden="true">
+                                    {details.emailSent ? '✓' : ''}
+                                </span>
+                                <span>Email sent</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="email-sender-row">
+                        <span className="email-sender-label">From</span>
+                        <select
+                            className="email-sender-select"
+                            value={ccFromEmail}
+                            onChange={(event) => setCcFromEmail(event.target.value)}
+                        >
+                            <option value="">Select sender</option>
+                            {!ccFromEmails.some((entry) => {
+                                const emailValue = entry?.email_address || entry?.email || entry?.address || '';
+                                return emailValue === 'office@saintedmunds.org';
+                            }) && (
+                                <option value="office@saintedmunds.org">office@saintedmunds.org</option>
+                            )}
+                            {ccFromEmail && !ccFromEmails.some((entry) => {
+                                const emailValue = entry?.email_address || entry?.email || entry?.address || '';
+                                return emailValue === ccFromEmail;
+                            }) && (
+                                <option value={ccFromEmail}>{ccFromEmail}</option>
+                            )}
+                            {ccFromEmails.map((entry) => {
+                                const emailValue = entry?.email_address || entry?.email || entry?.address || '';
+                                if (!emailValue) return null;
+                                const status = entry?.status ? ` (${entry.status})` : '';
+                                return (
+                                    <option key={emailValue} value={emailValue}>
+                                        {emailValue}{status}
+                                    </option>
+                                );
+                            })}
+                        </select>
+                        <button
+                            type="button"
+                            className="btn-icon btn-icon-ghost"
+                            onClick={() => loadCcFromEmails(false)}
+                            aria-label="Refresh senders"
+                            title="Refresh senders"
+                        >
+                            <FaSyncAlt />
+                        </button>
+                    </div>
+                    {livestreamError && <div className="text-muted">{livestreamError}</div>}
+                    {ccFromEmailError && <div className="text-muted">{ccFromEmailError}</div>}
+                    {emailError && <div className="text-muted">{emailError}</div>}
+                </Card>
+            </div>
+
+            {sundayEvents.length > 0 && (
+                <Card className="sunday-panel events-panel">
+                    <div className="panel-header">
+                        <h3>Additional Sunday Events</h3>
+                    </div>
+                    <div className="events-panel-body">
+                        <div className="events-panel-list">
+                            {sundayEvents.map((eventItem) => (
+                                <button
+                                    key={eventItem.id}
+                                    type="button"
+                                    className={`event-row ${eventItem.id === selectedEventId ? 'active' : ''}`}
+                                    onClick={() => setSelectedEventId(eventItem.id)}
+                                >
+                                    <div className="event-row-main">
+                                        <span className="event-row-title">{eventItem.title}</span>
+                                        <span className="event-row-meta">
+                                            {eventItem.type_name || eventItem.category_name || 'Event'}
+                                        </span>
+                                    </div>
+                                    <span className="event-row-time">{eventItem.time || 'All day'}</span>
+                                </button>
+                            ))}
+                        </div>
+                        <div className="events-panel-detail">
+                            {!selectedEvent ? (
+                                <div className="empty-text">Select an event to see details.</div>
                             ) : (
-                                <span className="text-muted">No stream found</span>
+                                <div className="event-details">
+                                    <div className="event-detail-row">
+                                        <span className="event-detail-label">Title</span>
+                                        <span className="event-detail-value">{selectedEvent.title}</span>
+                                    </div>
+                                    <div className="event-detail-row">
+                                        <span className="event-detail-label">Time</span>
+                                        <span className="event-detail-value">{selectedEvent.time || 'All day'}</span>
+                                    </div>
+                                    <div className="event-detail-row">
+                                        <span className="event-detail-label">Location</span>
+                                        <span className="event-detail-value">{selectedEvent.location || 'TBD'}</span>
+                                    </div>
+                                    <div className="event-detail-row">
+                                        <span className="event-detail-label">Type</span>
+                                        <span className="event-detail-value">{selectedEvent.type_name || selectedEvent.category_name || 'Event'}</span>
+                                    </div>
+                                    {selectedEvent.description && (
+                                        <div className="event-detail-row">
+                                            <span className="event-detail-label">Notes</span>
+                                            <span className="event-detail-value">{selectedEvent.description}</span>
+                                        </div>
+                                    )}
+                                </div>
                             )}
                         </div>
-                        {livestreamError && <div className="text-muted">{livestreamError}</div>}
-                        <div
-                            className="livestream-status"
-                            style={{ '--active-index': Math.max(0, livestreamOptions.indexOf(details.livestreamEmailStatus || 'Not Started')) }}
-                        >
-                            <span className="livestream-indicator" aria-hidden="true" />
-                            {livestreamOptions.map((option) => (
-                                <button
-                                    key={option}
-                                    type="button"
-                                    className={`livestream-pill ${details.livestreamEmailStatus === option ? 'active' : ''}`}
-                                    onClick={() => updateDetailField('livestreamEmailStatus', option)}
-                                >
-                                    {option}
-                                </button>
-                            ))}
-                        </div>
-                        <div className="livestream-links">
-                            <a
-                                className="btn-secondary"
-                                href="https://login.constantcontact.com/"
-                                target="_blank"
-                                rel="noreferrer"
-                            >
-                                Create Campaign
-                            </a>
-                        </div>
-                    </Card>
-                    <Card id="bulletin" className="sunday-panel bulletin-card">
-                        <h3>Bulletin Status</h3>
-                        <div
-                            className="bulletin-status"
-                            style={{ '--active-index': Math.max(0, bulletinOptions.indexOf(details.bulletinStatus || 'draft')) }}
-                        >
-                            <span className="bulletin-indicator" aria-hidden="true" />
-                            {bulletinOptions.map((option) => (
-                                <button
-                                    key={option}
-                                    type="button"
-                                    className={`bulletin-pill ${details.bulletinStatus === option ? 'active' : ''}`}
-                                    onClick={() => updateDetailField('bulletinStatus', option)}
-                                >
-                                    {option}
-                                </button>
-                            ))}
-                        </div>
-                    </Card>
-                </div>
-            </div>
+                    </div>
+                </Card>
+            )}
 
             <section id="volunteers" className="sunday-services">
                 <div className="section-header">
@@ -699,6 +1233,7 @@ const Sunday = () => {
                     <Card className="empty-card">No service assignments available for this Sunday.</Card>
                 )}
             </section>
+
         </div>
     );
 };

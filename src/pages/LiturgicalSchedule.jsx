@@ -61,14 +61,22 @@ const roleConfigs = [
     { key: 'childcare', label: 'Childcare' }
 ];
 
-const SEASON_BY_COLOR = {
-    Green: 'Ordinary Time',
-    Purple: 'Advent/Lent',
-    White: 'Easter/Christmas',
-    Red: 'Pentecost'
-};
+const getSeasonLabel = (color, feast = '') => {
+    const normalized = (feast || '').toLowerCase();
+    if (normalized.includes('advent')) return 'Advent';
+    if (normalized.includes('lent')) return 'Lent';
+    if (normalized.includes('holy week') || normalized.includes('palm sunday')) return 'Holy Week';
+    if (normalized.includes('easter')) return 'Easter';
+    if (normalized.includes('pentecost')) return 'Pentecost';
+    if (normalized.includes('christmas')) return 'Christmas';
+    if (normalized.includes('epiphany') || normalized.includes('baptism of our lord')) return 'Epiphany';
 
-const getSeasonLabel = (color) => SEASON_BY_COLOR[color] || 'Season';
+    if (color === 'Green') return 'Ordinary Time';
+    if (color === 'Purple') return 'Advent/Lent';
+    if (color === 'White') return 'Easter/Christmas';
+    if (color === 'Red') return 'Pentecost';
+    return 'Season';
+};
 
 
 
@@ -276,6 +284,10 @@ const LiturgicalSchedule = () => {
         if (!person) return null;
         const tags = person.tags || [];
         const extensionTag = tags.find((tag) => tag.startsWith('ext-'));
+        const phoneTag = tags.find((tag) => /^phone[:\-]/i.test(tag)) || tags.find((tag) => /^tel[:\-]/i.test(tag));
+        const rawPhone = phoneTag ? phoneTag.replace(/^phone[:\-]\s*/i, '').replace(/^tel[:\-]\s*/i, '').trim() : '';
+        const barePhoneTag = tags.find((tag) => !tag.startsWith('ext-') && /\d{3}[^0-9]?\d{3}[^0-9]?\d{4}/.test(tag || ''));
+        const phoneLabel = rawPhone || barePhoneTag || (extensionTag ? `Ext ${extensionTag.replace(/^ext-/, '')}` : '');
         const titleTags = tags.filter((tag) => tag && tag !== extensionTag);
         const metaChips = [...titleTags, ...(extensionTag ? [extensionTag] : [])];
 
@@ -285,15 +297,12 @@ const LiturgicalSchedule = () => {
                     <div className="person-main">
                         <div className="person-name">{person.displayName}</div>
                         {person.email && (
-                            <a className="person-email" href={`mailto:${person.email}`} target="_blank" rel="noreferrer">
+                            <a className="person-email" href={`mailto:${person.email}`}>
                                 {person.email}
                             </a>
                         )}
-                        {(person.phonePrimary || person.phoneAlternate) && (
-                            <div className="person-phone">
-                                {person.phonePrimary && <span>{person.phonePrimary}</span>}
-                                {person.phoneAlternate && <span>{person.phoneAlternate}</span>}
-                            </div>
+                        {phoneLabel && (
+                            <div className="person-phone">{phoneLabel}</div>
                         )}
                         {metaChips.length > 0 && (
                             <div className="meta-chip-row">
@@ -507,7 +516,7 @@ const LiturgicalSchedule = () => {
                                             </div>
                                         </div>
                                         <div className="schedule-feast">
-                                            <span className={`liturgical-badge badge-${group.color}`}>{getSeasonLabel(group.color)}</span>
+                                            <span className={`liturgical-badge badge-${group.color}`}>{getSeasonLabel(group.color, group.feast)}</span>
                                         </div>
                                     </div>
                                     {group.services.map((entry) => (

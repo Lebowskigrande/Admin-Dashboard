@@ -1,4 +1,10 @@
 .page-buildings {
+    --map-color-building: #38bdf8;
+    --map-color-parking: #8b5cf6;
+    --map-color-grounds: #22c55e;
+    --map-color-entry: #f59e0b;
+    --map-color-worship: #f97316;
+    --map-color-all-purpose: #0ea5e9;
     padding: 1rem;
 }
 
@@ -11,14 +17,8 @@
 
 .campus-map-card {
     margin-bottom: 2rem;
-    background: #ffffff;
     height: calc(100vh - 120px);
     min-height: 520px;
-}
-
-.campus-map-card.card:hover {
-    transform: none;
-    box-shadow: var(--shadow-sm);
 }
 
 .campus-map-card .card-body {
@@ -74,8 +74,8 @@
 
 .campus-map-layout {
     display: grid;
-    grid-template-columns: minmax(200px, 0.6fr) minmax(0, 1.3fr) minmax(0, 0.8fr);
-    gap: 1.5rem;
+    grid-template-columns: minmax(200px, 0.45fr) minmax(0, 0.65fr) minmax(0, 1fr);
+    gap: 1rem;
     align-items: start;
     height: 100%;
     flex: 1;
@@ -160,55 +160,43 @@
     outline: none;
 }
 
-.campus-map-details,
-.campus-map-list-panel {
-    background: #f8fafc;
-    border-radius: 16px;
-    padding: 1.25rem;
-    border: 1px solid #e5e7eb;
+.campus-map-panel {
     height: 100%;
     min-height: 0;
 }
 
-.campus-map-details {
+.campus-map-panel .card-body {
+    height: 100%;
+}
+
+.campus-map-details .card-body {
     overflow: auto;
 }
 
-.campus-map-list-panel {
-    overflow: visible;
+.campus-map-list-panel .card-body {
+    overflow: auto;
 }
 
 .campus-map-list-panel h3 {
     margin: 0 0 0.75rem 0;
 }
 
-.map-tag {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.25rem 0.7rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-
-.map-tag-building {
+.campus-map-details .pill.map-tag-building {
     background: #e0f2fe;
     color: #075985;
 }
 
-.map-tag-parking {
+.campus-map-details .pill.map-tag-parking {
     background: #ede9fe;
     color: #5b21b6;
 }
 
-.map-tag-grounds {
+.campus-map-details .pill.map-tag-grounds {
     background: #dcfce7;
     color: #166534;
 }
 
-.map-tag-entry {
+.campus-map-details .pill.map-tag-entry {
     background: #fef3c7;
     color: #92400e;
 }
@@ -220,6 +208,143 @@
 .campus-map-details p {
     margin: 0 0 1rem 0;
     color: #6b7280;
+}
+
+.map-note {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.85rem;
+    color: #b91c1c;
+    font-weight: 600;
+}
+
+.building-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    margin-bottom: 0.8rem;
+}
+
+.building-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.5rem;
+}
+
+.building-stat {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 0.45rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.75rem;
+    color: #6b7280;
+    font-weight: 600;
+}
+
+.building-stat strong {
+    font-size: 0.95rem;
+    color: #111827;
+}
+
+.rooms-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.25rem;
+}
+
+.rooms-header-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-transform: none;
+    color: #111827;
+    cursor: pointer;
+}
+
+.rooms-caret {
+    font-size: 0.85rem;
+    transition: transform 0.2s ease;
+}
+
+.rooms-caret.open {
+    transform: rotate(180deg);
+}
+
+.rooms-count {
+    font-size: 0.75rem;
+    color: #6b7280;
+    font-weight: 500;
+}
+
+.rooms-list-wrapper {
+    overflow: hidden;
+    max-height: var(--rooms-height, 0px);
+    opacity: 0;
+    transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+}
+
+.rooms-list-wrapper.expanded {
+    opacity: 1;
+}
+
+.rooms-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-top: 0.4rem;
+}
+
+.room-row {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 0.35rem 0.5rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.45rem;
+    align-items: flex-start;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.rooms-list .room-row:hover {
+    background: var(--color-bg);
+    border-color: rgba(15, 23, 42, 0.2);
+    box-shadow: var(--shadow-sm);
+}
+
+.room-name {
+    font-weight: 600;
+    color: #111827;
+    font-size: 0.85rem;
+}
+
+.room-meta {
+    display: flex;
+    gap: 0.5rem;
+    font-size: 0.7rem;
+    color: #6b7280;
+    margin-top: 0.1rem;
+    flex-wrap: wrap;
+}
+
+.room-rate {
+    font-weight: 700;
+    color: #1f2937;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.room-rate.muted {
+    color: #9ca3af;
+    font-weight: 600;
 }
 
 .map-ticket-section {
@@ -330,47 +455,50 @@
 }
 
 .map-dot-building {
-    background: #38bdf8;
+    background: var(--map-color-building);
 }
 
 .map-dot-parking {
-    background: #8b5cf6;
+    background: var(--map-color-parking);
 }
 
 .map-dot-grounds {
-    background: #22c55e;
+    background: var(--map-color-grounds);
 }
 
 .map-dot-entry {
-    background: #f59e0b;
+    background: var(--map-color-entry);
 }
 
 .map-dot-worship {
-    background: #f97316;
+    background: var(--map-color-worship);
 }
 
 .map-dot-all-purpose {
-    background: #0ea5e9;
+    background: var(--map-color-all-purpose);
 }
 
 .map-category {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.2rem 0.55rem;
-    border-radius: 999px;
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    margin-left: 0.4rem;
+    margin-left: 0;
 }
 
-.map-category-worship {
+.map-pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.campus-map-details .pill {
+    width: fit-content;
+}
+
+.campus-map-details .pill.map-category-worship {
     background: #ffedd5;
     color: #9a3412;
 }
 
-.map-category-all-purpose {
+.campus-map-details .pill.map-category-all-purpose {
     background: #e0f2fe;
     color: #075985;
 }

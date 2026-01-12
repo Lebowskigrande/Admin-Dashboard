@@ -62,13 +62,6 @@ const buildTeamRoleKeys = (roles, teams) => {
 const defaultPersonForm = () => ({
     displayName: '',
     email: '',
-    phonePrimary: '',
-    phoneAlternate: '',
-    addressLine1: '',
-    addressLine2: '',
-    city: '',
-    state: '',
-    postalCode: '',
     category: 'volunteer',
     roles: [],
     tagsText: '',
@@ -80,7 +73,6 @@ const People = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [backupBusy, setBackupBusy] = useState(false);
-    const [backupMessage, setBackupMessage] = useState('');
     const [backupError, setBackupError] = useState('');
 
     const [selectedId, setSelectedId] = useState('');
@@ -113,29 +105,44 @@ const People = () => {
         }
     };
 
-    useEffect(() => {
-        loadPeople();
-    }, []);
+    const formatBackupTimestamp = (value) => {
+        if (!value) return 'Unknown time';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return 'Unknown time';
+        return date.toLocaleString();
+    };
 
-    const handleBackup = async () => {
+    const handleRestoreBackup = async () => {
         setBackupBusy(true);
-        setBackupMessage('');
         setBackupError('');
         try {
-            const response = await fetch(`${API_URL}/people/backup-db`, { method: 'POST' });
-            if (!response.ok) {
-                const payload = await response.json().catch(() => ({}));
-                throw new Error(payload.error || 'Backup failed');
-            }
-            const data = await response.json();
-            setBackupMessage(`Backup saved to Dropbox: ${data.path || 'completed'}`);
+            const response = await fetch(`${API_URL}/db-backups/latest`);
+            if (!response.ok) throw new Error('Failed to load backup info');
+            const latest = await response.json();
+            const timestamp = formatBackupTimestamp(latest.modified);
+            const confirmed = window.confirm(
+                `Restore the backup from ${timestamp}? This will replace the current database.`
+            );
+            if (!confirmed) return;
+
+            const restoreResponse = await fetch(`${API_URL}/db-backups/restore`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: latest.path })
+            });
+            if (!restoreResponse.ok) throw new Error('Failed to restore backup');
+            window.alert('Backup restored. The server will restart to load the restored database.');
         } catch (err) {
-            console.error('Backup error:', err);
-            setBackupError('Unable to back up database.');
+            console.error(err);
+            setBackupError('Unable to restore the database backup.');
         } finally {
             setBackupBusy(false);
         }
     };
+
+    useEffect(() => {
+        loadPeople();
+    }, []);
 
     const peopleById = useMemo(() => {
         const map = new Map();
@@ -232,13 +239,6 @@ const People = () => {
         setEditForm({
             displayName: person.displayName || '',
             email: person.email || '',
-            phonePrimary: person.phonePrimary || '',
-            phoneAlternate: person.phoneAlternate || '',
-            addressLine1: person.addressLine1 || '',
-            addressLine2: person.addressLine2 || '',
-            city: person.city || '',
-            state: person.state || '',
-            postalCode: person.postalCode || '',
             category: person.category || 'volunteer',
             roles: Array.isArray(person.roles) ? [...person.roles] : [],
             tagsText: (person.tags || []).join(', '),
@@ -278,13 +278,6 @@ const People = () => {
         const payload = {
             displayName: editForm.displayName,
             email: editForm.email,
-            phonePrimary: editForm.phonePrimary,
-            phoneAlternate: editForm.phoneAlternate,
-            addressLine1: editForm.addressLine1,
-            addressLine2: editForm.addressLine2,
-            city: editForm.city,
-            state: editForm.state,
-            postalCode: editForm.postalCode,
             category: editForm.category,
             roles: editForm.roles || [],
             tags: parseCommaList(editForm.tagsText),
@@ -310,13 +303,6 @@ const People = () => {
         const payload = {
             displayName: createForm.displayName,
             email: createForm.email,
-            phonePrimary: createForm.phonePrimary,
-            phoneAlternate: createForm.phoneAlternate,
-            addressLine1: createForm.addressLine1,
-            addressLine2: createForm.addressLine2,
-            city: createForm.city,
-            state: createForm.state,
-            postalCode: createForm.postalCode,
             category: createForm.category,
             roles: createForm.roles || [],
             tags: parseCommaList(createForm.tagsText),
@@ -391,17 +377,16 @@ const People = () => {
     };
 
     const renderTeamList = (teamsObj) => {
-        const roleKeys = buildTeamRoleKeys([], teamsObj)
-            .filter((roleKey) => (teamsObj?.[roleKey] || []).length > 0);
+        const roleKeys = buildTeamRoleKeys([], teamsObj);
         if (roleKeys.length === 0) {
-            return null;
+            return <span className="panel-meta">No team assignments.</span>;
         }
         return (
             <div className="team-grid">
                 {roleKeys.map((roleKey) => (
                     <div className="team-chip" key={roleKey}>
                         <span>{roleLabel(roleKey)}</span>
-                        <strong>{formatTeams(teamsObj?.[roleKey])}</strong>
+                        <strong>{formatTeams(teamsObj?.[roleKey]) || '-'}</strong>
                     </div>
                 ))}
             </div>
@@ -434,68 +419,6 @@ const People = () => {
                                     id="create-email"
                                     value={createForm.email}
                                     onChange={(event) => setCreateForm((prev) => ({ ...prev, email: event.target.value }))}
-                                />
-                            </div>
-                        </div>
-                        <div className="form-row">
-                            <div className="form-group">
-                                <label htmlFor="create-phone-primary">Phone (primary)</label>
-                                <input
-                                    id="create-phone-primary"
-                                    value={createForm.phonePrimary}
-                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, phonePrimary: event.target.value }))}
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label htmlFor="create-phone-alt">Phone (alternate)</label>
-                                <input
-                                    id="create-phone-alt"
-                                    value={createForm.phoneAlternate}
-                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, phoneAlternate: event.target.value }))}
-                                />
-                            </div>
-                        </div>
-                        <div className="form-row">
-                            <div className="form-group">
-                                <label htmlFor="create-address1">Address line 1</label>
-                                <input
-                                    id="create-address1"
-                                    value={createForm.addressLine1}
-                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, addressLine1: event.target.value }))}
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label htmlFor="create-address2">Address line 2</label>
-                                <input
-                                    id="create-address2"
-                                    value={createForm.addressLine2}
-                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, addressLine2: event.target.value }))}
-                                />
-                            </div>
-                        </div>
-                        <div className="form-row">
-                            <div className="form-group">
-                                <label htmlFor="create-city">City</label>
-                                <input
-                                    id="create-city"
-                                    value={createForm.city}
-                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, city: event.target.value }))}
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label htmlFor="create-state">State</label>
-                                <input
-                                    id="create-state"
-                                    value={createForm.state}
-                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, state: event.target.value }))}
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label htmlFor="create-postal">Postal code</label>
-                                <input
-                                    id="create-postal"
-                                    value={createForm.postalCode}
-                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, postalCode: event.target.value }))}
                                 />
                             </div>
                         </div>
@@ -609,68 +532,6 @@ const People = () => {
                         </div>
                         <div className="form-row">
                             <div className="form-group">
-                                <label htmlFor="edit-phone-primary">Phone (primary)</label>
-                                <input
-                                    id="edit-phone-primary"
-                                    value={editForm.phonePrimary}
-                                    onChange={(event) => setEditForm((prev) => ({ ...prev, phonePrimary: event.target.value }))}
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label htmlFor="edit-phone-alt">Phone (alternate)</label>
-                                <input
-                                    id="edit-phone-alt"
-                                    value={editForm.phoneAlternate}
-                                    onChange={(event) => setEditForm((prev) => ({ ...prev, phoneAlternate: event.target.value }))}
-                                />
-                            </div>
-                        </div>
-                        <div className="form-row">
-                            <div className="form-group">
-                                <label htmlFor="edit-address1">Address line 1</label>
-                                <input
-                                    id="edit-address1"
-                                    value={editForm.addressLine1}
-                                    onChange={(event) => setEditForm((prev) => ({ ...prev, addressLine1: event.target.value }))}
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label htmlFor="edit-address2">Address line 2</label>
-                                <input
-                                    id="edit-address2"
-                                    value={editForm.addressLine2}
-                                    onChange={(event) => setEditForm((prev) => ({ ...prev, addressLine2: event.target.value }))}
-                                />
-                            </div>
-                        </div>
-                        <div className="form-row">
-                            <div className="form-group">
-                                <label htmlFor="edit-city">City</label>
-                                <input
-                                    id="edit-city"
-                                    value={editForm.city}
-                                    onChange={(event) => setEditForm((prev) => ({ ...prev, city: event.target.value }))}
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label htmlFor="edit-state">State</label>
-                                <input
-                                    id="edit-state"
-                                    value={editForm.state}
-                                    onChange={(event) => setEditForm((prev) => ({ ...prev, state: event.target.value }))}
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label htmlFor="edit-postal">Postal code</label>
-                                <input
-                                    id="edit-postal"
-                                    value={editForm.postalCode}
-                                    onChange={(event) => setEditForm((prev) => ({ ...prev, postalCode: event.target.value }))}
-                                />
-                            </div>
-                        </div>
-                        <div className="form-row">
-                            <div className="form-group">
                                 <label htmlFor="edit-category">Category</label>
                                 <select
                                     id="edit-category"
@@ -738,22 +599,12 @@ const People = () => {
             );
         }
 
-        const teamsBlock = renderTeamList(selectedPerson.teams || {});
         return (
             <div className="people-panel people-detail-panel">
                 <div className="panel-title--row">
                     <div>
                         <h2 className="panel-title">{selectedPerson.displayName}</h2>
-                        {selectedPerson.email && (
-                            <a
-                                className="panel-meta person-email"
-                                href={`mailto:${selectedPerson.email}`}
-                                target="_blank"
-                                rel="noreferrer"
-                            >
-                                {selectedPerson.email}
-                            </a>
-                        )}
+                        <div className="panel-meta">{selectedPerson.email || 'No email on file'}</div>
                     </div>
                     <div className="panel-actions">
                         <button className="btn-ghost" type="button" onClick={() => beginEdit(selectedPerson)}>
@@ -770,34 +621,6 @@ const People = () => {
                         {CATEGORY_LABELS[selectedPerson.category] || selectedPerson.category || 'volunteer'}
                     </span>
                 </div>
-                {(selectedPerson.email || selectedPerson.phonePrimary || selectedPerson.phoneAlternate) && (
-                    <div className="detail-section">
-                        <span className="detail-label">Contact</span>
-                        <div className="detail-block">
-                            {selectedPerson.email && (
-                                <a href={`mailto:${selectedPerson.email}`} target="_blank" rel="noreferrer">
-                                    {selectedPerson.email}
-                                </a>
-                            )}
-                            {selectedPerson.phonePrimary && <span>{selectedPerson.phonePrimary}</span>}
-                            {selectedPerson.phoneAlternate && <span>{selectedPerson.phoneAlternate}</span>}
-                        </div>
-                    </div>
-                )}
-                {(selectedPerson.addressLine1 || selectedPerson.addressLine2 || selectedPerson.city || selectedPerson.state || selectedPerson.postalCode) && (
-                    <div className="detail-section">
-                        <span className="detail-label">Address</span>
-                        <div className="detail-block">
-                            {selectedPerson.addressLine1 && <span>{selectedPerson.addressLine1}</span>}
-                            {selectedPerson.addressLine2 && <span>{selectedPerson.addressLine2}</span>}
-                            {(selectedPerson.city || selectedPerson.state || selectedPerson.postalCode) && (
-                                <span>
-                                    {[selectedPerson.city, selectedPerson.state, selectedPerson.postalCode].filter(Boolean).join(', ')}
-                                </span>
-                            )}
-                        </div>
-                    </div>
-                )}
                 <div className="detail-section">
                     <span className="detail-label">Roles</span>
                     {renderRoleChips(selectedPerson.roles)}
@@ -806,12 +629,10 @@ const People = () => {
                     <span className="detail-label">Tags</span>
                     {renderTagChips(selectedPerson.tags)}
                 </div>
-                {teamsBlock && (
-                    <div className="detail-section">
-                        <span className="detail-label">Teams</span>
-                        {teamsBlock}
-                    </div>
-                )}
+                <div className="detail-section">
+                    <span className="detail-label">Teams</span>
+                    {renderTeamList(selectedPerson.teams || {})}
+                </div>
             </div>
         );
     };
@@ -827,8 +648,8 @@ const People = () => {
                     </p>
                 </div>
                 <div className="people-header-actions">
-                    <button className="btn-secondary" type="button" onClick={handleBackup} disabled={backupBusy}>
-                        {backupBusy ? 'Backing up...' : 'Backup Database'}
+                    <button className="btn-secondary" type="button" onClick={handleRestoreBackup} disabled={backupBusy}>
+                        {backupBusy ? 'Checking backup...' : 'Restore Backup'}
                     </button>
                     <button className="btn-primary" type="button" onClick={beginCreate}>
                         Add person
@@ -921,7 +742,6 @@ const People = () => {
             </div>
 
             {error && <div className="people-error">{error}</div>}
-            {backupMessage && <div className="people-success">{backupMessage}</div>}
             {backupError && <div className="people-error">{backupError}</div>}
 
             <div className="people-workspace people-workspace--split">
@@ -950,17 +770,7 @@ const People = () => {
                                 >
                                     <div>
                                         <div className="people-list-name">{person.displayName}</div>
-                                        {person.email && (
-                                            <a
-                                                className="people-list-email"
-                                                href={`mailto:${person.email}`}
-                                                target="_blank"
-                                                rel="noreferrer"
-                                                onClick={(event) => event.stopPropagation()}
-                                            >
-                                                {person.email}
-                                            </a>
-                                        )}
+                                        {person.email && <div className="people-list-email">{person.email}</div>}
                                     </div>
                                     <div className="people-list-meta">
                                         {person.category && (

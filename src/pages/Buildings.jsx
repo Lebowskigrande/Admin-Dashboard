@@ -1,120 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { FaPlus, FaTools, FaClipboardList, FaAddressBook, FaClipboardCheck, FaTrash } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
 import { API_URL } from '../services/apiConfig';
+import { MAP_AREAS } from '../data/areas';
 import './Buildings.css';
 
-const MAP_AREAS = [
-    {
-        id: 'sanctuary',
-        name: 'Church',
-        type: 'building',
-        category: 'Worship',
-        description: 'Main worship space, nave, and sacristy access.',
-        shape: 'poly',
-        points: [
-            [277, 554], [356, 536], [435, 557], [436, 591], [469, 591],
-            [468, 698], [431, 699], [428, 962], [355, 969], [273, 957],
-            [276, 697], [240, 694], [241, 593], [276, 592]
-        ]
-    },
-    {
-        id: 'parish-hall',
-        name: 'Fellows Hall',
-        type: 'building',
-        category: 'All Purpose',
-        description: 'Fellowship hall, kitchens, and meeting rooms.',
-        shape: 'rect',
-        rect: { x: 15, y: 1397, width: 226, height: 104 }
-    },
-    {
-        id: 'office',
-        name: 'Office/School',
-        type: 'building',
-        category: 'All Purpose',
-        description: 'Administration, classrooms, and staff workspace.',
-        shape: 'poly',
-        points: [
-            [20, 1025], [121, 1027], [121, 1079], [145, 1080], [144, 1122],
-            [118, 1123], [116, 1242], [151, 1244], [150, 1345], [204, 1343],
-            [241, 1396], [12, 1401]
-        ]
-    },
-    {
-        id: 'chapel',
-        name: 'Chapel',
-        type: 'building',
-        category: 'Worship',
-        description: 'Weekday services and quiet prayer.',
-        shape: 'rect',
-        rect: { x: 253, y: 1259, width: 241, height: 92 }
-    },
-    {
-        id: 'parking-north',
-        name: 'North Parking',
-        type: 'parking',
-        description: 'Primary lot with 48 spaces and ADA access.',
-        shape: 'rect',
-        rect: { x: 261, y: 14, width: 228, height: 530 }
-    },
-    {
-        id: 'parking-south',
-        name: 'South Parking',
-        type: 'parking',
-        description: 'Overflow lot and service access.',
-        shape: 'rect',
-        rect: { x: 247, y: 1353, width: 276, height: 148 }
-    },
-    {
-        id: 'playground',
-        name: 'Playground',
-        type: 'grounds',
-        description: 'Outdoor play area and family gathering space.',
-        shape: 'rect',
-        rect: { x: 11, y: 474, width: 226, height: 532 }
-    },
-    {
-        id: 'close',
-        name: 'Close',
-        type: 'grounds',
-        description: 'Green space, garden beds, and footpaths.',
-        shape: 'rect',
-        rect: { x: 238, y: 1040, width: 230, height: 170 }
-    },
-    {
-        id: 'main-gate',
-        name: 'Main Gate',
-        type: 'entry',
-        description: 'Main pedestrian entry off the street.',
-        shape: 'rect',
-        rect: { x: 494, y: 1098, width: 36, height: 30 }
-    },
-    {
-        id: 'south-parking-gate',
-        name: 'South Parking Gate',
-        type: 'entry',
-        description: 'Gate access to the south parking lot.',
-        shape: 'poly',
-        points: [
-            [213, 1352], [241, 1335], [255, 1356], [227, 1373]
-        ]
-    },
-    {
-        id: 'north-parking-gate',
-        name: 'North Parking Gate',
-        type: 'entry',
-        description: 'Gate access to the north parking lot.',
-        shape: 'rect',
-        rect: { x: 225, y: 498, width: 23, height: 55 }
-    }
-];
-
 const Buildings = () => {
+    const location = useLocation();
+    const [searchParams] = useSearchParams();
     const [activeTab, setActiveTab] = useState('repairs');
     const [showModal, setShowModal] = useState(false);
     const [activeArea, setActiveArea] = useState(null);
     const [hoveredArea, setHoveredArea] = useState(null);
+    const [buildings, setBuildings] = useState([]);
+    const [buildingsError, setBuildingsError] = useState('');
 
     const [tickets, setTickets] = useState([]);
     const [ticketsLoading, setTicketsLoading] = useState(true);
@@ -123,6 +24,9 @@ const Buildings = () => {
     const [selectedTicketId, setSelectedTicketId] = useState(null);
     const [pendingTicketScroll, setPendingTicketScroll] = useState(false);
     const ticketsViewRef = useRef(null);
+    const [roomsExpanded, setRoomsExpanded] = useState(false);
+    const roomsListRef = useRef(null);
+    const [roomsHeight, setRoomsHeight] = useState(0);
     const [newTicket, setNewTicket] = useState({
         title: '',
         description: '',
@@ -131,6 +35,18 @@ const Buildings = () => {
     });
     const [newNote, setNewNote] = useState('');
     const [newTaskText, setNewTaskText] = useState('');
+
+    const formatCurrency = (value) => {
+        if (value === null || value === undefined || value === '') return '';
+        const numeric = Number(value);
+        if (Number.isNaN(numeric)) return '';
+        return new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD',
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        }).format(numeric);
+    };
 
     // Repairs Data
     const [repairs, setRepairs] = useState([
@@ -148,11 +64,9 @@ const Buildings = () => {
     const [newNeed, setNewNeed] = useState('');
 
     // Vendors Data
-    const [vendors, setVendors] = useState([
-        { id: 1, name: 'Joe Plumber', service: 'Plumbing', phone: '555-0101', notes: 'Best for emergencies' },
-        { id: 2, name: 'Sparky Electric', service: 'Electrician', phone: '555-0102', notes: 'Has keys' },
-        { id: 3, name: 'Green Tree Care', service: 'Arborist', phone: '555-0103', notes: '' },
-    ]);
+    const [vendors, setVendors] = useState([]);
+    const [vendorsLoading, setVendorsLoading] = useState(true);
+    const [vendorsError, setVendorsError] = useState('');
 
     const handleRepairSubmit = (e) => {
         e.preventDefault();
@@ -231,28 +145,90 @@ const Buildings = () => {
 
     const renderVendors = () => (
         <Card>
-            <table className="vendors-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                    <tr>
-                        <th>Service</th>
-                        <th>Name</th>
-                        <th>Phone</th>
-                        <th>Notes</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {vendors.map(v => (
-                        <tr key={v.id}>
-                            <td><span className="category-tag">{v.service}</span></td>
-                            <td>{v.name}</td>
-                            <td>{v.phone}</td>
-                            <td>{v.notes}</td>
+            {vendorsError && <div className="ticket-error">{vendorsError}</div>}
+            {vendorsLoading ? (
+                <p className="empty-state">Loading preferred vendors...</p>
+            ) : vendors.length === 0 ? (
+                <p className="empty-state">No preferred vendors available yet.</p>
+            ) : (
+                <table className="vendors-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                        <tr>
+                            <th>Service</th>
+                            <th>Vendor</th>
+                            <th>Contact</th>
+                            <th>Phone</th>
+                            <th>Email</th>
+                            <th>Notes</th>
+                            <th>Contract</th>
                         </tr>
-                    ))}
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        {vendors.map((vendor) => (
+                            <tr key={vendor.id}>
+                                <td><span className="category-tag">{vendor.service}</span></td>
+                                <td>{vendor.vendor}</td>
+                                <td>{vendor.contact || '—'}</td>
+                                <td>{vendor.phone || '—'}</td>
+                                <td>
+                                    {vendor.email ? (
+                                        <a href={`mailto:${vendor.email}`}>{vendor.email}</a>
+                                    ) : '—'}
+                                </td>
+                                <td>{vendor.notes || '—'}</td>
+                                <td>{vendor.contract || '—'}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            )}
         </Card>
     );
+
+    useEffect(() => {
+        const loadBuildings = async () => {
+            setBuildingsError('');
+            try {
+                const response = await fetch(`${API_URL}/buildings`);
+                if (!response.ok) throw new Error('Failed to load buildings');
+                const data = await response.json();
+                setBuildings(Array.isArray(data) ? data : []);
+            } catch (error) {
+                console.error('Failed to load buildings:', error);
+                setBuildingsError('Unable to load building details.');
+            }
+        };
+        loadBuildings();
+    }, []);
+
+    useEffect(() => {
+        let canceled = false;
+        const loadVendors = async () => {
+            setVendorsError('');
+            setVendorsLoading(true);
+            try {
+                const response = await fetch(`${API_URL}/vendors`);
+                if (!response.ok) throw new Error('Failed to load vendors');
+                const data = await response.json();
+                if (!canceled) {
+                    setVendors(Array.isArray(data) ? data : []);
+                }
+            } catch (error) {
+                console.error('Failed to load preferred vendors:', error);
+                if (!canceled) {
+                    setVendorsError('Unable to load preferred vendors.');
+                }
+            } finally {
+                if (!canceled) {
+                    setVendorsLoading(false);
+                }
+            }
+        };
+        loadVendors();
+        return () => {
+            canceled = true;
+        };
+    }, []);
 
     const openTicketModal = (defaultAreaId = null) => {
         const areaIds = defaultAreaId ? [defaultAreaId] : [];
@@ -457,7 +433,7 @@ const Buildings = () => {
                                 </div>
                             </div>
 
-                            <div className="ticket-section">
+                            <div className="ticket-section" id="ticket-tasks">
                                 <h4>Tasks</h4>
                                 <div className="ticket-task-form">
                                     <input
@@ -528,9 +504,46 @@ const Buildings = () => {
         </div>
     );
 
+    const buildingsById = useMemo(() => {
+        return new Map(buildings.map((building) => [building.id, building]));
+    }, [buildings]);
+
+    const mapAreas = useMemo(() => {
+        return MAP_AREAS.map((area) => {
+            if (area.type !== 'building') return area;
+            const building = buildingsById.get(area.id);
+            if (!building) return area;
+            return {
+                ...area,
+                name: building.name || area.name,
+                category: building.category || area.category,
+                description: building.notes || area.description
+            };
+        });
+    }, [buildingsById]);
+
     const activeDetails = useMemo(() => {
-        return hoveredArea || activeArea || null;
-    }, [hoveredArea, activeArea]);
+        const current = hoveredArea || activeArea || null;
+        if (!current) return null;
+        const match = mapAreas.find((area) => area.id === current.id);
+        return match || current;
+    }, [hoveredArea, activeArea, mapAreas]);
+
+    const activeBuilding = activeDetails?.type === 'building'
+        ? buildingsById.get(activeDetails.id)
+        : null;
+    useLayoutEffect(() => {
+        if (!roomsListRef.current) {
+            setRoomsHeight(0);
+            return;
+        }
+        const measured = roomsListRef.current.scrollHeight;
+        setRoomsHeight(roomsExpanded ? measured : 0);
+    }, [roomsExpanded, activeBuilding?.rooms?.length]);
+
+    useEffect(() => {
+        setRoomsExpanded(false);
+    }, [activeDetails?.id]);
 
     const clearSelection = () => {
         setHoveredArea(null);
@@ -541,6 +554,7 @@ const Buildings = () => {
         if (!target) return false;
         if (target.closest('.campus-map-image')) return true;
         if (target.closest('.map-area')) return true;
+        if (target.closest('.campus-map-details')) return true;
         if (target.closest('button, input, select, textarea, a, label')) return true;
         return false;
     };
@@ -550,7 +564,7 @@ const Buildings = () => {
         const buildingBuckets = new Map(priority.map((value) => [value, []]));
         const rest = [];
 
-        MAP_AREAS.forEach((area) => {
+        mapAreas.forEach((area) => {
             if (area.category && buildingBuckets.has(area.category)) {
                 buildingBuckets.get(area.category).push(area);
                 return;
@@ -562,14 +576,14 @@ const Buildings = () => {
             ...priority.flatMap((key) => buildingBuckets.get(key)),
             ...rest
         ];
-    }, []);
+    }, [mapAreas]);
 
     const areaById = useMemo(() => {
-        return MAP_AREAS.reduce((acc, area) => {
+        return mapAreas.reduce((acc, area) => {
             acc[area.id] = area;
             return acc;
         }, {});
-    }, []);
+    }, [mapAreas]);
 
     const activeAreaTickets = useMemo(() => {
         if (!activeDetails?.id) return [];
@@ -607,6 +621,29 @@ const Buildings = () => {
         loadTickets();
     }, [selectedTicketId]);
 
+    const tasksScrollRef = useRef(null);
+
+    useEffect(() => {
+        const ticketParam = searchParams.get('ticket');
+        if (!ticketParam || tickets.length === 0) return;
+        const match = tickets.find((ticket) => `${ticket.id}` === ticketParam);
+        if (!match) return;
+        setSelectedTicketId(match.id);
+        setActiveTab('tickets');
+        setPendingTicketScroll(true);
+    }, [searchParams, tickets]);
+
+    useEffect(() => {
+        if (location.hash !== '#ticket-tasks') return;
+        if (!selectedTicketId || activeTab !== 'tickets') return;
+        if (tasksScrollRef.current === selectedTicketId) return;
+        const node = document.getElementById('ticket-tasks');
+        if (node) {
+            node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            tasksScrollRef.current = selectedTicketId;
+        }
+    }, [activeTab, location.hash, selectedTicketId]);
+
     useEffect(() => {
         if (!pendingTicketScroll || activeTab !== 'tickets') return;
         const node = ticketsViewRef.current;
@@ -638,8 +675,8 @@ const Buildings = () => {
 
             <Card className="campus-map-card">
                 <div className="campus-map-layout">
-                    <div
-                        className="campus-map-list-panel"
+                    <Card
+                        className="campus-map-panel campus-map-list-panel"
                         onMouseLeave={() => setHoveredArea(null)}
                     >
                         <h3>Locations</h3>
@@ -667,7 +704,7 @@ const Buildings = () => {
                                 );
                             })}
                         </div>
-                    </div>
+                    </Card>
                     <div
                         className="campus-map-wrapper"
                         onMouseLeave={() => setHoveredArea(null)}
@@ -679,7 +716,7 @@ const Buildings = () => {
                                 viewBox="0 0 554 1504"
                                 preserveAspectRatio="xMidYMid meet"
                             >
-                                {MAP_AREAS.map((area) => {
+                                {mapAreas.map((area) => {
                                     const isActive = hoveredArea?.id === area.id || activeArea?.id === area.id;
                                     const categoryKey = area.category
                                         ? area.category.toLowerCase().replace(/\s+/g, '-')
@@ -731,7 +768,10 @@ const Buildings = () => {
                             </svg>
                         </div>
                     </div>
-                    <div className="campus-map-details">
+                    <Card
+                        className="campus-map-panel campus-map-details"
+                        onClickCapture={(event) => event.stopPropagation()}
+                    >
                         {!activeDetails && (
                             <div className="map-empty">
                                 <h3>Pick a location</h3>
@@ -740,16 +780,128 @@ const Buildings = () => {
                         )}
                         {activeDetails && (
                             <>
-                                <span className={`map-tag map-tag-${activeDetails?.type || 'building'}`}>
-                                    {activeDetails?.type === 'parking' ? 'Parking' : activeDetails?.type === 'grounds' ? 'Grounds' : activeDetails?.type === 'entry' ? 'Entry' : 'Building'}
-                                </span>
-                                {activeDetails?.category && (
-                                    <span className={`map-category map-category-${activeDetails.category.toLowerCase().replace(/\s+/g, '-')}`}>
-                                        {activeDetails.category}
+                                <div className="map-pill-row">
+                                    <span className={`pill map-tag map-tag-${activeDetails?.type || 'building'}`}>
+                                        {activeDetails?.type === 'parking' ? 'Parking' : activeDetails?.type === 'grounds' ? 'Grounds' : activeDetails?.type === 'entry' ? 'Entry' : 'Building'}
                                     </span>
-                                )}
+                                    {activeDetails?.category && (
+                                        <span className={`pill map-category map-category-${activeDetails.category.toLowerCase().replace(/\s+/g, '-')}`}>
+                                            {activeDetails.category}
+                                        </span>
+                                    )}
+                                </div>
                                 <h3>{activeDetails?.name}</h3>
                                 <p>{activeDetails?.description}</p>
+                                {buildingsError && (
+                                    <div className="map-note">{buildingsError}</div>
+                                )}
+                                {activeBuilding && (
+                                    <div className="building-info">
+                                        <div className="building-stats">
+                                            {activeBuilding.capacity ? (
+                                                <div className="building-stat">
+                                                    <span>Capacity</span>
+                                                    <strong>{activeBuilding.capacity}</strong>
+                                                </div>
+                                            ) : null}
+                                            {activeBuilding.rental_rate_hour ? (
+                                                <div className="building-stat">
+                                                    <span>Hourly rate</span>
+                                                    <strong>{formatCurrency(activeBuilding.rental_rate_hour)}</strong>
+                                                </div>
+                                            ) : null}
+                                            {activeBuilding.rental_rate_day ? (
+                                                <div className="building-stat">
+                                                    <span>Rental rate</span>
+                                                    <strong>{formatCurrency(activeBuilding.rental_rate_day)}</strong>
+                                                </div>
+                                            ) : null}
+                                            {activeBuilding.rental_rate && !activeBuilding.rental_rate_day && !activeBuilding.rental_rate_hour ? (
+                                                <div className="building-stat">
+                                                    <span>Rental rate</span>
+                                                    <strong>{formatCurrency(activeBuilding.rental_rate)}</strong>
+                                                </div>
+                                            ) : null}
+                                            {activeBuilding.parking_spaces ? (
+                                                <div className="building-stat">
+                                                    <span>Parking</span>
+                                                    <strong>{activeBuilding.parking_spaces}</strong>
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                        {Array.isArray(activeBuilding.rooms) && activeBuilding.rooms.length > 0 && (
+                                            <div className="rooms-section">
+                                                <div className="rooms-header">
+                                                    <button
+                                                        type="button"
+                                                        className="rooms-header-toggle"
+                                                        onClick={() => setRoomsExpanded((prev) => !prev)}
+                                                        aria-expanded={roomsExpanded}
+                                                    >
+                                                        <span>Rooms</span>
+                                                        <span className={`rooms-caret ${roomsExpanded ? 'open' : ''}`} aria-hidden="true">
+                                                            ▾
+                                                        </span>
+                                                    </button>
+                                                    <span className="rooms-count">
+                                                        {activeBuilding.rooms.length} rooms
+                                                    </span>
+                                                </div>
+                                                <div
+                                                    className={`rooms-list-wrapper ${roomsExpanded ? 'expanded' : ''}`}
+                                                    aria-hidden={!roomsExpanded}
+                                                    style={{ '--rooms-height': `${roomsHeight}px` }}
+                                                >
+                                                    {(() => {
+                                                        const floors = Array.from(
+                                                            new Set(
+                                                                activeBuilding.rooms
+                                                                    .map((room) => room.floor)
+                                                                    .filter((floor) => floor !== null && floor !== '')
+                                                            )
+                                                        );
+                                                        const showFloor = floors.length > 1;
+                                                        const floorLabel = (floor) => {
+                                                            if (floor === 0) return 'Basement';
+                                                            if (floor === 1) return 'First Floor';
+                                                            if (floor === 2) return 'Second Floor';
+                                                            return `Floor ${floor}`;
+                                                        };
+                                                        const sortedRooms = [...activeBuilding.rooms].sort((a, b) => {
+                                                            const aHasRate = a.rental_rate ? 1 : 0;
+                                                            const bHasRate = b.rental_rate ? 1 : 0;
+                                                            if (aHasRate !== bHasRate) return bHasRate - aHasRate;
+                                                            const aFloor = a.floor === null || a.floor === '' ? -1 : Number(a.floor);
+                                                            const bFloor = b.floor === null || b.floor === '' ? -1 : Number(b.floor);
+                                                            if (aFloor !== bFloor) return bFloor - aFloor;
+                                                            return (a.name || '').localeCompare(b.name || '');
+                                                        });
+                                                        return (
+                                                            <div className="rooms-list" ref={roomsListRef}>
+                                                                {sortedRooms.map((room) => (
+                                                                    <div key={room.id} className="room-row">
+                                                                        <div>
+                                                                            <div className="room-name">{room.name}</div>
+                                                                            <div className="room-meta">
+                                                                                {showFloor && room.floor !== null && room.floor !== '' ? (
+                                                                                    <span>{floorLabel(room.floor)}</span>
+                                                                                ) : null}
+                                                                                {room.capacity ? <span>{room.capacity} seats</span> : null}
+                                                                            </div>
+                                                                        </div>
+                                                                        {room.rental_rate ? (
+                                                                            <span className="room-rate">{formatCurrency(room.rental_rate)}</span>
+                                                                        ) : null}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
                                 {activeAreaTickets.length > 0 && (
                                     <div className="map-ticket-section">
                                         <h4>Active Tickets</h4>
@@ -775,7 +927,7 @@ const Buildings = () => {
                                 )}
                             </>
                         )}
-                    </div>
+                    </Card>
                 </div>
             </Card>
 
@@ -872,7 +1024,7 @@ const Buildings = () => {
                     <div className="form-group">
                         <label>Areas</label>
                         <div className="ticket-area-grid">
-                            {MAP_AREAS.map((area) => (
+                            {mapAreas.map((area) => (
                                 <label key={area.id} className="ticket-area-option">
                                     <input
                                         type="checkbox"

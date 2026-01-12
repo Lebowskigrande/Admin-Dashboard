@@ -2,14 +2,16 @@
     display: flex;
     height: 100vh;
     overflow: hidden;
+    overflow-x: hidden;
 }
 
 .main-content {
     flex: 1;
     margin-left: 300px;
     /* Match sidebar width */
-    padding: var(--space-xl);
+    padding: var(--space-lg);
     background-color: var(--color-bg);
     height: 100vh;
     overflow-y: auto;
+    overflow-x: hidden;
 }

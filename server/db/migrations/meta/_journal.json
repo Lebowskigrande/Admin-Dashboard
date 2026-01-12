@@ -5,6 +5,18 @@
       "when": 1735689600000,
       "tag": "0000_init",
       "breakpoints": false
+    },
+    {
+      "idx": 1,
+      "when": 1768196805189,
+      "tag": "0001_rooms",
+      "breakpoints": false
+    },
+    {
+      "idx": 2,
+      "when": 1768201620442,
+      "tag": "0002_preferred_vendors",
+      "breakpoints": false
     }
   ]
 }

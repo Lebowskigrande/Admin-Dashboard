@@ -30,6 +30,10 @@
     overflow: visible;
 }
 
+.card.schedule-card {
+    overflow: visible;
+}
+
 .schedule-card__header {
     display: flex;
     justify-content: space-between;

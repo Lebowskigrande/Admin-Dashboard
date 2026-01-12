@@ -24,6 +24,7 @@
   },
   "fieldMap": {
     "total": "Cash",
+    "date": "Date",
     "checks": [
       { "number": "ChkNum1", "amount": "ChkAmt1" },
       { "number": "ChkNum2", "amount": "ChkAmt2" },

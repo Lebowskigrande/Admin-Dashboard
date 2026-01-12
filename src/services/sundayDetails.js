@@ -1,8 +1,17 @@
 const STORAGE_PREFIX = 'sunday-details:';
 
 const defaultDetails = {
-    bulletinStatus: 'draft',
+    bulletinStatus: 'Not Started',
+    bulletinStatus10: 'Not Started',
+    bulletinStatus8: 'Not Started',
     bulletinNotes: '',
+    bulletinInsertStatus: 'Not Started',
+    bulletinUploaded: false,
+    bulletinUploadUrl: '',
+    bulletinImageUrl: '',
+    emailCreated: false,
+    emailScheduled: false,
+    emailSent: false,
     staffHours: [],
     notes: '',
     livestreamEmailStatus: 'Not Started',

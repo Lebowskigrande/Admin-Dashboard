@@ -117,6 +117,22 @@ const normalizeBuildingId = (value) => {
 };
 
 const hashId = (value) => createHash('sha1').update(String(value)).digest('hex');
+const parseNotes = (value) => {
+    if (!value) return {};
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+};
+
+const isSundayDate = (dateStr) => {
+    if (!dateStr) return false;
+    const date = new Date(`${dateStr}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return false;
+    return date.getDay() === 0;
+};
 
 export const syncGoogleEvents = async (fetchFn, { userId, tokens }) => {
     const { categories, eventTypes } = getEventContext();
@@ -177,6 +193,63 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens }) => {
         const categorization = categorizeGoogleEvent(event, categories, eventTypes);
         const globalId = event.iCalUID || event.id;
         const normalizedTime = time || '';
+        const isWeeklyService = categorization.type_slug === 'weekly-service';
+
+        if (isWeeklyService && isSundayDate(date)) {
+            const timeValue = normalizedTime || null;
+            const existing = timeValue
+                ? sqlite.prepare(`
+                    SELECT id, notes, building_id FROM event_occurrences
+                    WHERE event_id = 'sunday-service' AND date = ? AND start_time = ?
+                `).get(date, timeValue)
+                : sqlite.prepare(`
+                    SELECT id, notes, building_id FROM event_occurrences
+                    WHERE event_id = 'sunday-service' AND date = ? AND start_time IS NULL
+                `).get(date);
+            const baseNotes = parseNotes(existing?.notes);
+            const nextNotes = {
+                ...baseNotes,
+                google: {
+                    ...(baseNotes.google || {}),
+                    externalId: globalId,
+                    iCalUid: event.iCalUID || null,
+                    calendarId: event.organizer?.email || null
+                }
+            };
+            const buildingId = normalizeBuildingId(event.location) || existing?.building_id || null;
+            const rite = normalizedTime.startsWith('08')
+                ? 'Rite I'
+                : (normalizedTime.startsWith('10') ? 'Rite II' : null);
+
+            if (!existing) {
+                const occurrenceId = `occ-${hashId(`sunday-service-${date}-${normalizedTime || 'all-day'}`)}`;
+                sqlite.prepare(`
+                    INSERT INTO event_occurrences (
+                        id, event_id, date, start_time, end_time, building_id, rite, is_default, notes
+                    ) VALUES (?, 'sunday-service', ?, ?, ?, ?, ?, 0, ?)
+                `).run(
+                    occurrenceId,
+                    date,
+                    timeValue,
+                    null,
+                    buildingId,
+                    rite,
+                    JSON.stringify(nextNotes)
+                );
+            } else {
+                sqlite.prepare(`
+                    UPDATE event_occurrences
+                    SET building_id = ?, notes = ?
+                    WHERE id = ?
+                `).run(
+                    buildingId,
+                    JSON.stringify(nextNotes),
+                    existing.id
+                );
+            }
+            totalSynced++;
+            continue;
+        }
 
         // Handle possible conflicts on either external_id OR semantic key
         // SQLite doesn't support multiple ON CONFLICT targets easily, so we use a transaction or manual check

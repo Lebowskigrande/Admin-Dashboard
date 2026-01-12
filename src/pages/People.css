@@ -466,6 +466,11 @@
     max-width: 260px;
 }
 
+.person-phone {
+    color: var(--color-text-secondary);
+    font-size: 0.88rem;
+}
+
 .meta-chip-row {
     display: flex;
     gap: 0.35rem;

@@ -3,13 +3,13 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { readFile, rm } from 'fs/promises';
+import { access, copyFile, mkdir, readFile, readdir, rm, stat } from 'fs/promises';
 import { join, dirname, resolve, basename, extname } from 'path';
-import { tmpdir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { sqlite } from './db.js';
 import { runMigrations } from './db/migrate.js';
 import { seedNormalized } from './db/seedNormalized.js';
@@ -26,6 +26,170 @@ dotenv.config({ path: './server/.env' });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const backupDir = process.env.DB_BACKUP_DIR || 'C:\\Users\\jclar\\Dropbox\\Parish Administrator';
+const backupPattern = /^church-db-.*\.db$/i;
+const CC_AUTH_URL = 'https://authz.constantcontact.com/oauth2/default/v1/authorize';
+const CC_TOKEN_URL = 'https://authz.constantcontact.com/oauth2/default/v1/token';
+const CC_API_BASE = 'https://api.cc.email/v3';
+
+const getCcUserId = (req) => req.user?.id || 'local';
+
+const findLatestDbBackup = async () => {
+    const entries = await readdir(backupDir, { withFileTypes: true });
+    const files = entries.filter((entry) => entry.isFile() && backupPattern.test(entry.name));
+    if (files.length === 0) return null;
+    const stats = await Promise.all(
+        files.map(async (entry) => {
+            const fullPath = join(backupDir, entry.name);
+            const fileStats = await stat(fullPath);
+            return { name: entry.name, path: fullPath, mtimeMs: fileStats.mtimeMs };
+        })
+    );
+    stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const latest = stats[0];
+    return {
+        name: latest.name,
+        path: latest.path,
+        modified: new Date(latest.mtimeMs).toISOString()
+    };
+};
+
+const getCcTokens = (userId) => {
+    return db.prepare(`
+        SELECT * FROM constant_contact_tokens
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+    `).get(userId);
+};
+
+const saveCcTokens = (userId, tokens) => {
+    const now = new Date().toISOString();
+    const expiresAt = tokens?.expires_in
+        ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+        : null;
+    db.prepare('DELETE FROM constant_contact_tokens WHERE user_id = ?').run(userId);
+    db.prepare(`
+        INSERT INTO constant_contact_tokens (
+            id, user_id, access_token, refresh_token, expires_at, scope, token_type, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        `cc-token-${randomUUID()}`,
+        userId,
+        tokens.access_token || null,
+        tokens.refresh_token || null,
+        expiresAt,
+        tokens.scope || null,
+        tokens.token_type || null,
+        now
+    );
+};
+
+const refreshCcToken = async (userId, refreshToken) => {
+    const clientId = process.env.CC_CLIENT_ID;
+    const clientSecret = process.env.CC_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+        throw new Error('Constant Contact credentials not configured');
+    }
+    const authHeader = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken
+    });
+    const response = await fetch(CC_TOKEN_URL, {
+        method: 'POST',
+        headers: {
+            Authorization: `Basic ${authHeader}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body
+    });
+    if (!response.ok) {
+        const payload = await response.text();
+        throw new Error(payload || 'Failed to refresh Constant Contact token');
+    }
+    const tokens = await response.json();
+    saveCcTokens(userId, { ...tokens, refresh_token: tokens.refresh_token || refreshToken });
+    return getCcTokens(userId);
+};
+
+const ensureCcAccessToken = async (userId) => {
+    const tokens = getCcTokens(userId);
+    if (!tokens?.access_token) return null;
+    if (!tokens.expires_at) return tokens;
+    const expiresAt = new Date(tokens.expires_at);
+    if (Number.isNaN(expiresAt.getTime())) return tokens;
+    const bufferMs = 60 * 1000;
+    if (expiresAt.getTime() - Date.now() < bufferMs) {
+        if (!tokens.refresh_token) return tokens;
+        return refreshCcToken(userId, tokens.refresh_token);
+    }
+    return tokens;
+};
+
+const fetchCcJson = async (url, tokens, options = {}) => {
+    const headers = {
+        Authorization: `Bearer ${tokens.access_token}`,
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+    };
+    const response = await fetch(url, { ...options, headers });
+    if (!response.ok) {
+        const payload = await response.text();
+        const detail = payload || 'Constant Contact request failed';
+        throw new Error(`${response.status} ${response.statusText} ${url} ${detail}`);
+    }
+    return response.json();
+};
+
+const fetchCcFromEmails = async (tokens) => {
+    const data = await fetchCcJson(`${CC_API_BASE}/account/emails`, tokens);
+    if (Array.isArray(data?.email_addresses)) return data.email_addresses;
+    if (Array.isArray(data?.emails)) return data.emails;
+    if (Array.isArray(data?.results)) return data.results;
+    return [];
+};
+
+const findCcListId = async (tokens, listName) => {
+    const data = await fetchCcJson(`${CC_API_BASE}/contact_lists`, tokens);
+    const lists = Array.isArray(data?.lists) ? data.lists : [];
+    const match = lists.find((list) => list.name?.toLowerCase() === listName.toLowerCase());
+    return match?.list_id || null;
+};
+
+const getNextSaturdayAtSix = () => {
+    const now = new Date();
+    const target = new Date(now);
+    target.setHours(6, 0, 0, 0);
+    const day = now.getDay();
+    const daysUntil = (6 - day + 7) % 7;
+    target.setDate(now.getDate() + daysUntil);
+    if (target <= now) {
+        target.setDate(target.getDate() + 7);
+    }
+    return target;
+};
+
+const loadEmailTemplate = async () => {
+    const templatePath = join(__dirname, '../CC_livestream_email_template.txt');
+    return readFile(templatePath, 'utf8');
+};
+
+const sanitizeEmailHtml = (html) => {
+    if (!html) return '';
+    let cleaned = html;
+    cleaned = cleaned.replace(/<!doctype[\s\S]*?>/gi, '');
+    cleaned = cleaned.replace(/<script[\s\S]*?<\/script>/gi, '');
+    cleaned = cleaned.replace(/<meta[^>]*>/gi, '');
+    cleaned = cleaned.replace(/<style[\s\S]*?<\/style>/gi, '');
+    cleaned = cleaned.replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, '');
+    cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
+    const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    if (bodyMatch) {
+        cleaned = `<html><body>${bodyMatch[1]}</body></html>`;
+    }
+    return cleaned;
+};
 const execFileAsync = promisify(execFile);
 const dbPath = join(__dirname, 'church.db');
 
@@ -40,6 +204,7 @@ app.use(express.json());
 
 const SESSION_COOKIE = 'dashboard_session';
 const SESSION_TTL_DAYS = 30;
+const CC_STATE_COOKIE = 'cc_oauth_state';
 
 const parseCookies = (cookieHeader = '') => {
     return cookieHeader.split(';').reduce((acc, pair) => {
@@ -57,6 +222,11 @@ const setSessionCookie = (res, value, days = SESSION_TTL_DAYS) => {
 
 const clearSessionCookie = (res) => {
     res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
+};
+
+const setCcStateCookie = (res, value) => {
+    const expires = new Date(Date.now() + 10 * 60 * 1000).toUTCString();
+    res.setHeader('Set-Cookie', `${CC_STATE_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}`);
 };
 
 const loadSessionUser = (req) => {
@@ -274,6 +444,281 @@ const normalizePersonName = (value) => {
 const DEFAULT_LOCATION_BY_TIME = {
     '08:00': 'chapel',
     '10:00': 'sanctuary'
+};
+
+const isSundayDate = (dateStr) => {
+    if (!dateStr) return false;
+    const date = new Date(`${dateStr}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return false;
+    return date.getDay() === 0;
+};
+
+const DROPBOX_ROOT = process.env.DROPBOX_ROOT
+    || join(homedir(), 'Dropbox', 'Parish Administrator');
+const DROPBOX_BULLETINS_DIR = 'Bulletins';
+const DROPBOX_INSERTS_DIR = 'Bulletin Inserts';
+
+const normalizeToken = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+const normalizeCompact = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+
+const buildNameTokens = (name) => {
+    if (!name) return [];
+    const stopWords = new Set(['sunday', 'after', 'the', 'of', 'in', 'and', 'day']);
+    return normalizeToken(name)
+        .split(' ')
+        .map((token) => token.trim())
+        .filter((token) => token && !stopWords.has(token));
+};
+
+const scoreBulletinCandidate = (fileName, tokens) => {
+    if (!tokens.length) return 0;
+    const normalized = normalizeCompact(fileName);
+    return tokens.reduce((score, token) => (
+        normalized.includes(normalizeCompact(token)) ? score + 1 : score
+    ), 0);
+};
+
+const getIsoWeekNumber = (dateStr) => {
+    const base = new Date(`${dateStr}T00:00:00`);
+    if (Number.isNaN(base.getTime())) return null;
+    const date = new Date(Date.UTC(base.getFullYear(), base.getMonth(), base.getDate()));
+    const dayNum = date.getUTCDay() || 7;
+    date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+    const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+    const weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+    return weekNo;
+};
+
+const findBulletinFile = async (dateStr, timeToken = '10am') => {
+    const year = (dateStr || '').slice(0, 4);
+    const folder = join(DROPBOX_ROOT, DROPBOX_BULLETINS_DIR, year);
+    try {
+        await access(folder);
+    } catch {
+        return null;
+    }
+
+    const entries = await readdir(folder, { withFileTypes: true });
+    const weekNumber = getIsoWeekNumber(dateStr);
+    const weekToken = weekNumber ? `W${String(weekNumber).padStart(2, '0')}` : '';
+    const weekRegex = weekToken ? new RegExp(`^${weekToken}(\\b|\\s|-)`, 'i') : null;
+    const timeRegex = new RegExp(`\\b${timeToken}\\b`, 'i');
+    const candidates = entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .filter((name) => name.toLowerCase().endsWith('.docx'))
+        .filter((name) => timeRegex.test(name))
+        .filter((name) => (weekRegex ? weekRegex.test(name) : false));
+
+    if (!candidates.length) return null;
+
+    const scored = await Promise.all(candidates.map(async (name) => {
+        const lower = name.toLowerCase();
+        const score = (timeRegex.test(name) ? 5 : 0)
+            + (/^w\d{2}/i.test(name) ? 2 : 0)
+            + (weekRegex && weekRegex.test(name) ? 3 : 0);
+        let modified = 0;
+        try {
+            const stats = await stat(join(folder, name));
+            modified = stats.mtimeMs || 0;
+        } catch {
+            modified = 0;
+        }
+        return { name, score, modified };
+    }));
+
+    scored.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return b.modified - a.modified;
+    });
+
+    return scored[0]?.name ? join(folder, scored[0].name) : null;
+};
+
+let cachedSofficePath = null;
+let cachedPublisherAvailable = null;
+
+const resolveSofficePath = async () => {
+    if (cachedSofficePath) return cachedSofficePath;
+    const envPath = process.env.SOFFICE_PATH;
+    const candidates = [
+        envPath,
+        'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+        'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe'
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        try {
+            await access(candidate);
+            cachedSofficePath = candidate;
+            return candidate;
+        } catch {
+            continue;
+        }
+    }
+    cachedSofficePath = null;
+    return null;
+};
+
+const hasPublisherCom = async () => {
+    if (cachedPublisherAvailable !== null) return cachedPublisherAvailable;
+    try {
+        await execFileAsync('powershell', [
+            '-NoProfile',
+            '-Command',
+            "New-Object -ComObject Publisher.Application | Out-Null"
+        ], { windowsHide: true });
+        cachedPublisherAvailable = true;
+    } catch {
+        cachedPublisherAvailable = false;
+    }
+    return cachedPublisherAvailable;
+};
+
+const convertPubToPdf = async (inputPath, outputPath) => {
+    const canUsePublisher = await hasPublisherCom();
+    if (!canUsePublisher) return null;
+    const escapePath = (value) => String(value || '').replace(/'/g, "''");
+    const script = [
+        "$ErrorActionPreference = 'Stop';",
+        '$app = New-Object -ComObject Publisher.Application;',
+        '$app.Visible = $false;',
+        `$doc = $app.Open('${escapePath(inputPath)}', $false, $true);`,
+        `$doc.ExportAsFixedFormat('${escapePath(outputPath)}', 1);`,
+        '$doc.Close();',
+        '$app.Quit();'
+    ].join(' ');
+    try {
+        await execFileAsync('powershell', ['-NoProfile', '-Command', script], { windowsHide: true });
+        return outputPath;
+    } catch (error) {
+        const details = error?.stderr || error?.message || error;
+        console.error('Publisher COM export failed:', details);
+        return null;
+    }
+};
+
+const runSofficeConvert = async (sofficePath, args) => {
+    try {
+        await execFileAsync(sofficePath, args, { windowsHide: true });
+        return true;
+    } catch (error) {
+        const details = error?.stderr || error?.message || error;
+        console.error('Preview generation failed:', details);
+        return false;
+    }
+};
+
+const buildDocumentPreview = async (filePath) => {
+    const cacheRoot = join(tmpdir(), 'preview-cache');
+    const outputDir = join(tmpdir(), `preview-${randomUUID()}`);
+    const ext = extname(filePath || '').toLowerCase();
+    try {
+        const sofficePath = await resolveSofficePath();
+        if (!sofficePath) {
+            throw new Error('soffice not found');
+        }
+        await mkdir(cacheRoot, { recursive: true });
+        const stats = await stat(filePath);
+        const cacheKey = createHash('sha1')
+            .update(`${filePath}:${stats.mtimeMs}:${stats.size}`)
+            .digest('hex');
+        const cachedPreview = join(cacheRoot, `${cacheKey}.png`);
+        try {
+            await access(cachedPreview);
+            const cachedData = await readFile(cachedPreview);
+            return `data:image/png;base64,${cachedData.toString('base64')}`;
+        } catch {
+            // Cache miss, generate preview.
+        }
+
+        await mkdir(outputDir, { recursive: true });
+        const baseArgs = [
+            '--headless',
+            '--nologo',
+            '--nodefault',
+            '--norestore'
+        ];
+        const pdfPath = join(outputDir, `${basename(filePath, ext)}.pdf`);
+        let pdfReady = false;
+
+        if (ext === '.pub') {
+            const converted = await convertPubToPdf(filePath, pdfPath);
+            if (converted) {
+                pdfReady = true;
+            } else {
+                const pdfArgs = [
+                    ...baseArgs,
+                    '--convert-to',
+                    'pdf',
+                    '--outdir',
+                    outputDir,
+                    filePath
+                ];
+                pdfReady = await runSofficeConvert(sofficePath, pdfArgs);
+            }
+        } else {
+            const pdfArgs = [
+                ...baseArgs,
+                '--convert-to',
+                'pdf',
+                '--outdir',
+                outputDir,
+                filePath
+            ];
+            pdfReady = await runSofficeConvert(sofficePath, pdfArgs);
+        }
+
+        if (!pdfReady) return '';
+
+        const pdfPngArgs = [
+            ...baseArgs,
+            '--convert-to',
+            'png:draw_png_Export:Resolution=72',
+            '--outdir',
+            outputDir,
+            pdfPath
+        ];
+        const converted = await runSofficeConvert(sofficePath, pdfPngArgs);
+        if (!converted) return '';
+        const files = await readdir(outputDir);
+        const pngFile = files
+            .filter((name) => name.toLowerCase().endsWith('.png'))
+            .sort()[0];
+        if (!pngFile) return '';
+        const generatedPath = join(outputDir, pngFile);
+        await copyFile(generatedPath, cachedPreview).catch(() => {});
+        const data = await readFile(cachedPreview);
+        return `data:image/png;base64,${data.toString('base64')}`;
+    } catch (error) {
+        console.error('Preview generation failed:', error?.message || error);
+        return '';
+    } finally {
+        await rm(outputDir, { recursive: true, force: true }).catch(() => {});
+    }
+};
+
+const buildDocumentStatus = async (filePath) => {
+    if (!filePath) {
+        return { exists: false, preview: '', path: '', name: '' };
+    }
+    try {
+        await access(filePath);
+    } catch {
+        return { exists: false, preview: '', path: filePath, name: basename(filePath) };
+    }
+    const preview = await buildDocumentPreview(filePath);
+    return {
+        exists: true,
+        preview,
+        path: filePath,
+        name: basename(filePath)
+    };
 };
 
 
@@ -662,6 +1107,445 @@ app.get('/api/sunday/livestream', (req, res) => {
     });
 });
 
+app.get('/api/sunday/documents', async (req, res) => {
+    const { date, name } = req.query;
+    if (!date) {
+        return res.status(400).json({ error: 'date is required' });
+    }
+    try {
+        const bulletin10Path = await findBulletinFile(date, '10am');
+        const bulletin8Path = await findBulletinFile(date, '8am');
+        const year = date.slice(0, 4);
+        const insertPath = join(
+            DROPBOX_ROOT,
+            DROPBOX_INSERTS_DIR,
+            year,
+            `${date} Insert.pub`
+        );
+        const [bulletin10, bulletin8, insert] = await Promise.all([
+            buildDocumentStatus(bulletin10Path),
+            buildDocumentStatus(bulletin8Path),
+            buildDocumentStatus(insertPath)
+        ]);
+        res.json({ bulletin10, bulletin8, insert });
+    } catch (error) {
+        console.error('Error checking documents:', error);
+        res.status(500).json({ error: 'Failed to check documents' });
+    }
+});
+
+app.post('/api/files/open', async (req, res) => {
+    const { path } = req.body || {};
+    if (!path) {
+        return res.status(400).json({ error: 'path is required' });
+    }
+    const resolvedPath = resolve(path);
+    const allowedRoot = resolve(DROPBOX_ROOT);
+    if (!resolvedPath.startsWith(allowedRoot)) {
+        return res.status(403).json({ error: 'Path not allowed' });
+    }
+    try {
+        const info = await stat(resolvedPath);
+        const args = info.isDirectory()
+            ? [resolvedPath]
+            : ['/select,', resolvedPath];
+        execFile('explorer.exe', args, () => {});
+        res.json({ success: true });
+    } catch (error) {
+        res.status(404).json({ error: 'Path not found' });
+    }
+});
+
+app.post('/api/files/print', async (req, res) => {
+    const { path } = req.body || {};
+    if (!path) {
+        return res.status(400).json({ error: 'path is required' });
+    }
+    const resolvedPath = resolve(path);
+    const allowedRoot = resolve(DROPBOX_ROOT);
+    if (!resolvedPath.startsWith(allowedRoot)) {
+        return res.status(403).json({ error: 'Path not allowed' });
+    }
+    try {
+        await access(resolvedPath);
+        const escaped = resolvedPath.replace(/'/g, "''");
+        await execFileAsync('powershell', [
+            '-NoProfile',
+            '-Command',
+            `Start-Process -FilePath '${escaped}' -Verb Print`
+        ], { windowsHide: true });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Print failed:', error);
+        res.status(500).json({ error: 'Print failed' });
+    }
+});
+
+app.post('/api/bulletins/upload', async (req, res) => {
+    const { path } = req.body || {};
+    if (!path) {
+        return res.status(400).json({ error: 'path is required' });
+    }
+    const resolvedPath = resolve(path);
+    const allowedRoot = resolve(DROPBOX_ROOT);
+    if (!resolvedPath.startsWith(allowedRoot)) {
+        return res.status(403).json({ error: 'Path not allowed' });
+    }
+    try {
+        const sofficePath = await resolveSofficePath();
+        if (!sofficePath) {
+            return res.status(500).json({ error: 'LibreOffice not available' });
+        }
+        const wpUrl = process.env.WP_URL;
+        const wpUser = process.env.WP_USER;
+        const wpAppPassword = process.env.WP_APP_PASSWORD;
+        if (!wpUrl || !wpUser || !wpAppPassword) {
+            return res.status(500).json({ error: 'WordPress credentials not configured' });
+        }
+
+        const outputDir = join(tmpdir(), `bulletin-upload-${randomUUID()}`);
+        await mkdir(outputDir, { recursive: true });
+        const ext = extname(resolvedPath).toLowerCase();
+        const pdfPath = join(outputDir, `${basename(resolvedPath, ext)}.pdf`);
+        const pdfArgs = [
+            '--headless',
+            '--nologo',
+            '--nodefault',
+            '--norestore',
+            '--convert-to',
+            'pdf',
+            '--outdir',
+            outputDir,
+            resolvedPath
+        ];
+        await execFileAsync(sofficePath, pdfArgs, { windowsHide: true });
+        const pdfBuffer = await readFile(pdfPath);
+        const authToken = Buffer.from(`${wpUser}:${wpAppPassword}`).toString('base64');
+        const wpBase = wpUrl.replace(/\/$/, '');
+
+        const pdfForm = new FormData();
+        pdfForm.append('file', new Blob([pdfBuffer], { type: 'application/pdf' }), 'Sunday Bulletin.pdf');
+        pdfForm.append('title', 'Sunday Bulletin');
+
+        const pdfResponse = await fetch(`${wpBase}/wp-json/wp/v2/media`, {
+            method: 'POST',
+            headers: { Authorization: `Basic ${authToken}` },
+            body: pdfForm
+        });
+
+        if (!pdfResponse.ok) {
+            const payload = await pdfResponse.text();
+            console.error('WordPress upload failed:', payload);
+            return res.status(502).json({ error: 'WordPress upload failed' });
+        }
+        const pdfPayload = await pdfResponse.json();
+
+        const pngArgs = [
+            '--headless',
+            '--nologo',
+            '--nodefault',
+            '--norestore',
+            '--convert-to',
+            'png:draw_png_Export:Resolution=72',
+            '--outdir',
+            outputDir,
+            pdfPath
+        ];
+        await execFileAsync(sofficePath, pngArgs, { windowsHide: true });
+        const pngFiles = (await readdir(outputDir)).filter((name) => name.toLowerCase().endsWith('.png')).sort();
+        let imageUrl = '';
+        if (pngFiles.length > 0) {
+            const pngPath = join(outputDir, pngFiles[0]);
+            const pngBuffer = await readFile(pngPath);
+            const imageForm = new FormData();
+            imageForm.append('file', new Blob([pngBuffer], { type: 'image/png' }), 'Sunday Bulletin.png');
+            imageForm.append('title', 'Sunday Bulletin');
+            const imageResponse = await fetch(`${wpBase}/wp-json/wp/v2/media`, {
+                method: 'POST',
+                headers: { Authorization: `Basic ${authToken}` },
+                body: imageForm
+            });
+            if (imageResponse.ok) {
+                const imagePayload = await imageResponse.json();
+                imageUrl = imagePayload.source_url || '';
+            } else {
+                const payload = await imageResponse.text();
+                console.error('WordPress image upload failed:', payload);
+            }
+        }
+
+        return res.json({
+            id: pdfPayload.id,
+            url: pdfPayload.source_url || '',
+            imageUrl
+        });
+    } catch (error) {
+        console.error('Bulletin upload error:', error);
+        return res.status(500).json({ error: 'Upload failed' });
+    }
+});
+
+app.get('/api/constant-contact/status', (req, res) => {
+    const userId = getCcUserId(req);
+    const tokens = getCcTokens(userId);
+    res.json({ connected: !!tokens?.access_token });
+});
+
+app.get('/api/constant-contact/debug', (req, res) => {
+    const userId = getCcUserId(req);
+    const tokens = getCcTokens(userId);
+    if (!tokens) {
+        return res.json({ connected: false });
+    }
+    res.json({
+        connected: !!tokens.access_token,
+        scope: tokens.scope || null,
+        tokenType: tokens.token_type || null,
+        expiresAt: tokens.expires_at || null
+    });
+});
+
+app.get('/api/constant-contact/from-emails', async (req, res) => {
+    try {
+        const userId = getCcUserId(req);
+        const tokens = await ensureCcAccessToken(userId);
+        if (!tokens?.access_token) {
+            return res.status(401).json({ error: 'Constant Contact not connected' });
+        }
+        const emails = await fetchCcFromEmails(tokens);
+        res.json({ emails });
+    } catch (error) {
+        console.error('Constant Contact from emails failed:', error);
+        res.status(500).json({ error: 'Failed to load Constant Contact from emails' });
+    }
+});
+
+app.get('/api/constant-contact/lists', async (req, res) => {
+    try {
+        const userId = getCcUserId(req);
+        const tokens = await ensureCcAccessToken(userId);
+        if (!tokens?.access_token) {
+            return res.status(401).json({ error: 'Constant Contact not connected' });
+        }
+        const data = await fetchCcJson(`${CC_API_BASE}/contact_lists`, tokens);
+        const lists = Array.isArray(data?.lists) ? data.lists : [];
+        res.json({ lists });
+    } catch (error) {
+        console.error('Constant Contact lists failed:', error);
+        res.status(500).json({ error: 'Failed to load Constant Contact lists' });
+    }
+});
+
+app.get('/auth/constant-contact', (req, res) => {
+    const clientId = process.env.CC_CLIENT_ID;
+    const redirectUri = process.env.CC_REDIRECT_URI;
+    if (!clientId || !redirectUri) {
+        return res.status(500).send('Constant Contact not configured');
+    }
+    const state = randomUUID();
+    setCcStateCookie(res, state);
+    const params = new URLSearchParams({
+        response_type: 'code',
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        scope: 'campaign_data contact_data account_read offline_access',
+        state
+    });
+    res.redirect(`${CC_AUTH_URL}?${params.toString()}`);
+});
+
+app.get('/auth/constant-contact/callback', async (req, res) => {
+    const { code, error, error_description: errorDescription, state } = req.query;
+    if (error) {
+        return res.status(400).send(errorDescription || 'Constant Contact authorization failed');
+    }
+    const cookies = parseCookies(req.headers.cookie || '');
+    if (!state || !cookies[CC_STATE_COOKIE] || cookies[CC_STATE_COOKIE] !== state) {
+        return res.status(400).send('Invalid OAuth state');
+    }
+    if (!code) {
+        return res.status(400).send('No authorization code provided');
+    }
+    try {
+        const clientId = process.env.CC_CLIENT_ID;
+        const clientSecret = process.env.CC_CLIENT_SECRET;
+        const redirectUri = process.env.CC_REDIRECT_URI;
+        if (!clientId || !clientSecret || !redirectUri) {
+            return res.status(500).send('Constant Contact not configured');
+        }
+        const authHeader = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+        const body = new URLSearchParams({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: redirectUri
+        });
+        const response = await fetch(CC_TOKEN_URL, {
+            method: 'POST',
+            headers: {
+                Authorization: `Basic ${authHeader}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body
+        });
+        if (!response.ok) {
+            const payload = await response.text();
+            throw new Error(payload || 'Failed to exchange Constant Contact token');
+        }
+        const tokens = await response.json();
+        const userId = getCcUserId(req);
+        saveCcTokens(userId, tokens);
+        res.redirect(`${CLIENT_ORIGIN}/settings`);
+    } catch (error) {
+        console.error('Constant Contact OAuth failed:', error);
+        res.status(500).send('Constant Contact authentication failed');
+    }
+});
+
+app.post('/api/constant-contact/email', async (req, res) => {
+    try {
+        const userId = getCcUserId(req);
+        const tokens = await ensureCcAccessToken(userId);
+        if (!tokens?.access_token) {
+            return res.status(401).json({ error: 'Constant Contact not connected' });
+        }
+
+        const {
+            date,
+            sundayName,
+            youtubeLink,
+            pdfUrl,
+            imageUrl,
+            testEmpty,
+            fromEmail: requestedFromEmail
+        } = req.body || {};
+
+        if (!testEmpty && (!date || !sundayName || !youtubeLink || !pdfUrl || !imageUrl)) {
+            return res.status(400).json({ error: 'Missing email data' });
+        }
+
+        const listId = await findCcListId(tokens, 'Active Members');
+        if (!listId) {
+            return res.status(404).json({ error: 'Active Members list not found' });
+        }
+
+        const template = testEmpty ? '' : await loadEmailTemplate();
+        const html = testEmpty
+            ? '<html><body></body></html>'
+            : sanitizeEmailHtml(template
+                .replace(/\[\[\[DATE\]\]\]/g, date)
+                .replace(/\[\[\[SUNDAY_NAME\]\]\]/g, sundayName)
+                .replace(/\[\[\[YOUTUBE_LINK\]\]\]/g, youtubeLink)
+                .replace(/\[\[\[IMG_SRC\]\]\]/g, imageUrl)
+                .replace(/\[\[\[PDF_SRC\]\]\]/g, pdfUrl));
+        const minimalHtml = testEmpty ? html : `
+<html>
+  <body>
+    <h1>${sundayName}</h1>
+    <p>${date}</p>
+    <p><a href="${youtubeLink}">Watch the livestream</a></p>
+    <p><a href="${pdfUrl}">Download the bulletin</a></p>
+    <img src="${imageUrl}" alt="Sunday Bulletin preview" />
+  </body>
+</html>`;
+
+        const normalizeEmail = (value) => (value || '').trim().toLowerCase();
+        const allowedEmails = await fetchCcFromEmails(tokens).catch(() => []);
+        const confirmedEmails = allowedEmails.filter((entry) => {
+            const status = (entry?.status || '').toLowerCase();
+            return status === 'confirmed' || status === 'verified' || status === 'active';
+        });
+        const pickFirstEmail = (list) => {
+            for (const entry of list) {
+                const candidate = entry?.email_address || entry?.email || entry?.address || '';
+                if (candidate) return candidate;
+            }
+            return '';
+        };
+        const allowedSet = new Set(
+            allowedEmails.map((entry) => normalizeEmail(entry?.email_address || entry?.email || entry?.address))
+        );
+        let fromEmail = requestedFromEmail || process.env.CC_FROM_EMAIL || '';
+        if (fromEmail && allowedSet.size > 0 && !allowedSet.has(normalizeEmail(fromEmail))) {
+            fromEmail = pickFirstEmail(confirmedEmails) || pickFirstEmail(allowedEmails) || fromEmail;
+        }
+        if (!fromEmail) {
+            fromEmail = pickFirstEmail(confirmedEmails) || pickFirstEmail(allowedEmails);
+        }
+        const fromName = process.env.CC_FROM_NAME || 'St Edmunds';
+        const replyTo = process.env.CC_REPLY_TO_EMAIL || fromEmail;
+        if (!fromEmail) {
+            return res.status(500).json({ error: 'CC_FROM_EMAIL not configured' });
+        }
+
+        const baseActivity = {
+            format_type: 'HTML',
+            from_email: fromEmail,
+            from_name: fromName,
+            reply_to_email: replyTo,
+            subject: 'Sunday Livestream',
+            html_content: html,
+            contact_list_ids: [listId]
+        };
+        const campaignPayload = {
+            name: 'Sunday Bulletin',
+            email_campaign_activities: [baseActivity]
+        };
+
+        let campaign;
+        try {
+            campaign = await fetchCcJson(`${CC_API_BASE}/emails`, tokens, {
+                method: 'POST',
+                body: JSON.stringify(campaignPayload)
+            });
+        } catch (error) {
+            console.error('Constant Contact create payload:', campaignPayload);
+            console.error('Constant Contact HTML length:', html.length);
+            campaign = await fetchCcJson(`${CC_API_BASE}/emails`, tokens, {
+                method: 'POST',
+                body: JSON.stringify({
+                    ...campaignPayload,
+                    email_campaign_activities: [
+                        {
+                            ...baseActivity,
+                            html_content: minimalHtml
+                        }
+                    ]
+                })
+            });
+        }
+
+        const activity = campaign?.email_campaign_activities?.[0];
+        const activityId = activity?.activity_id;
+        if (!activityId) {
+            return res.status(500).json({ error: 'Failed to create Constant Contact email activity' });
+        }
+
+        const attachedLists = Array.isArray(activity?.contact_list_ids) ? activity.contact_list_ids : [];
+        if (!attachedLists.includes(listId)) {
+            try {
+                await fetchCcJson(`${CC_API_BASE}/emails/activities/${activityId}/contact_lists`, tokens, {
+                    method: 'POST',
+                    body: JSON.stringify({ contact_list_ids: [listId] })
+                });
+            } catch (error) {
+                console.error('Constant Contact list attach failed:', error?.message || error);
+                throw error;
+            }
+        }
+
+        const scheduledDate = getNextSaturdayAtSix().toISOString();
+        await fetchCcJson(`${CC_API_BASE}/emails/activities/${activityId}/schedules`, tokens, {
+            method: 'POST',
+            body: JSON.stringify({ scheduled_date: scheduledDate })
+        });
+
+        res.json({ success: true, activityId, scheduledDate });
+    } catch (error) {
+        console.error('Constant Contact email failed:', error);
+        res.status(500).json({ error: 'Failed to create Constant Contact email' });
+    }
+});
+
 app.post('/api/google/disconnect', requireAuth, (req, res) => {
     db.prepare('DELETE FROM user_tokens WHERE user_id = ?').run(req.user.id);
     db.prepare('DELETE FROM calendar_links WHERE user_id = ?').run(req.user.id);
@@ -998,19 +1882,46 @@ app.delete('/api/people/:id', (req, res) => {
 
 app.get('/api/buildings', (req, res) => {
     const rows = db.prepare('SELECT * FROM buildings ORDER BY name').all();
-    const buildings = rows.map(row => ({
-        id: row.id,
-        name: row.name,
-        category: row.category,
-        capacity: row.capacity,
-        size_sqft: row.size_sqft,
-        rental_rate_hour: row.rental_rate_hour,
-        rental_rate_day: row.rental_rate_day,
-        parking_spaces: row.parking_spaces,
-        event_types: parseJsonField(row.event_types),
-        notes: row.notes || ''
-    }));
+    const buildings = rows.map(row => {
+        const roomRows = db.prepare(`
+            SELECT id, name, floor, capacity, rental_rate
+            FROM rooms
+            WHERE building_id = ?
+            ORDER BY name
+        `).all(row.id);
+        const rooms = roomRows.map((room) => ({
+            id: room.id,
+            name: room.name,
+            floor: room.floor,
+            capacity: room.capacity,
+            rental_rate: room.rental_rate
+        }));
+        const rentalRate = row.rental_rate_day ?? row.rental_rate_hour;
+        return {
+            id: row.id,
+            name: row.name,
+            category: row.category,
+            capacity: row.capacity,
+            size_sqft: row.size_sqft,
+            rental_rate_hour: row.rental_rate_hour,
+            rental_rate_day: row.rental_rate_day,
+            rental_rate: rentalRate || 0,
+            parking_spaces: row.parking_spaces,
+            event_types: parseJsonField(row.event_types),
+            notes: row.notes || '',
+            rooms
+        };
+    });
     res.json(buildings);
+});
+
+app.get('/api/vendors', (req, res) => {
+    const rows = db.prepare(`
+        SELECT id, service, vendor, contact, phone, email, notes, contract
+        FROM preferred_vendors
+        ORDER BY service, vendor
+    `).all();
+    res.json(rows);
 });
 
 app.post('/api/buildings', (req, res) => {
@@ -1428,10 +2339,127 @@ app.get('/api/events', async (req, res) => {
         }));
 
         // 3. Merge and return
-        res.json([...liturgicalEvents, ...scheduledEvents]);
+        const filteredScheduled = scheduledEvents.filter(
+            (event) => !(event.type_slug === 'weekly-service' && isSundayDate(event.date))
+        );
+        res.json([...liturgicalEvents, ...filteredScheduled]);
     } catch (error) {
         console.error('Error fetching merged events:', error);
         res.status(500).json({ error: 'Failed to fetch events' });
+    }
+});
+
+app.post('/api/events', (req, res) => {
+    try {
+        const {
+            title,
+            description = '',
+            date,
+            time = '',
+            location = '',
+            type_id = null,
+            metadata = null
+        } = req.body || {};
+
+        if (!title || !date) {
+            return res.status(400).json({ error: 'title and date are required' });
+        }
+
+        const eventId = `event-${randomUUID()}`;
+        const occurrenceId = `occ-${randomUUID()}`;
+        const now = new Date().toISOString();
+        const parsedTypeId = type_id !== null && type_id !== '' ? Number(type_id) : null;
+
+        db.prepare(`
+            INSERT INTO events (id, title, description, event_type_id, source, metadata, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'manual', ?, ?, ?)
+        `).run(
+            eventId,
+            title,
+            description,
+            Number.isNaN(parsedTypeId) ? null : parsedTypeId,
+            metadata ? JSON.stringify(metadata) : null,
+            now,
+            now
+        );
+
+        db.prepare(`
+            INSERT INTO event_occurrences (
+                id, event_id, date, start_time, end_time, building_id, rite, is_default, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, NULL)
+        `).run(
+            occurrenceId,
+            eventId,
+            date,
+            time || null,
+            null,
+            location || null
+        );
+
+        res.json({
+            id: eventId,
+            occurrenceId,
+            title,
+            description,
+            date,
+            time: time || '',
+            location: location || '',
+            type_id: Number.isNaN(parsedTypeId) ? null : parsedTypeId,
+            source: 'manual'
+        });
+    } catch (error) {
+        console.error('Error creating event:', error);
+        res.status(500).json({ error: 'Failed to create event' });
+    }
+});
+
+app.get('/api/db-backups/latest', async (req, res) => {
+    try {
+        const latest = await findLatestDbBackup();
+        if (!latest) {
+            return res.status(404).json({ error: 'No database backups found' });
+        }
+        res.json(latest);
+    } catch (error) {
+        console.error('Failed to fetch latest db backup:', error);
+        res.status(500).json({ error: 'Failed to fetch latest db backup' });
+    }
+});
+
+app.post('/api/db-backups/restore', async (req, res) => {
+    try {
+        const requestedPath = req.body?.path;
+        const latest = await findLatestDbBackup();
+        const target = requestedPath || latest?.path;
+        if (!target) {
+            return res.status(404).json({ error: 'No database backup available to restore' });
+        }
+
+        const resolvedTarget = resolve(target);
+        const resolvedDir = resolve(backupDir);
+        if (!resolvedTarget.startsWith(resolvedDir)) {
+            return res.status(400).json({ error: 'Invalid backup path' });
+        }
+
+        const filename = basename(resolvedTarget);
+        if (!backupPattern.test(filename)) {
+            return res.status(400).json({ error: 'Invalid backup filename' });
+        }
+
+        const dbPath = join(__dirname, 'church.db');
+        sqlite.close();
+        await copyFile(resolvedTarget, dbPath);
+
+        res.json({
+            success: true,
+            restored: resolvedTarget,
+            restartRequired: true
+        });
+
+        setTimeout(() => process.exit(0), 250);
+    } catch (error) {
+        console.error('Failed to restore db backup:', error);
+        res.status(500).json({ error: 'Failed to restore database backup' });
     }
 });
 
@@ -1901,6 +2929,65 @@ app.post('/api/deposit-slip', upload.array('checks', 30), async (req, res) => {
             await Promise.all(
                 imagePaths.map((file) => rm(file.path || file, { force: true }).catch(() => {}))
             );
+        }
+    }
+});
+
+app.post('/api/deposit-slip/manual', async (req, res) => {
+    let outputDir = null;
+    try {
+        const configPath = resolve(__dirname, 'depositSlipConfig.json');
+        const config = JSON.parse(await readFile(configPath, 'utf8'));
+        const templatePath = resolve(__dirname, '..', config.templatePath || 'deposit slip template.pdf');
+
+        const checksPayload = Array.isArray(req.body?.checks)
+            ? req.body.checks
+            : [];
+
+        const maxChecks = Array.isArray(config.fieldMap?.checks)
+            ? config.fieldMap.checks.length
+            : 18;
+
+        const manualChecks = [];
+        let cashTotal = 0;
+        checksPayload.forEach((entry) => {
+            if (!entry) return;
+            const checkNumber = String(entry.checkNumber || '').trim();
+            const rawAmount = String(entry.amount || '').trim().replace(/[^0-9.-]/g, '');
+            const amount = Number.parseFloat(rawAmount);
+            if (!Number.isFinite(amount) || amount <= 0) return;
+            if (checkNumber && manualChecks.length < maxChecks) {
+                manualChecks.push({ checkNumber, amount });
+            } else {
+                cashTotal += amount;
+            }
+        });
+
+        outputDir = join(tmpdir(), `deposit-slip-${Date.now()}`);
+        const outputPath = join(outputDir, 'deposit-slip.pdf');
+
+        await buildDepositSlipPdf({
+            templatePath,
+            outputPath,
+            checks: manualChecks,
+            fieldMap: config.fieldMap || {},
+            totalOverride: cashTotal
+        });
+
+        const pdfBytes = await readFile(outputPath);
+        const pdfBase64 = pdfBytes.toString('base64');
+        res.json({
+            pdfBase64,
+            cashTotal: Number.isFinite(cashTotal) ? cashTotal : 0
+        });
+    } catch (error) {
+        console.error('Manual deposit slip error:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to build manual deposit slip' });
+        }
+    } finally {
+        if (outputDir) {
+            await rm(outputDir, { recursive: true, force: true }).catch(() => {});
         }
     }
 });

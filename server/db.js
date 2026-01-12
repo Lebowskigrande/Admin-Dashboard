@@ -22,6 +22,17 @@ sqlite.exec(`
         notes TEXT,
         sort_order INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS constant_contact_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        access_token TEXT,
+        refresh_token TEXT,
+        expires_at TEXT,
+        scope TEXT,
+        token_type TEXT,
+        created_at TEXT
+    );
 `);
 
 const seedVestryChecklist = () => {

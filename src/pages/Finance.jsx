@@ -1,90 +1,117 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { FaDownload } from 'react-icons/fa';
 import Card from '../components/Card';
 import { API_URL } from '../services/apiConfig';
 import './Finance.css';
 
+const createChecks = () =>
+    Array.from({ length: 18 }, (_, index) => ({
+        id: `manual-${index + 1}`,
+        checkNumber: '',
+        amount: '',
+        budget: ''
+    }));
+
+const formatCurrency = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '$0.00';
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    }).format(numeric);
+};
+
+const base64ToBlob = (base64, contentType = 'application/pdf') => {
+    const byteCharacters = atob(base64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i += 1) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    return new Blob([new Uint8Array(byteNumbers)], { type: contentType });
+};
+
 const Finance = () => {
-    const [depositFiles, setDepositFiles] = useState([]);
-    const [depositBusy, setDepositBusy] = useState(false);
-    const [depositError, setDepositError] = useState('');
-    const [depositUrl, setDepositUrl] = useState('');
-    const [depositChecks, setDepositChecks] = useState([]);
-    const [depositDebug, setDepositDebug] = useState(false);
+    const [checks, setChecks] = useState(createChecks());
+    const [slipUrl, setSlipUrl] = useState('');
+    const [slipBusy, setSlipBusy] = useState(false);
+    const [slipError, setSlipError] = useState('');
+
+    const updateCheck = (index, field, value) => {
+        setChecks((prev) => {
+            const next = [...prev];
+            next[index] = { ...next[index], [field]: value };
+            return next;
+        });
+    };
 
     useEffect(() => {
+        if (!slipUrl) return undefined;
+        const anchor = document.createElement('a');
+        anchor.href = slipUrl;
+        anchor.download = 'deposit-slip.pdf';
+        anchor.click();
         return () => {
-            if (depositUrl) {
-                URL.revokeObjectURL(depositUrl);
-            }
+            URL.revokeObjectURL(slipUrl);
         };
-    }, [depositUrl]);
+    }, [slipUrl]);
 
-    const handleDepositFiles = (event) => {
-        const files = Array.from(event.target.files || []);
-        setDepositFiles(files);
-        setDepositError('');
-        setDepositChecks([]);
-        if (depositUrl) {
-            URL.revokeObjectURL(depositUrl);
-            setDepositUrl('');
-        }
-    };
+    const budgetTotals = useMemo(() => {
+        return checks.reduce((acc, check) => {
+            const budget = String(check.budget || '').trim();
+            const amount = Number(check.amount);
+            if (!budget || Number.isNaN(amount)) return acc;
+            acc[budget] = (acc[budget] || 0) + amount;
+            return acc;
+        }, {});
+    }, [checks]);
 
-    const base64ToBlob = (base64, contentType) => {
-        const byteCharacters = atob(base64);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i += 1) {
-            byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        return new Blob([new Uint8Array(byteNumbers)], { type: contentType });
-    };
+    const cashTotal = useMemo(() => {
+        return checks.reduce((sum, check) => {
+            const hasCheck = String(check.checkNumber || '').trim();
+            const amount = Number(check.amount);
+            if (Number.isNaN(amount) || amount <= 0) return sum;
+            if (hasCheck) return sum;
+            return sum + amount;
+        }, 0);
+    }, [checks]);
 
-    const renderOcrNote = (check) => {
-        const missing = [];
-        if (check?.missing?.checkNumber) missing.push('check number');
-        if (check?.missing?.amount) missing.push('numeric amount');
-        if (check?.missing?.legalAmountText) missing.push('written amount');
-        if (missing.length === 0) return 'OK';
-        if (missing.length === 2) return `Missing ${missing[0]} and ${missing[1]}`;
-        return `Missing ${missing[0]}`;
-    };
+    const overallTotal = useMemo(() => {
+        return checks.reduce((sum, check) => {
+            const amount = Number(check.amount);
+            if (Number.isNaN(amount)) return sum;
+            return sum + amount;
+        }, 0);
+    }, [checks]);
 
-    const handleBuildDepositSlip = async () => {
-        if (depositFiles.length === 0) {
-            setDepositError('Select one or more check images to upload.');
-            return;
-        }
-
-        setDepositBusy(true);
-        setDepositError('');
+    const handleGenerateDepositSlip = async () => {
+        setSlipError('');
+        setSlipUrl('');
+        setSlipBusy(true);
         try {
-            const formData = new FormData();
-            depositFiles.forEach((file) => formData.append('checks', file));
-            formData.append('debugOcr', depositDebug ? '1' : '0');
-
-            const response = await fetch(`${API_URL}/deposit-slip`, {
+            const payloadChecks = checks.map((entry) => ({
+                checkNumber: entry.checkNumber || '',
+                amount: entry.amount || ''
+            }));
+            const response = await fetch(`${API_URL}/deposit-slip/manual`, {
                 method: 'POST',
-                body: formData
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ checks: payloadChecks })
             });
-
-            if (!response.ok) {
-                throw new Error('Failed to generate deposit slip');
-            }
-
+            if (!response.ok) throw new Error('Failed to build deposit slip');
             const data = await response.json();
-            if (!data?.pdfBase64) {
-                throw new Error('Deposit slip response missing PDF data');
-            }
-
+            if (!data?.pdfBase64) throw new Error('Missing PDF data');
             const blob = base64ToBlob(data.pdfBase64, 'application/pdf');
-            const url = URL.createObjectURL(blob);
-            setDepositUrl(url);
-            setDepositChecks(Array.isArray(data.checks) ? data.checks : []);
+            setSlipUrl((prev) => {
+                if (prev) URL.revokeObjectURL(prev);
+                return URL.createObjectURL(blob);
+            });
         } catch (error) {
-            console.error(error);
-            setDepositError('Unable to generate deposit slip. Check OCR tools and try again.');
+            console.error('Deposit slip error:', error);
+            setSlipError('Unable to generate deposit slip with the provided entries.');
         } finally {
-            setDepositBusy(false);
+            setSlipBusy(false);
         }
     };
 
@@ -94,170 +121,101 @@ const Finance = () => {
                 <h1>Finance & Accounts</h1>
             </header>
 
-            <Card className="deposit-card">
+            <Card className="deposit-card manual-deposit">
                 <div className="deposit-header">
                     <div>
                         <h2>Deposit Slip Builder</h2>
-                        <p>Upload scanned check images to generate a filled deposit slip.</p>
+                        <p>Enter up to 18 checks with check number, amount, and budget code information.</p>
                     </div>
-                    <button className="btn-primary" onClick={handleBuildDepositSlip} disabled={depositBusy}>
-                        {depositBusy ? 'Processing...' : 'Generate Deposit Slip'}
+                    <button
+                        type="button"
+                        className="deposit-download-button"
+                        onClick={handleGenerateDepositSlip}
+                        disabled={slipBusy || overallTotal <= 0}
+                        aria-label="Download deposit slip"
+                    >
+                        <FaDownload />
                     </button>
                 </div>
-                <div className="deposit-body">
-                    <div className="deposit-upload">
-                        <label className="upload-label">
-                            <span>Select check images (PNG or JPG)</span>
-                            <input
-                                type="file"
-                                accept="image/png,image/jpeg"
-                                multiple
-                                onChange={handleDepositFiles}
-                            />
-                        </label>
-                        <label className="debug-toggle">
-                            <input
-                                type="checkbox"
-                                checked={depositDebug}
-                                onChange={(event) => setDepositDebug(event.target.checked)}
-                            />
-                            Show OCR debug details
-                        </label>
-                        {depositFiles.length > 0 && (
-                            <div className="upload-list">
-                                {depositFiles.map((file) => (
-                                    <div key={file.name} className="upload-item">
-                                        <span>{file.name}</span>
-                                        <span className="text-muted">{(file.size / 1024).toFixed(1)} KB</span>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                    <div className="deposit-output">
-                        {depositError && <div className="alert error">{depositError}</div>}
-                        {depositUrl ? (
-                            <div className="deposit-result">
-                                <p>Deposit slip ready.</p>
-                                <a className="btn-secondary" href={depositUrl} download="deposit-slip.pdf">
-                                    Download PDF
-                                </a>
-                                {depositChecks.length > 0 && (
-                                    <div className="ocr-results">
-                                        <h3>OCR Results</h3>
-                                        <table className="ocr-table">
-                                            <thead>
-                                                <tr>
-                                                    <th>Image</th>
-                                                    <th>Check #</th>
-                                                    <th className="text-right">Amount</th>
-                                                    <th>Status</th>
-                                                    <th>Written Amount</th>
-                                                    <th>Match</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {depositChecks.map((check, index) => {
-                                                    const note = renderOcrNote(check);
-                                                    const statusClass = note === 'OK' ? 'ok' : 'missing';
-                                                    let matchLabel = 'Unverified';
-                                                    let matchClass = 'missing';
-                                                    if (check.amountMatch === true) {
-                                                        matchLabel = 'Match';
-                                                        matchClass = 'ok';
-                                                    } else if (check.amountMatch === false) {
-                                                        matchLabel = 'Mismatch';
-                                                        matchClass = 'error';
-                                                    }
-                                                    return (
-                                                        <tr key={`${check.source || 'check'}-${index}`}>
-                                                            <td>{check.source || 'Unknown'}</td>
-                                                            <td className="font-mono">{check.checkNumber || '--'}</td>
-                                                            <td className="text-right font-mono">
-                                                                {check.amount != null ? `$${check.amount.toFixed(2)}` : '--'}
-                                                            </td>
-                                                            <td>
-                                                                <span className={`ocr-status ${statusClass}`}>{note}</span>
-                                                            </td>
-                                                            <td>{check.legalAmountText || '--'}</td>
-                                                            <td>
-                                                                <span className={`ocr-status ${matchClass}`}>{matchLabel}</span>
-                                                            </td>
-                                                        </tr>
-                                                    );
-                                                })}
-                                            </tbody>
-                                        </table>
-                                        {depositDebug && (
-                                            <div className="ocr-debug">
-                                                {depositChecks.map((check, index) => (
-                                                    <details key={`ocr-debug-${check.source || 'check'}-${index}`}>
-                                                        <summary>{check.source || `Check ${index + 1}`}</summary>
-                                                        <div className="ocr-debug-lines">
-                                                            {check.ocrError && (
-                                                                <div className="text-muted">OCR error: {check.ocrError}</div>
-                                                            )}
-                                                            {check.ocrRegions && (
-                                                                <div className="ocr-region-results">
-                                                                    {check.alignedPreviewBase64 && (
-                                                                        <div className="ocr-preview">
-                                                                            <img
-                                                                                src={`data:image/png;base64,${check.alignedPreviewBase64}`}
-                                                                                alt="Aligned check preview"
-                                                                            />
-                                                                        </div>
-                                                                    )}
-                                                                    {Object.entries(check.ocrRegions).map(([regionKey, region]) => (
-                                                                        <div key={`${regionKey}-${index}`}>
-                                                                            <span className="font-mono">{regionKey}:</span>
-                                                                            <span>{` ${region.text || '--'} `}</span>
-                                                                            <span className="text-muted">{`(${region.engine || 'n/a'})`}</span>
-                                                                            {region.previewBase64 && (
-                                                                                <div className="ocr-preview">
-                                                                                    <img
-                                                                                        src={`data:image/png;base64,${region.previewBase64}`}
-                                                                                        alt={`${regionKey} preview`}
-                                                                                    />
-                                                                                </div>
-                                                                            )}
-                                                                            {region.candidates && (
-                                                                                <div className="text-muted">
-                                                                                    {Object.entries(region.candidates).map(([engine, text]) => (
-                                                                                        <div key={`${regionKey}-${engine}`}>
-                                                                                            <span className="font-mono">{engine}:</span>
-                                                                                            <span>{` ${text || '--'}`}</span>
-                                                                                        </div>
-                                                                                    ))}
-                                                                                </div>
-                                                                            )}
-                                                                        </div>
-                                                                    ))}
-                                                                </div>
-                                                            )}
-                                                            {(check.ocrLines || []).map((line, lineIndex) => (
-                                                                <div key={`ocr-line-${index}-${lineIndex}`}>
-                                                                    <span className="font-mono">{line.text || '--'}</span>
-                                                                    <span className="text-muted">
-                                                                        {` [${Math.round(line.left)},${Math.round(line.top)} - ${Math.round(line.right)},${Math.round(line.bottom)}]`}
-                                                                    </span>
-                                                                </div>
-                                                            ))}
-                                                            {(check.ocrLines || []).length === 0 && (
-                                                                <div className="text-muted">No OCR lines captured.</div>
-                                                            )}
-                                                        </div>
-                                                    </details>
-                                                ))}
+                    <div className="deposit-builder-body">
+                        <div className="deposit-checks-table-wrapper">
+                            <table className="deposit-checks-table">
+                            <thead>
+                                <tr>
+                                    <th>Check #</th>
+                                    <th>Amount</th>
+                                    <th>Budget Code</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {checks.map((check, index) => (
+                                    <tr key={check.id}>
+                                        <td>
+                                            <input
+                                                type="number"
+                                                inputMode="numeric"
+                                                min="0"
+                                                step="1"
+                                                pattern="[0-9]*"
+                                                value={check.checkNumber}
+                                                onChange={(event) => updateCheck(index, 'checkNumber', event.target.value)}
+                                                placeholder="e.g. 1034"
+                                            />
+                                        </td>
+                                        <td>
+                                            <div className="amount-input">
+                                                <span>$</span>
+                                                <input
+                                                    type="number"
+                                                    inputMode="decimal"
+                                                    min="0"
+                                                    step="0.01"
+                                                    value={check.amount}
+                                                    onChange={(event) => updateCheck(index, 'amount', event.target.value)}
+                                                    placeholder="0.00"
+                                                />
                                             </div>
-                                        )}
+                                        </td>
+                                        <td>
+                                            <input
+                                                type="text"
+                                                pattern="[A-Za-z0-9]*"
+                                                value={check.budget}
+                                                onChange={(event) => updateCheck(index, 'budget', event.target.value)}
+                                                placeholder="Budget code"
+                                            />
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div className="deposit-total-panel">
+                        <h3>Totals by Budget Code</h3>
+                        <div className="deposit-total-list">
+                            {Object.keys(budgetTotals).length === 0 ? (
+                                <p className="empty-state">Enter budget codes to see totals.</p>
+                            ) : (
+                                Object.entries(budgetTotals).map(([code, total]) => (
+                                    <div key={code} className="deposit-total-line">
+                                        <span>{code}</span>
+                                        <strong>{formatCurrency(total)}</strong>
                                     </div>
-                                )}
-                            </div>
-                        ) : (
-                            <div className="deposit-placeholder">
-                                Upload checks to generate the deposit slip PDF.
-                            </div>
-                        )}
+                                ))
+                            )}
+                        </div>
+                        <div className="deposit-total-line cash">
+                            <span>Cash (no check #)</span>
+                            <strong>{formatCurrency(cashTotal)}</strong>
+                        </div>
+                        <div className="deposit-total-divider" />
+                        <div className="deposit-total-line overall">
+                            <span>Total</span>
+                            <strong>{formatCurrency(overallTotal)}</strong>
+                        </div>
+                        <div className="deposit-status-area">
+                            {slipError && <div className="alert error">{slipError}</div>}
+                        </div>
                     </div>
                 </div>
             </Card>
