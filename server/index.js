@@ -3149,7 +3149,6 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
 
         const fundsReportEntries = normalizeFundsReportEntries(req.body?.fundsReport?.entries);
         const depositChecks = manualChecks;
-        const depositChecks = manualChecks;
 
         outputDir = join(tmpdir(), `deposit-slip-${Date.now()}`);
         const outputPath = join(outputDir, 'deposit-slip.pdf');
@@ -3157,7 +3156,7 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
         await buildDepositSlipPdf({
             templatePath,
             outputPath,
-            checks: manualChecks,
+            checks: depositChecks,
             fieldMap: config.fieldMap || {},
             totals: {
                 cash: cashTotal,
