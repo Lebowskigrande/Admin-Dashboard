@@ -3317,6 +3317,7 @@ app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res
         const totalValue = totalOverride != null ? totalOverride : subtotalValue + cashValue;
 
         const fundsReportEntries = normalizeFundsReportEntries(req.body?.fundsReport?.entries);
+        const depositChecks = manualChecks;
 
         const depositPath = join(conversionDir, 'deposit-slip.pdf');
         await buildDepositSlipPdf({
