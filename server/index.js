@@ -3076,6 +3076,57 @@ app.post('/api/deposit-slip', upload.array('checks', 30), async (req, res) => {
     }
 });
 
+const parseCurrencyOverride = (value) => {
+    if (value == null) return null;
+    const normalized = String(value).trim().replace(/[^0-9.-]/g, '');
+    const parsed = Number.parseFloat(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const parseJsonField = (value, fallback = null) => {
+    if (value == null) return fallback;
+    if (typeof value === 'string') {
+        try {
+            return JSON.parse(value);
+        } catch {
+            return fallback;
+        }
+    }
+    return value;
+};
+
+const buildManualChecks = (payload, maxChecks) => {
+    const manualChecks = [];
+    let cashTotal = 0;
+    (Array.isArray(payload) ? payload : []).forEach((entry) => {
+        if (!entry) return;
+        const checkNumber = String(entry.checkNumber || '').trim();
+        const rawAmount = String(entry.amount || '').trim().replace(/[^0-9.-]/g, '');
+        const amount = Number.parseFloat(rawAmount);
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        if (checkNumber && manualChecks.length < maxChecks) {
+            manualChecks.push({ checkNumber, amount });
+        } else {
+            cashTotal += amount;
+        }
+    });
+    return { manualChecks, cashTotal };
+};
+
+const normalizeFundsReportEntries = (value) => {
+    const entries = Array.isArray(value) ? value : parseJsonField(value, []);
+    if (!Array.isArray(entries)) return [];
+    return entries
+        .map((entry) => {
+            const code = String(entry?.code || '').trim();
+            const amount = parseCurrencyOverride(entry?.amount);
+            if (!code || amount == null) return null;
+            return { code, amount };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.code.localeCompare(b.code));
+};
+
 app.post('/api/deposit-slip/manual', async (req, res) => {
     let outputDir = null;
     try {
@@ -3083,55 +3134,20 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
         const config = JSON.parse(await readFile(configPath, 'utf8'));
         const templatePath = resolve(__dirname, '..', config.templatePath || 'deposit slip template.pdf');
 
-        const checksPayload = Array.isArray(req.body?.checks)
-            ? req.body.checks
-            : [];
-
         const maxChecks = Array.isArray(config.fieldMap?.checks)
             ? config.fieldMap.checks.length
             : 18;
+        const { manualChecks, cashTotal } = buildManualChecks(req.body?.checks || [], maxChecks);
 
-        const manualChecks = [];
-        let cashTotal = 0;
-        checksPayload.forEach((entry) => {
-            if (!entry) return;
-            const checkNumber = String(entry.checkNumber || '').trim();
-            const rawAmount = String(entry.amount || '').trim().replace(/[^0-9.-]/g, '');
-            const amount = Number.parseFloat(rawAmount);
-            if (!Number.isFinite(amount) || amount <= 0) return;
-            if (checkNumber && manualChecks.length < maxChecks) {
-                manualChecks.push({ checkNumber, amount });
-            } else {
-                cashTotal += amount;
-            }
-        });
-
-        const parseCurrencyOverride = (value) => {
-            if (value == null) return null;
-            const normalized = String(value).trim().replace(/[^0-9.-]/g, '');
-            const parsed = Number.parseFloat(normalized);
-            return Number.isFinite(parsed) ? parsed : null;
-        };
-        const clientTotals = req.body?.totals || {};
-        const manualSubtotal = manualChecks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
-        const cashOverride = parseCurrencyOverride(clientTotals.cash);
+        const clientTotals = parseJsonField(req.body?.totals, {}) || {};
         const subtotalOverride = parseCurrencyOverride(clientTotals.subtotal);
         const totalOverride = parseCurrencyOverride(clientTotals.total);
-        const cashValue = cashOverride != null ? cashOverride : cashTotal;
-        const subtotalValue = subtotalOverride != null ? subtotalOverride : manualSubtotal;
-        const totalValue = totalOverride != null ? totalOverride : subtotalValue + cashValue;
-        const rawFundsReportEntries = Array.isArray(req.body?.fundsReport?.entries)
-            ? req.body.fundsReport.entries
-            : [];
-        const fundsReportEntries = rawFundsReportEntries
-            .map((entry) => {
-                const code = String(entry?.code || '').trim();
-                const amount = parseCurrencyOverride(entry?.amount);
-                if (!code || amount == null) return null;
-                return { code, amount };
-            })
-            .filter(Boolean)
-            .sort((a, b) => a.code.localeCompare(b.code));
+        const subtotalValue = subtotalOverride != null
+            ? subtotalOverride
+            : manualChecks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
+        const totalValue = totalOverride != null ? totalOverride : subtotalValue + cashTotal;
+
+        const fundsReportEntries = normalizeFundsReportEntries(req.body?.fundsReport?.entries);
 
         outputDir = join(tmpdir(), `deposit-slip-${Date.now()}`);
         const outputPath = join(outputDir, 'deposit-slip.pdf');
@@ -3142,7 +3158,7 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
             checks: manualChecks,
             fieldMap: config.fieldMap || {},
             totals: {
-                cash: cashValue,
+                cash: cashTotal,
                 subtotal: subtotalValue,
                 total: totalValue
             },
@@ -3156,7 +3172,7 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
         const pdfBase64 = pdfBytes.toString('base64');
         res.json({
             pdfBase64,
-            cashTotal: Number.isFinite(cashValue) ? cashValue : 0
+            cashTotal: Number.isFinite(cashTotal) ? cashTotal : 0
         });
     } catch (error) {
         console.error('Manual deposit slip error:', error);
@@ -3270,27 +3286,56 @@ app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res
         const configPath = resolve(__dirname, 'depositSlipConfig.json');
         const config = JSON.parse(await readFile(configPath, 'utf8'));
         const templatePath = resolve(__dirname, '..', config.templatePath || 'deposit slip template.pdf');
+        const maxChecks = Array.isArray(config.fieldMap?.checks)
+            ? config.fieldMap.checks.length
+            : 18;
 
         conversionDir = join(tmpdir(), `deposit-slip-pdf-${Date.now()}`);
         await mkdir(conversionDir, { recursive: true });
         const images = await convertPdfToImages(uploadedPath, conversionDir);
-        const checks = images.map((imagePath) => ({ imagePath }));
-        const subtotal = 0;
+        const ocrChecks = await extractChecksFromImages(images, {
+            ocrRegions: config.ocrRegions,
+            includeOcrLines: true,
+            ocrEngines: config.ocrEngines,
+            ocrRegionOrigin: config.ocrRegionOrigin,
+            ocrRegionAnchor: config.ocrRegionAnchor,
+            ocrModel: config.ocrModel,
+            ocrCropMaxSize: config.ocrCropMaxSize,
+            ocrPreviewOnly: config.ocrPreviewOnly === true,
+            ocrAlign: config.ocrAlign
+        });
+        const validOcrChecks = ocrChecks.filter((check) => check && Number.isFinite(check.amount));
+
+        const clientChecksPayload = parseJsonField(req.body?.checks, []) || [];
+        const { manualChecks, cashTotal } = buildManualChecks(clientChecksPayload, maxChecks);
+        const manualTotals = parseJsonField(req.body?.totals, {}) || {};
+        const subtotalOverride = parseCurrencyOverride(manualTotals.subtotal);
+        const totalOverride = parseCurrencyOverride(manualTotals.total);
+        const manualCashOverride = parseCurrencyOverride(manualTotals.cash);
+        const manualSubtotal = manualChecks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
+        const computedSubtotal = manualChecks.length ? manualSubtotal : validOcrChecks.reduce((sum, check) => sum + check.amount, 0);
+        const subtotalValue = subtotalOverride != null ? subtotalOverride : computedSubtotal;
+        const cashValue = manualCashOverride != null ? manualCashOverride : cashTotal;
+        const totalValue = totalOverride != null ? totalOverride : subtotalValue + cashValue;
+
+        const fundsReportEntries = normalizeFundsReportEntries(req.body?.fundsReport?.entries);
+
+        const depositChecks = manualChecks.length ? manualChecks : validOcrChecks;
 
         const depositPath = join(conversionDir, 'deposit-slip.pdf');
         await buildDepositSlipPdf({
             templatePath,
             outputPath: depositPath,
-            checks,
+            checks: depositChecks,
             fieldMap: config.fieldMap || {},
             totals: {
-                cash: 0,
-                subtotal,
-                total: subtotal
+                cash: cashValue,
+                subtotal: subtotalValue,
+                total: totalValue
             },
             fundsReport: {
-                entries: [],
-                total: subtotal
+                entries: fundsReportEntries,
+                total: totalValue
             }
         });
 
@@ -3300,8 +3345,9 @@ app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res
         const [depositPage] = await finalDoc.copyPages(depositDoc, [0]);
         finalDoc.addPage(depositPage);
 
-        const checkAssets = checks.map((check) => ({
-            ...check
+        const checkAssets = ocrChecks.map((check, index) => ({
+            ...check,
+            imagePath: images[index]
         }));
         await addCheckGridPages(finalDoc, checkAssets, {
             pageWidth: depositPage.getWidth(),

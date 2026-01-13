@@ -138,6 +138,19 @@ const Finance = () => {
         try {
             const formData = new FormData();
             formData.append('checksPdf', file);
+            const payloadChecks = checks.map((entry) => ({
+                checkNumber: entry.checkNumber || '',
+                amount: buildPayloadAmount(entry.amount)
+            }));
+            formData.append('checks', JSON.stringify(payloadChecks));
+            formData.append('totals', JSON.stringify({
+                cash: cashTotal,
+                subtotal: overallTotal,
+                total: overallTotal
+            }));
+            formData.append('fundsReport', JSON.stringify({
+                entries: fundsReportEntries
+            }));
             const response = await fetch(`${API_URL}/deposit-slip/pdf`, {
                 method: 'POST',
                 body: formData
