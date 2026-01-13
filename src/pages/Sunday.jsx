@@ -58,6 +58,63 @@ const defaultLocationForTime = (time) => (isEightAmService(time) ? 'chapel' : 's
 
 const roleLabel = (key) => ROLE_DEFINITIONS.find((role) => role.key === key)?.label || key;
 
+const HGK_DEFAULT_ITEMS = [
+    'Bread',
+    'Peanut Butter',
+    'Jelly',
+    'Chips',
+    'Granola Bars',
+    'Oranges',
+    'Rice Krispie Treats',
+    'Water',
+    'Lunch Bags',
+    'Sandwich Bags',
+    'Gloves',
+    'Napkins'
+];
+
+const HGK_STATUS_OPTIONS = ['needed', 'ordered', 'received'];
+
+const HGK_STATUS_LABELS = {
+    needed: 'Needed',
+    ordered: 'Ordered',
+    received: 'Received'
+};
+
+const buildHgkSupplyList = (rawItems = [], knownNames = []) => {
+    const normalizedNames = Array.isArray(knownNames)
+        ? knownNames.map((name) => String(name || '').trim()).filter(Boolean)
+        : [];
+    const fallbackNames = normalizedNames.length > 0 ? normalizedNames : HGK_DEFAULT_ITEMS.slice();
+    const extraNames = Array.isArray(rawItems)
+        ? rawItems
+            .map((item) => String(item?.item_name || '').trim())
+            .filter((name) => name && !fallbackNames.some((existing) => existing.toLowerCase() === name.toLowerCase()))
+        : [];
+    const mergedNames = [...fallbackNames, ...extraNames];
+    const itemMap = new Map();
+    (rawItems || []).forEach((item) => {
+        const key = String(item?.item_name || '').trim().toLowerCase();
+        if (!key) return;
+        itemMap.set(key, item);
+    });
+
+    return mergedNames.map((name) => {
+        const key = name.toLowerCase();
+        const existing = itemMap.get(key) || {};
+        const statusValue = HGK_STATUS_OPTIONS.includes(existing.status)
+            ? existing.status
+            : HGK_STATUS_OPTIONS[0];
+        return {
+            id: existing.id || null,
+            item_name: name,
+            quantity: existing.quantity || '',
+            notes: existing.notes || '',
+            status: statusValue
+        };
+    });
+};
+
 const Sunday = () => {
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
@@ -92,6 +149,17 @@ const Sunday = () => {
     const [statusDrafts, setStatusDrafts] = useState({});
     const [statusExpandedKey, setStatusExpandedKey] = useState(null);
     const [selectedEventId, setSelectedEventId] = useState(null);
+    const [hgkItemNames, setHgkItemNames] = useState([]);
+    const [hgkRawSupplies, setHgkRawSupplies] = useState([]);
+    const [hgkSupplyRequest, setHgkSupplyRequest] = useState(null);
+    const [hgkSupplyMonth, setHgkSupplyMonth] = useState('');
+    const [hgkSupplies, setHgkSupplies] = useState([]);
+    const [hgkSupplyLoading, setHgkSupplyLoading] = useState(false);
+    const [hgkSupplySaving, setHgkSupplySaving] = useState(false);
+    const [hgkSupplyError, setHgkSupplyError] = useState('');
+    const [hgkNotes, setHgkNotes] = useState('');
+    const [hgkEmailInput, setHgkEmailInput] = useState('');
+    const [hgkEmailBusy, setHgkEmailBusy] = useState(false);
 
     const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
     const peopleByName = useMemo(() => {
@@ -195,6 +263,27 @@ const Sunday = () => {
             }
         };
         loadBuildings();
+        return () => {
+            active = false;
+        };
+    }, []);
+
+    useEffect(() => {
+        let active = true;
+        const loadHgkItems = async () => {
+            try {
+                const response = await fetch(`${API_URL}/hgk/items`);
+                if (!response.ok) throw new Error('Failed to load HGK supply items');
+                const data = await response.json();
+                if (!active) return;
+                const items = Array.isArray(data) && data.length > 0 ? data : HGK_DEFAULT_ITEMS;
+                setHgkItemNames(items);
+            } catch (err) {
+                console.error(err);
+                if (active) setHgkItemNames(HGK_DEFAULT_ITEMS);
+            }
+        };
+        loadHgkItems();
         return () => {
             active = false;
         };
@@ -721,6 +810,77 @@ const Sunday = () => {
         sundayEvents.find((event) => event.id === selectedEventId) || null
     ), [sundayEvents, selectedEventId]);
 
+    const isHgkEvent = useMemo(() => {
+        if (!selectedEvent) return false;
+        const metadata = selectedEvent.metadata || {};
+        const identifier = String(metadata.identifier || '').toLowerCase();
+        const tags = Array.isArray(metadata.tags) ? metadata.tags : [];
+        const hasHgkTag = tags.some((tag) => String(tag || '').toLowerCase() === '#hgk');
+        const title = (selectedEvent.title || '').toLowerCase();
+        return (
+            selectedEvent.id === 'hgk-volunteer' ||
+            identifier === '#hgk' ||
+            hasHgkTag ||
+            (selectedEvent.type_slug === 'volunteer' && title.includes('holy ghost kitchen'))
+        );
+    }, [selectedEvent]);
+
+    useEffect(() => {
+        if (!selectedEvent || !isHgkEvent) {
+            setHgkRawSupplies([]);
+            setHgkSupplyRequest(null);
+            setHgkSupplyMonth('');
+            setHgkNotes('');
+            setHgkEmailInput('');
+            setHgkSupplyError('');
+            setHgkSupplyLoading(false);
+            setHgkSupplies([]);
+            return;
+        }
+        const monthKey = format(selectedEvent.date || new Date(), 'yyyy-MM');
+        let active = true;
+        setHgkSupplies([]);
+        setHgkSupplyLoading(true);
+        setHgkSupplyError('');
+        setHgkEmailInput('');
+
+        const fetchSupplies = async () => {
+            try {
+                const response = await fetch(`${API_URL}/hgk/supplies?month=${encodeURIComponent(monthKey)}`);
+                if (!response.ok) throw new Error('Failed to load HGK supplies');
+                const data = await response.json();
+                if (!active) return;
+                setHgkSupplyRequest(data.request || null);
+                setHgkRawSupplies(Array.isArray(data.items) ? data.items : []);
+                setHgkSupplyMonth(data.month || monthKey);
+                setHgkNotes(data.request?.notes || '');
+            } catch (err) {
+                console.error(err);
+                if (!active) return;
+                setHgkRawSupplies([]);
+                setHgkSupplyRequest(null);
+                setHgkNotes('');
+                setHgkSupplyMonth(monthKey);
+                setHgkSupplyError('Unable to load HGK supply list.');
+            } finally {
+                if (active) setHgkSupplyLoading(false);
+            }
+        };
+
+        fetchSupplies();
+        return () => {
+            active = false;
+        };
+    }, [selectedEvent, isHgkEvent]);
+
+    useEffect(() => {
+        if (!isHgkEvent) {
+            setHgkSupplies([]);
+            return;
+        }
+        setHgkSupplies(buildHgkSupplyList(hgkRawSupplies, hgkItemNames));
+    }, [hgkRawSupplies, hgkItemNames, isHgkEvent]);
+
     const servicePanels = useMemo(() => {
         return services.map((service) => (
             <Card key={service.id} className="sunday-service-card">
@@ -857,6 +1017,115 @@ const Sunday = () => {
             </Card>
         ));
     }, [buildings, locationDrafts, menuDirection, openMenu, openTooltipKey, people, peopleById, roleDrafts, services]);
+
+    const handleHgkItemQuantityChange = (index, value) => {
+        setHgkSupplies((prev) => {
+            const next = [...prev];
+            next[index] = { ...next[index], quantity: value };
+            return next;
+        });
+    };
+
+    const handleHgkItemStatusChange = (index, value) => {
+        setHgkSupplies((prev) => {
+            const next = [...prev];
+            next[index] = { ...next[index], status: value };
+            return next;
+        });
+    };
+
+    const handleHgkItemNotesChange = (index, value) => {
+        setHgkSupplies((prev) => {
+            const next = [...prev];
+            next[index] = { ...next[index], notes: value };
+            return next;
+        });
+    };
+
+    const handleParseHgkEmail = async () => {
+        if (!hgkEmailInput.trim()) return;
+        const monthKey = hgkSupplyMonth || format(selectedEvent?.date || new Date(), 'yyyy-MM');
+        setHgkEmailBusy(true);
+        setHgkSupplyError('');
+        try {
+            const response = await fetch(`${API_URL}/hgk/email`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: hgkEmailInput,
+                    month: monthKey
+                })
+            });
+            if (!response.ok) throw new Error('Failed to parse HGK email');
+            const data = await response.json();
+            const parsed = Array.isArray(data.items) ? data.items : [];
+            if (!parsed.length) {
+                setHgkSupplyError('No supply quantities detected in that email.');
+                return;
+            }
+            const parsedMap = new Map(parsed.map((entry) => [String(entry.item_name || '').trim().toLowerCase(), entry]));
+            setHgkSupplies((prev) => prev.map((entry) => {
+                const key = String(entry.item_name || '').trim().toLowerCase();
+                const match = parsedMap.get(key);
+                if (!match || !match.quantity) return entry;
+                return { ...entry, quantity: String(match.quantity).trim() };
+            }));
+        } catch (err) {
+            console.error(err);
+            setHgkSupplyError('Unable to parse that supply email.');
+        } finally {
+            setHgkEmailBusy(false);
+        }
+    };
+
+    const handleSaveHgkSupplies = async () => {
+        if (!hgkSupplyMonth || hgkSupplies.length === 0) return;
+        setHgkSupplySaving(true);
+        setHgkSupplyError('');
+        try {
+            const body = {
+                month: hgkSupplyMonth,
+                notes: hgkNotes,
+                items: hgkSupplies.map((entry) => ({
+                    item_name: entry.item_name,
+                    quantity: String(entry.quantity || '').trim(),
+                    notes: String(entry.notes || '').trim(),
+                    status: HGK_STATUS_OPTIONS.includes(entry.status) ? entry.status : HGK_STATUS_OPTIONS[0]
+                }))
+            };
+            const response = await fetch(`${API_URL}/hgk/supplies`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (!response.ok) throw new Error('Failed to save HGK supplies');
+            const data = await response.json();
+            setHgkSupplyRequest(data.request || null);
+            setHgkRawSupplies(Array.isArray(data.items) ? data.items : []);
+            setHgkNotes(data.request?.notes || '');
+            setHgkSupplyMonth(data.month || hgkSupplyMonth);
+            setHgkEmailInput('');
+        } catch (err) {
+            console.error(err);
+            setHgkSupplyError('Unable to save supply list.');
+        } finally {
+            setHgkSupplySaving(false);
+        }
+    };
+
+    const hgkSupplyMonthLabel = (() => {
+        if (hgkSupplyMonth) {
+            try {
+                return format(parseISO(`${hgkSupplyMonth}-01`), 'MMMM yyyy');
+            } catch {
+                // ignore parse errors
+            }
+        }
+        if (selectedEvent?.date) {
+            return format(selectedEvent.date, 'MMMM yyyy');
+        }
+        return '';
+    })();
 
     if (loading) {
         return (
@@ -1215,6 +1484,104 @@ const Sunday = () => {
                                         <div className="event-detail-row">
                                             <span className="event-detail-label">Notes</span>
                                             <span className="event-detail-value">{selectedEvent.description}</span>
+                                        </div>
+                                    )}
+                                    {isHgkEvent && (
+                                        <div className="hgk-supply-panel">
+                                            <div className="hgk-supply-header">
+                                                <div>
+                                                    <h4>Holy Ghost Kitchen Supplies</h4>
+                                                    <span className="hgk-supply-month">{hgkSupplyMonthLabel}</span>
+                                                </div>
+                                                <span className="hgk-supply-status-label">
+                                                    {hgkSupplyRequest ? 'Saved request' : 'Ungenerated list'}
+                                                </span>
+                                            </div>
+                                            <div className="hgk-supply-notes">
+                                                <label htmlFor="hgk-supply-notes">Notes</label>
+                                                <textarea
+                                                    id="hgk-supply-notes"
+                                                    className="hgk-supply-textarea"
+                                                    value={hgkNotes}
+                                                    onChange={(event) => setHgkNotes(event.target.value)}
+                                                    placeholder="Add ordering notes or reminders."
+                                                />
+                                            </div>
+                                            <div className="hgk-supply-email">
+                                                <label htmlFor="hgk-supply-email">Supply email</label>
+                                                <div className="hgk-supply-email-row">
+                                                    <textarea
+                                                        id="hgk-supply-email"
+                                                        className="hgk-supply-textarea"
+                                                        value={hgkEmailInput}
+                                                        onChange={(event) => setHgkEmailInput(event.target.value)}
+                                                        placeholder="Paste the monthly supply email text to populate quantities."
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        className="btn-primary hgk-email-button"
+                                                        onClick={handleParseHgkEmail}
+                                                        disabled={hgkEmailBusy || !hgkEmailInput.trim()}
+                                                    >
+                                                        {hgkEmailBusy ? 'Parsing...' : 'Use email'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div className="hgk-supply-grid">
+                                                <div className="hgk-supply-row hgk-supply-row--header">
+                                                    <span>Item</span>
+                                                    <span>Qty</span>
+                                                    <span>Status</span>
+                                                    <span>Notes</span>
+                                                </div>
+                                                {hgkSupplyLoading ? (
+                                                    <div className="hgk-supply-loading">Loading supply list...</div>
+                                                ) : hgkSupplies.length === 0 ? (
+                                                    <div className="hgk-supply-empty">No supply items configured yet.</div>
+                                                ) : (
+                                                    hgkSupplies.map((item, index) => (
+                                                        <div className="hgk-supply-row" key={`${item.item_name}-${index}`}>
+                                                            <span className="hgk-supply-name">{item.item_name}</span>
+                                                            <input
+                                                                type="text"
+                                                                className="hgk-supply-input"
+                                                                value={item.quantity}
+                                                                placeholder="Qty"
+                                                                onChange={(event) => handleHgkItemQuantityChange(index, event.target.value)}
+                                                            />
+                                                            <select
+                                                                className="hgk-supply-select"
+                                                                value={item.status}
+                                                                onChange={(event) => handleHgkItemStatusChange(index, event.target.value)}
+                                                            >
+                                                                {HGK_STATUS_OPTIONS.map((value) => (
+                                                                    <option key={value} value={value}>
+                                                                        {HGK_STATUS_LABELS[value] || value}
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                            <input
+                                                                type="text"
+                                                                className="hgk-supply-input"
+                                                                value={item.notes}
+                                                                onChange={(event) => handleHgkItemNotesChange(index, event.target.value)}
+                                                                placeholder="Notes"
+                                                            />
+                                                        </div>
+                                                    ))
+                                                )}
+                                            </div>
+                                            <div className="hgk-supply-actions">
+                                                <button
+                                                    type="button"
+                                                    className="btn-primary"
+                                                    onClick={handleSaveHgkSupplies}
+                                                    disabled={hgkSupplySaving || hgkSupplyLoading}
+                                                >
+                                                    {hgkSupplySaving ? 'Saving...' : 'Save supply list'}
+                                                </button>
+                                                {hgkSupplyError && <span className="hgk-supply-error">{hgkSupplyError}</span>}
+                                            </div>
                                         </div>
                                     )}
                                 </div>

@@ -21,11 +21,12 @@ const DEFAULT_EVENT_CATEGORIES = [
     { name: 'Educational', slug: 'educational', color: '#14B8A6', description: 'Classes, formation, and study groups' },
     { name: 'Cultural', slug: 'cultural', color: '#A855F7', description: 'Concerts, lectures, and community arts' },
     { name: 'Commercial', slug: 'commercial', color: '#F97316', description: 'Facility rentals and external contracts' },
-    { name: 'Pastoral', slug: 'pastoral', color: '#EC4899', description: 'Counseling, prep, and pastoral care' },
+    { name: 'Ministerial', slug: 'ministerial', color: '#EC4899', description: 'Ministerial care, outreach, and volunteer operations' },
     { name: 'Operational', slug: 'operational', color: '#6B7280', description: 'Maintenance, closures, and cleaning' }
 ];
 
 const DEFAULT_EVENT_TYPES = [
+    { name: 'Volunteer', slug: 'volunteer', categorySlug: 'ministerial', requiresContract: 0, requiresStaffing: 1, requiresSetup: 0 },
     { name: 'Weekly Service', slug: 'weekly-service', categorySlug: 'liturgical', requiresStaffing: 1, requiresSetup: 1 },
     { name: 'Special Service', slug: 'special-service', categorySlug: 'liturgical', requiresStaffing: 1, requiresSetup: 1 },
     { name: 'Wedding', slug: 'wedding', categorySlug: 'sacramental', requiresContract: 1, requiresStaffing: 1, requiresSetup: 1 },

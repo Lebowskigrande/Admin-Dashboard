@@ -32,6 +32,148 @@ const CC_AUTH_URL = 'https://authz.constantcontact.com/oauth2/default/v1/authori
 const CC_TOKEN_URL = 'https://authz.constantcontact.com/oauth2/default/v1/token';
 const CC_API_BASE = 'https://api.cc.email/v3';
 
+const HGK_SUPPLY_ITEMS = [
+    'Bread',
+    'Peanut Butter',
+    'Jelly',
+    'Chips',
+    'Granola Bars',
+    'Oranges',
+    'Rice Krispie Treats',
+    'Water',
+    'Lunch Bags',
+    'Sandwich Bags',
+    'Gloves',
+    'Napkins'
+];
+
+const HGK_STATUS_OPTIONS = ['needed', 'ordered', 'received'];
+
+const formatMonthKey = (value) => {
+    const normalized = String(value || '').trim();
+    const match = normalized.match(/^(\d{4})-(\d{2})$/);
+    if (match) {
+        const [, year, month] = match;
+        const monthNumber = Number(month);
+        if (monthNumber >= 1 && monthNumber <= 12) {
+            return `${year}-${month}`;
+        }
+    }
+    const now = new Date();
+    return now.toISOString().slice(0, 7);
+};
+
+const getThirdSundayFromMonth = (monthKey) => {
+    const parts = String(monthKey || '').split('-');
+    if (parts.length < 2) return null;
+    const year = Number(parts[0]);
+    const month = Number(parts[1]);
+    if (!Number.isFinite(year) || Number.isNaN(month)) return null;
+    const firstDay = new Date(year, month - 1, 1);
+    const firstSunday = 1 + ((7 - firstDay.getDay()) % 7);
+    const thirdSunday = firstSunday + 14;
+    const date = new Date(year, month - 1, thirdSunday);
+    return date.toISOString().slice(0, 10);
+};
+
+const findHgkOccurrenceId = (monthKey) => {
+    const dateKey = getThirdSundayFromMonth(monthKey);
+    if (!dateKey) return null;
+    const row = sqlite.prepare(`
+        SELECT id FROM event_occurrences
+        WHERE event_id = 'hgk-volunteer' AND date = ?
+        LIMIT 1
+    `).get(dateKey);
+    return row?.id || null;
+};
+
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const parseSupplyEmail = (emailText) => {
+    const normalized = String(emailText || '').toLowerCase();
+    const entries = [];
+    HGK_SUPPLY_ITEMS.forEach((item) => {
+        const lowered = item.toLowerCase();
+        const forwardPattern = new RegExp(`(\\d+)\\s+${escapeRegex(lowered)}`);
+        const reversePattern = new RegExp(`${escapeRegex(lowered)}\\s+(\\d+)`);
+        let quantity = '';
+        const forwardMatch = normalized.match(forwardPattern);
+        if (forwardMatch) {
+            quantity = forwardMatch[1];
+        } else {
+            const reverseMatch = normalized.match(reversePattern);
+            if (reverseMatch) {
+                quantity = reverseMatch[1];
+            }
+        }
+        entries.push({
+            item_name: item,
+            quantity: quantity || '',
+            detected: !!quantity
+        });
+    });
+    return entries;
+};
+
+const HGK_WEBHOOK_TOKEN = process.env.HGK_WEBHOOK_TOKEN || null;
+
+const prepareHgkItemsPayload = (items) => {
+    if (!Array.isArray(items)) return [];
+    return items
+        .map((entry) => {
+            const itemName = String(entry?.item_name || entry?.name || '').trim();
+            if (!itemName) return null;
+            const quantity = String(entry.quantity || '').trim();
+            const notes = String(entry.notes || '').trim();
+            const status = HGK_STATUS_OPTIONS.includes(entry.status) ? entry.status : HGK_STATUS_OPTIONS[0];
+            return {
+                item_name: itemName,
+                quantity,
+                notes,
+                status
+            };
+        })
+        .filter(Boolean);
+};
+
+const upsertHgkSupplyRequest = (monthKey, notes = '', incomingItems = []) => {
+    const normalizedMonth = formatMonthKey(monthKey);
+    const now = new Date().toISOString();
+    const occurrenceId = findHgkOccurrenceId(normalizedMonth);
+    const existingRequest = sqlite.prepare('SELECT id FROM hgk_supply_requests WHERE month = ?').get(normalizedMonth);
+    let requestId;
+
+    if (existingRequest) {
+        requestId = existingRequest.id;
+        sqlite.prepare(`
+            UPDATE hgk_supply_requests
+            SET notes = ?, occurrence_id = ?, updated_at = ?
+            WHERE id = ?
+        `).run(notes || null, occurrenceId, now, requestId);
+    } else {
+        requestId = `hgk-${normalizedMonth}`;
+        sqlite.prepare(`
+            INSERT INTO hgk_supply_requests (id, month, notes, occurrence_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        `).run(requestId, normalizedMonth, notes || null, occurrenceId, now, now);
+    }
+
+    const payloadItems = Array.isArray(incomingItems) && incomingItems.length > 0
+        ? prepareHgkItemsPayload(incomingItems)
+        : HGK_SUPPLY_ITEMS.map((name) => ({ item_name: name, quantity: '', notes: '', status: HGK_STATUS_OPTIONS[0] }));
+
+    sqlite.prepare('DELETE FROM hgk_supply_items WHERE request_id = ?').run(requestId);
+    insertHgkSupplyItems(requestId, payloadItems, now);
+
+    const savedRequest = sqlite.prepare('SELECT * FROM hgk_supply_requests WHERE id = ?').get(requestId);
+    const savedItems = sqlite.prepare('SELECT * FROM hgk_supply_items WHERE request_id = ? ORDER BY item_name').all(requestId);
+    return {
+        month: normalizedMonth,
+        request: savedRequest,
+        items: savedItems
+    };
+};
+
 const getCcUserId = (req) => req.user?.id || 'local';
 
 const findLatestDbBackup = async () => {
@@ -3028,6 +3170,96 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
     }
 });
 
+const insertHgkSupplyItems = (requestId, items, now) => {
+    const insert = sqlite.prepare(`
+        INSERT INTO hgk_supply_items (
+            id, request_id, item_name, quantity, notes, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    items.forEach((entry) => {
+        const itemName = String(entry.item_name || entry.name || '').trim();
+        if (!itemName) return;
+        insert.run(
+            randomUUID(),
+            requestId,
+            itemName,
+            entry.quantity != null ? String(entry.quantity).trim() : '',
+            entry.notes != null ? String(entry.notes).trim() : '',
+            entry.status || 'needed',
+            now,
+            now
+        );
+    });
+};
+
+app.get('/api/hgk/items', (req, res) => {
+    res.json(HGK_SUPPLY_ITEMS);
+});
+
+app.get('/api/hgk/supplies', (req, res) => {
+    const monthKey = formatMonthKey(req.query.month);
+    const request = sqlite.prepare('SELECT * FROM hgk_supply_requests WHERE month = ?').get(monthKey);
+    const items = request
+        ? sqlite.prepare('SELECT * FROM hgk_supply_items WHERE request_id = ? ORDER BY item_name').all(request.id)
+        : [];
+    res.json({
+        month: monthKey,
+        request: request || null,
+        items
+    });
+});
+
+app.post('/api/hgk/supplies', (req, res) => {
+    try {
+        const monthKey = formatMonthKey(req.body?.month);
+        const notes = String(req.body?.notes || '').trim();
+        const incomingItems = Array.isArray(req.body?.items) && req.body.items.length > 0
+            ? req.body.items
+            : HGK_SUPPLY_ITEMS.map((name) => ({ item_name: name }));
+        const result = upsertHgkSupplyRequest(monthKey, notes, incomingItems);
+        res.json(result);
+    } catch (error) {
+        console.error('Save HGK supplies error:', error);
+        res.status(500).json({ error: 'Failed to persist HGK supplies' });
+    }
+});
+
+app.post('/api/hgk/email/webhook', (req, res) => {
+    try {
+        if (HGK_WEBHOOK_TOKEN) {
+            const incomingToken = String(req.headers['x-hgk-webhook-token'] || '').trim();
+            if (!incomingToken || incomingToken !== HGK_WEBHOOK_TOKEN) {
+                return res.status(403).json({ error: 'Invalid webhook token' });
+            }
+        }
+        const emailText = String(req.body?.text || '').trim();
+        if (!emailText) {
+            return res.status(400).json({ error: 'Email body text is required' });
+        }
+        const monthKey = formatMonthKey(req.body?.month);
+        const notes = String(req.body?.notes || req.body?.subject || '').trim();
+        const parsedItems = parseSupplyEmail(emailText);
+        const result = upsertHgkSupplyRequest(monthKey, notes, parsedItems);
+        res.json({
+            ...result,
+            parsed: parsedItems
+        });
+    } catch (error) {
+        console.error('HGK email webhook error:', error);
+        res.status(500).json({ error: 'Failed to process HGK email' });
+    }
+});
+
+app.post('/api/hgk/email', (req, res) => {
+    const text = String(req.body?.text || '');
+    const monthKey = formatMonthKey(req.body?.month);
+    const parsedItems = parseSupplyEmail(text);
+    res.json({
+        month: monthKey,
+        items: parsedItems
+    });
+});
+
 app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res) => {
     let conversionDir = null;
     let uploadedPath = req.file?.path || null;
@@ -3042,25 +3274,14 @@ app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res
         conversionDir = join(tmpdir(), `deposit-slip-pdf-${Date.now()}`);
         await mkdir(conversionDir, { recursive: true });
         const images = await convertPdfToImages(uploadedPath, conversionDir);
-        const checks = await extractChecksFromImages(images, {
-            ocrRegions: config.ocrRegions,
-            includeOcrLines: true,
-            ocrEngines: config.ocrEngines,
-            ocrRegionOrigin: config.ocrRegionOrigin,
-            ocrRegionAnchor: config.ocrRegionAnchor,
-            ocrModel: config.ocrModel,
-            ocrCropMaxSize: config.ocrCropMaxSize,
-            ocrPreviewOnly: config.ocrPreviewOnly === true,
-            ocrAlign: config.ocrAlign
-        });
-        const validChecks = checks.filter((check) => Number.isFinite(check.amount));
-        const subtotal = validChecks.reduce((sum, check) => sum + check.amount, 0);
+        const checks = images.map((imagePath) => ({ imagePath }));
+        const subtotal = 0;
 
         const depositPath = join(conversionDir, 'deposit-slip.pdf');
         await buildDepositSlipPdf({
             templatePath,
             outputPath: depositPath,
-            checks: validChecks,
+            checks,
             fieldMap: config.fieldMap || {},
             totals: {
                 cash: 0,
@@ -3079,9 +3300,8 @@ app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res
         const [depositPage] = await finalDoc.copyPages(depositDoc, [0]);
         finalDoc.addPage(depositPage);
 
-        const checkAssets = checks.map((check, index) => ({
-            ...check,
-            imagePath: images[index]
+        const checkAssets = checks.map((check) => ({
+            ...check
         }));
         await addCheckGridPages(finalDoc, checkAssets, {
             pageWidth: depositPage.getWidth(),
@@ -3089,7 +3309,8 @@ app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res
         });
 
         const finalBytes = await finalDoc.save();
-        res.json({ pdfBase64: finalBytes.toString('base64') });
+        const finalBuffer = Buffer.from(finalBytes);
+        res.json({ pdfBase64: finalBuffer.toString('base64') });
     } catch (error) {
         console.error('PDF deposit slip error:', error);
         if (!res.headersSent) {

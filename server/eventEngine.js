@@ -37,8 +37,14 @@ export const categorizeGoogleEvent = (googleEvent, categories, eventTypes) => {
         }
     }
 
+    const containsHgk = /\bhgk\b/.test(content) || content.includes('holy ghost kitchen') || content.includes('#hgk');
+    if (containsHgk) {
+        const volunteerType = eventTypes.find((t) => t.slug === 'volunteer');
+        if (volunteerType) matchedType = volunteerType;
+    }
+
     // Priority 2: Keyword matching (if no hashtag matched)
-    if (matchedType.slug === 'public-event' || !Object.keys(tags).some(tag => content.includes(tag))) {
+    if (!containsHgk && (matchedType.slug === 'public-event' || !Object.keys(tags).some(tag => content.includes(tag)))) {
         if (content.includes('wedding')) {
             matchedType = eventTypes.find(t => t.slug === 'wedding');
         } else if (content.includes('funeral') || content.includes('memorial')) {
@@ -61,6 +67,8 @@ export const categorizeGoogleEvent = (googleEvent, categories, eventTypes) => {
             matchedType = eventTypes.find(t => t.slug === 'maintenance-closure');
         } else if (content.includes('rental') || content.includes('lease')) {
             matchedType = eventTypes.find(t => t.slug === 'private-rental');
+        } else if (content.includes('holy ghost kitchen') || content.includes('hgk')) {
+            matchedType = eventTypes.find(t => t.slug === 'volunteer');
         }
     }
 
@@ -303,5 +311,51 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens }) => {
         totalSynced++;
     }
 
+    ensureHgkOccurrences();
     return totalSynced;
+};
+
+const getThirdSundayOfMonth = (referenceDate) => {
+    const year = referenceDate.getFullYear();
+    const month = referenceDate.getMonth();
+    const firstOfMonth = new Date(year, month, 1);
+    const firstDay = firstOfMonth.getDay();
+    const firstSunday = 1 + ((7 - firstDay) % 7);
+    const thirdSunday = firstSunday + 14;
+    return new Date(year, month, thirdSunday);
+};
+
+const ensureHgkOccurrences = () => {
+    const volunteerType = sqlite.prepare('SELECT id FROM event_types WHERE slug = ?').get('volunteer');
+    if (!volunteerType) return;
+    const eventId = 'hgk-volunteer';
+    const now = new Date().toISOString();
+    const metadata = JSON.stringify({ identifier: '#HGK', description: 'Holy Ghost Kitchen' });
+    sqlite.prepare(`
+        INSERT INTO events (id, title, description, event_type_id, source, metadata, created_at, updated_at)
+        VALUES (?, 'Holy Ghost Kitchen', 'Volunteer meal support', ?, 'manual', ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            title = excluded.title,
+            updated_at = excluded.updated_at,
+            metadata = excluded.metadata
+    `).run(eventId, volunteerType.id, metadata, now, now);
+
+    const start = new Date();
+    const monthsAhead = 12;
+    for (let offset = 0; offset < monthsAhead; offset += 1) {
+        const targetDate = getThirdSundayOfMonth(new Date(start.getFullYear(), start.getMonth() + offset, 1));
+        const dateKey = targetDate.toISOString().slice(0, 10);
+        const occurrenceId = `hgk-${dateKey}`;
+        const exists = sqlite.prepare('SELECT id FROM event_occurrences WHERE id = ?').get(occurrenceId);
+        if (exists) continue;
+        sqlite.prepare(`
+            INSERT INTO event_occurrences (id, event_id, date, start_time, building_id, notes, is_default)
+            VALUES (?, ?, ?, '11:00', 'parish-hall', ?, 0)
+        `).run(
+            occurrenceId,
+            eventId,
+            dateKey,
+            JSON.stringify({ tags: ['#HGK'], source: 'Holy Ghost Kitchen' })
+        );
+    }
 };

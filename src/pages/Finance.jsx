@@ -62,7 +62,12 @@ const loadSavedChecks = () => {
 };
 
 const base64ToBlob = (base64, contentType = 'application/pdf') => {
-    const byteCharacters = atob(base64);
+    const payload = String(base64 || '').trim();
+    if (!payload) {
+        throw new Error('Missing base64 payload');
+    }
+    const normalized = payload.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
+    const byteCharacters = atob(normalized);
     const byteNumbers = new Array(byteCharacters.length);
     for (let i = 0; i < byteCharacters.length; i += 1) {
         byteNumbers[i] = byteCharacters.charCodeAt(i);
