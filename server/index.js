@@ -3148,6 +3148,7 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
         const totalValue = totalOverride != null ? totalOverride : subtotalValue + cashTotal;
 
         const fundsReportEntries = normalizeFundsReportEntries(req.body?.fundsReport?.entries);
+        const depositChecks = manualChecks;
 
         outputDir = join(tmpdir(), `deposit-slip-${Date.now()}`);
         const outputPath = join(outputDir, 'deposit-slip.pdf');
@@ -3304,8 +3305,6 @@ app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res
             ocrPreviewOnly: config.ocrPreviewOnly === true,
             ocrAlign: config.ocrAlign
         });
-        const validOcrChecks = ocrChecks.filter((check) => check && Number.isFinite(check.amount));
-
         const clientChecksPayload = parseJsonValue(req.body?.checks, []) || [];
         const { manualChecks, cashTotal } = buildManualChecks(clientChecksPayload, maxChecks);
         const manualTotals = parseJsonValue(req.body?.totals, {}) || {};
@@ -3313,14 +3312,11 @@ app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res
         const totalOverride = parseCurrencyOverride(manualTotals.total);
         const manualCashOverride = parseCurrencyOverride(manualTotals.cash);
         const manualSubtotal = manualChecks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
-        const computedSubtotal = manualChecks.length ? manualSubtotal : validOcrChecks.reduce((sum, check) => sum + check.amount, 0);
-        const subtotalValue = subtotalOverride != null ? subtotalOverride : computedSubtotal;
+        const subtotalValue = subtotalOverride != null ? subtotalOverride : manualSubtotal;
         const cashValue = manualCashOverride != null ? manualCashOverride : cashTotal;
         const totalValue = totalOverride != null ? totalOverride : subtotalValue + cashValue;
 
         const fundsReportEntries = normalizeFundsReportEntries(req.body?.fundsReport?.entries);
-
-        const depositChecks = manualChecks.length ? manualChecks : validOcrChecks;
 
         const depositPath = join(conversionDir, 'deposit-slip.pdf');
         await buildDepositSlipPdf({
