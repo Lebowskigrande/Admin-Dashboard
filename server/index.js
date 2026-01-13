@@ -3083,7 +3083,7 @@ const parseCurrencyOverride = (value) => {
     return Number.isFinite(parsed) ? parsed : null;
 };
 
-const parseJsonField = (value, fallback = null) => {
+const parseJsonValue = (value, fallback = null) => {
     if (value == null) return fallback;
     if (typeof value === 'string') {
         try {
@@ -3114,7 +3114,7 @@ const buildManualChecks = (payload, maxChecks) => {
 };
 
 const normalizeFundsReportEntries = (value) => {
-    const entries = Array.isArray(value) ? value : parseJsonField(value, []);
+    const entries = Array.isArray(value) ? value : parseJsonValue(value, []);
     if (!Array.isArray(entries)) return [];
     return entries
         .map((entry) => {
@@ -3139,7 +3139,7 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
             : 18;
         const { manualChecks, cashTotal } = buildManualChecks(req.body?.checks || [], maxChecks);
 
-        const clientTotals = parseJsonField(req.body?.totals, {}) || {};
+        const clientTotals = parseJsonValue(req.body?.totals, {}) || {};
         const subtotalOverride = parseCurrencyOverride(clientTotals.subtotal);
         const totalOverride = parseCurrencyOverride(clientTotals.total);
         const subtotalValue = subtotalOverride != null
@@ -3306,9 +3306,9 @@ app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res
         });
         const validOcrChecks = ocrChecks.filter((check) => check && Number.isFinite(check.amount));
 
-        const clientChecksPayload = parseJsonField(req.body?.checks, []) || [];
+        const clientChecksPayload = parseJsonValue(req.body?.checks, []) || [];
         const { manualChecks, cashTotal } = buildManualChecks(clientChecksPayload, maxChecks);
-        const manualTotals = parseJsonField(req.body?.totals, {}) || {};
+        const manualTotals = parseJsonValue(req.body?.totals, {}) || {};
         const subtotalOverride = parseCurrencyOverride(manualTotals.subtotal);
         const totalOverride = parseCurrencyOverride(manualTotals.total);
         const manualCashOverride = parseCurrencyOverride(manualTotals.cash);
