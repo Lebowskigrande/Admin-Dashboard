@@ -3,11 +3,12 @@ import dotenv from 'dotenv';
 
 dotenv.config({ path: './server/.env' });
 
-const SCOPES = [
+export const GOOGLE_SCOPES = [
     'openid',
     'email',
     'profile',
-    'https://www.googleapis.com/auth/calendar.readonly'
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/gmail.readonly'
 ];
 
 export const createOAuthClient = () => new google.auth.OAuth2(
@@ -20,7 +21,7 @@ export const createOAuthClient = () => new google.auth.OAuth2(
 export const getAuthUrl = () => {
     return createOAuthClient().generateAuthUrl({
         access_type: 'offline',
-        scope: SCOPES,
+        scope: GOOGLE_SCOPES,
         prompt: 'consent'
     });
 };

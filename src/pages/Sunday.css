@@ -207,10 +207,15 @@
     align-items: stretch;
 }
 
+.hgk-email-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-self: stretch;
+}
+
 .hgk-email-button {
     white-space: nowrap;
-    align-self: flex-end;
-    margin-left: auto;
     min-width: 140px;
 }
 
@@ -664,7 +669,7 @@
     align-items: center;
     width: max-content;
     --stack-gap: 30px;
-    z-index: 5;
+    z-index: 1000;
     overflow: visible;
 }
 
@@ -680,7 +685,7 @@
 }
 
 .status-stack.expanded {
-    z-index: 100;
+    z-index: 99999;
 }
 
 .status-stack.expanded::before {
@@ -710,7 +715,7 @@
     opacity: 0;
     pointer-events: none;
     transform: translateY(calc((var(--index) - var(--active-index)) * 2px));
-    z-index: 50;
+    z-index: 99999;
     white-space: nowrap;
 }
 
@@ -740,6 +745,10 @@
     transform: translateY(calc((var(--index) - var(--active-index)) * var(--stack-gap))) scale(1.02);
 }
 
+.status-option.locked {
+    cursor: not-allowed;
+}
+
 .status-stack.disabled .status-option,
 .status-option:disabled {
     opacity: 0;
@@ -756,6 +765,17 @@
     align-items: center;
     gap: 8px;
     justify-content: flex-end;
+}
+
+.print-copies-input {
+    width: 60px;
+    padding: 6px 8px;
+    border-radius: 999px;
+    border: 1px solid #e2e8f0;
+    background: #fff;
+    color: var(--color-text-main);
+    font-size: 0.85rem;
+    text-align: center;
 }
 
 .email-checklist-wrapper {
@@ -877,7 +897,6 @@
 .card.sunday-panel {
     position: relative;
     overflow: visible;
-    z-index: 1;
 }
 
 .card.sunday-service-card {

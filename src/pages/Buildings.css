@@ -12,7 +12,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 2rem;
+    margin-bottom: 1rem;
 }
 
 .campus-map-card {
@@ -506,7 +506,7 @@
 .buildings-tabs {
     display: flex;
     gap: 1rem;
-    margin-bottom: 2rem;
+    margin-bottom: 1rem;
 }
 
 .repairs-grid {
@@ -554,11 +554,72 @@
     font-weight: bold;
 }
 
+.vendors-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
 .vendors-table th,
 .vendors-table td {
-    padding: 1rem;
+    padding: 0.85rem 0.9rem;
     text-align: left;
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.vendors-table th {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #64748b;
+}
+
+.vendors-table tbody tr {
+    transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.vendors-table tbody tr:hover {
+    background: #f8fafc;
+    box-shadow: inset 0 0 0 1px #e2e8f0;
+}
+
+.vendors-table tbody tr:nth-child(even) {
+    background: #fbfdff;
+}
+
+.vendors-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.contract-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.65rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-decoration: none;
+    background: #e0f2fe;
+    color: #0c4a6e;
+    border: 1px solid #bae6fd;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.contract-pill:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 14px rgba(14, 116, 144, 0.18);
+}
+
+.contract-pill.disabled {
+    background: #f1f5f9;
+    color: #94a3b8;
+    border-color: #e2e8f0;
+    cursor: not-allowed;
+    pointer-events: none;
+    box-shadow: none;
+    transform: none;
 }
 
 .tickets-view {
@@ -583,6 +644,192 @@
     display: grid;
     grid-template-columns: minmax(240px, 1fr) minmax(320px, 2fr);
     gap: 1.5rem;
+}
+
+.ticket-archive {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 0.75rem;
+    overflow: visible;
+}
+
+.ticket-archive-toggle {
+    width: 100%;
+    border: none;
+    background: transparent;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    cursor: pointer;
+    text-align: left;
+}
+
+.ticket-archive-toggle h3 {
+    margin: 0;
+}
+
+.archive-caret {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    transition: transform 0.2s ease;
+}
+
+.archive-caret::before {
+    content: '';
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #475569;
+    display: block;
+}
+
+.archive-caret.open {
+    transform: rotate(180deg);
+}
+
+.ticket-archive-panel {
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.35s ease, opacity 0.25s ease;
+}
+
+.ticket-archive-panel.expanded {
+    max-height: 1200px;
+    opacity: 1;
+    margin-top: 0.75rem;
+    overflow: visible;
+}
+
+.ticket-archive-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.ticket-archive-item {
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 0.75rem;
+    background: #f8fafc;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.ticket-archive-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+}
+
+.ticket-archive-text {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.ticket-archive-title {
+    font-weight: 600;
+    color: #0f172a;
+    white-space: nowrap;
+}
+
+.ticket-archive-description {
+    color: #64748b;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ticket-archive-chips {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    gap: 0.4rem;
+}
+
+.ticket-status-stack {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    width: max-content;
+    --stack-gap: 30px;
+    z-index: 1000;
+    overflow: visible;
+}
+
+.ticket-status-anchor {
+    padding: 4px 10px;
+    border-radius: 999px;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.ticket-status-stack.expanded {
+    z-index: 99999;
+}
+
+.ticket-status-stack.expanded::before {
+    content: '';
+    position: absolute;
+    right: 0;
+    width: 160px;
+    top: calc(-1 * var(--stack-gap) * var(--active-index));
+    height: calc(var(--stack-gap) * (var(--stack-count) + 1));
+    pointer-events: auto;
+}
+
+.ticket-status-option {
+    position: absolute;
+    right: 0;
+    top: 0;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 999px;
+    padding: 4px 6px;
+    cursor: pointer;
+    transition: transform 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(calc((var(--index) - var(--active-index)) * 2px));
+    z-index: 99999;
+    white-space: nowrap;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: capitalize;
+}
+
+.ticket-status-option.active {
+    opacity: 1;
+    pointer-events: auto;
+    box-shadow: 0 6px 14px rgba(15, 23, 42, 0.12);
+}
+
+.ticket-status-stack.expanded .ticket-status-option {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(calc((var(--index) - var(--active-index)) * var(--stack-gap)));
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.18);
+}
+
+.ticket-status-option:hover {
+    border-color: rgba(15, 23, 42, 0.28);
+    transform: translateY(calc((var(--index) - var(--active-index)) * var(--stack-gap))) scale(1.02);
+}
+
+.ticket-detail {
+    overflow: visible;
+}
+
+.ticket-detail .card-body {
+    overflow: visible;
 }
 
 .tickets-list,
@@ -717,9 +964,15 @@
     background: #f9fafb;
 }
 
-.ticket-task.completed {
-    opacity: 0.7;
+.ticket-task.completed span {
     text-decoration: line-through;
+}
+
+.task-completed-at {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: #64748b;
+    text-decoration: none;
 }
 
 .task-toggle {

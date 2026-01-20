@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { access, copyFile, mkdir, readFile, readdir, rm, stat } from 'fs/promises';
+import { access, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
 import { join, dirname, resolve, basename, extname } from 'path';
 import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
@@ -16,7 +16,7 @@ import { seedNormalized } from './db/seedNormalized.js';
 import { migrateLegacyData } from './db/legacy_migrate.js';
 import { applyDefaultSundayAssignments, ensureDefaultSundayServices } from './db/default_services.js';
 import { seedDatabase } from './seed.js';
-import { getAuthUrl, getTokensFromCode } from './googleAuth.js';
+import { createOAuthClient, getAuthUrl, getTokensFromCode, setStoredCredentials, GOOGLE_SCOPES } from './googleAuth.js';
 import { fetchGoogleCalendarEvents, fetchCalendarList } from './googleCalendar.js';
 import { google } from 'googleapis';
 import { syncGoogleEvents } from './eventEngine.js';
@@ -36,10 +36,10 @@ const HGK_SUPPLY_ITEMS = [
     'Bread',
     'Peanut Butter',
     'Jelly',
-    'Chips',
-    'Granola Bars',
+    'Chips (box)',
+    'Granola Bars (box)',
     'Oranges',
-    'Rice Krispie Treats',
+    'Rice Krispie Treats (box)',
     'Water',
     'Lunch Bags',
     'Sandwich Bags',
@@ -89,23 +89,179 @@ const findHgkOccurrenceId = (monthKey) => {
 
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const normalizeSupplyString = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const singularizeToken = (token) => token.endsWith('s') ? token.slice(0, -1) : token;
+
+const tokenizeSupply = (value) => normalizeSupplyString(value)
+    .split(' ')
+    .map((token) => singularizeToken(token))
+    .filter(Boolean);
+
+const levenshteinDistance = (a, b) => {
+    const left = a || '';
+    const right = b || '';
+    const rows = left.length + 1;
+    const cols = right.length + 1;
+    const grid = Array.from({ length: rows }, () => new Array(cols).fill(0));
+    for (let i = 0; i < rows; i += 1) grid[i][0] = i;
+    for (let j = 0; j < cols; j += 1) grid[0][j] = j;
+    for (let i = 1; i < rows; i += 1) {
+        for (let j = 1; j < cols; j += 1) {
+            const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+            grid[i][j] = Math.min(
+                grid[i - 1][j] + 1,
+                grid[i][j - 1] + 1,
+                grid[i - 1][j - 1] + cost
+            );
+        }
+    }
+    return grid[rows - 1][cols - 1];
+};
+
+const similarityScore = (a, b) => {
+    if (!a || !b) return 0;
+    const distance = levenshteinDistance(a, b);
+    const maxLen = Math.max(a.length, b.length) || 1;
+    return 1 - distance / maxLen;
+};
+
+const HGK_INSTACART_LIST_URL = 'https://www.instacart.com/store/list/08b147ca-259d-4fd2-b3ff-315e94880261?utm_medium=shared_list';
+
+const HGK_ITEM_ALIASES = {
+    'Jelly': ['jam'],
+    'Chips (box)': ['chips'],
+    'Granola Bars (box)': ['granola bars', 'granola bar'],
+    'Rice Krispie Treats (box)': ['rice krispie treats', 'rice krispy treats', 'rice krispie', 'rice krispy'],
+    'Oranges': ['fruit', 'tangerines', 'tangerine']
+};
+
+const decodeGmailBody = (data) => {
+    if (!data) return '';
+    const normalized = data.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    return Buffer.from(padded, 'base64').toString('utf8');
+};
+
+const collectGmailParts = (part, mimeType, collected = []) => {
+    if (!part) return collected;
+    if (part.mimeType === mimeType && part.body?.data) {
+        collected.push(part.body.data);
+    }
+    if (Array.isArray(part.parts)) {
+        part.parts.forEach((child) => collectGmailParts(child, mimeType, collected));
+    }
+    return collected;
+};
+
+const extractGmailMessageText = (message) => {
+    const payload = message?.payload;
+    if (!payload) return '';
+    const plainParts = collectGmailParts(payload, 'text/plain');
+    if (plainParts.length > 0) {
+        return plainParts.map(decodeGmailBody).join('\n');
+    }
+    const htmlParts = collectGmailParts(payload, 'text/html');
+    if (htmlParts.length > 0) {
+        const htmlText = htmlParts.map(decodeGmailBody).join('\n');
+        return htmlText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    if (payload.body?.data) {
+        return decodeGmailBody(payload.body.data);
+    }
+    return '';
+};
+
+const escapePsString = (value) => String(value || '')
+    .replace(/`/g, '``')
+    .replace(/'/g, "''");
+
 const parseSupplyEmail = (emailText) => {
-    const normalized = String(emailText || '').toLowerCase();
+    const rawText = String(emailText || '');
+    const normalized = rawText.toLowerCase();
     const entries = [];
+    const detected = new Map();
+
     HGK_SUPPLY_ITEMS.forEach((item) => {
-        const lowered = item.toLowerCase();
-        const forwardPattern = new RegExp(`(\\d+)\\s+${escapeRegex(lowered)}`);
-        const reversePattern = new RegExp(`${escapeRegex(lowered)}\\s+(\\d+)`);
+        const aliases = HGK_ITEM_ALIASES[item] || [];
+        const candidates = [item, ...aliases];
+        const patterns = candidates.map((candidate) => {
+            const lowered = candidate.toLowerCase();
+            return {
+                forward: new RegExp(`(\\d+)\\s+${escapeRegex(lowered)}`),
+                reverse: new RegExp(`${escapeRegex(lowered)}\\s+(\\d+)`)
+            };
+        });
         let quantity = '';
-        const forwardMatch = normalized.match(forwardPattern);
-        if (forwardMatch) {
-            quantity = forwardMatch[1];
-        } else {
-            const reverseMatch = normalized.match(reversePattern);
+        patterns.some((pattern) => {
+            const forwardMatch = normalized.match(pattern.forward);
+            if (forwardMatch) {
+                quantity = forwardMatch[1];
+                return true;
+            }
+            const reverseMatch = normalized.match(pattern.reverse);
             if (reverseMatch) {
                 quantity = reverseMatch[1];
+                return true;
             }
+            return false;
+        });
+        if (quantity) {
+            detected.set(item, quantity);
         }
+    });
+
+    const itemProfiles = HGK_SUPPLY_ITEMS.map((item) => ({
+        name: item,
+        normalized: normalizeSupplyString(item),
+        tokens: tokenizeSupply(item),
+        aliases: (HGK_ITEM_ALIASES[item] || []).map((alias) => ({
+            normalized: normalizeSupplyString(alias),
+            tokens: tokenizeSupply(alias)
+        }))
+    }));
+
+    const lines = rawText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    lines.forEach((line) => {
+        const qtyMatch = line.match(/(\d+(?:\.\d+)?)/);
+        if (!qtyMatch) return;
+        const quantity = qtyMatch[1];
+        if (!quantity) return;
+        const lineText = line.replace(qtyMatch[0], ' ');
+        const normalizedLine = normalizeSupplyString(lineText);
+        if (!normalizedLine) return;
+        const lineTokens = tokenizeSupply(normalizedLine);
+        let bestMatch = null;
+        let bestScore = 0;
+        itemProfiles.forEach((profile) => {
+            const baseOverlap = profile.tokens.length
+                ? profile.tokens.filter((token) => lineTokens.includes(token)).length / profile.tokens.length
+                : 0;
+            const baseSimilarity = similarityScore(profile.normalized, normalizedLine);
+            const aliasScores = profile.aliases.map((alias) => {
+                const overlap = alias.tokens.length
+                    ? alias.tokens.filter((token) => lineTokens.includes(token)).length / alias.tokens.length
+                    : 0;
+                const similarity = similarityScore(alias.normalized, normalizedLine);
+                return Math.max(overlap, similarity);
+            });
+            const score = Math.max(baseOverlap, baseSimilarity, ...aliasScores);
+            if (score > bestScore) {
+                bestScore = score;
+                bestMatch = profile.name;
+            }
+        });
+        if (bestMatch && bestScore >= 0.6 && !detected.has(bestMatch)) {
+            detected.set(bestMatch, quantity);
+        }
+    });
+
+    HGK_SUPPLY_ITEMS.forEach((item) => {
+        const quantity = detected.get(item) || '';
         entries.push({
             item_name: item,
             quantity: quantity || '',
@@ -286,6 +442,7 @@ const fetchCcJson = async (url, tokens, options = {}) => {
 
 const fetchCcFromEmails = async (tokens) => {
     const data = await fetchCcJson(`${CC_API_BASE}/account/emails`, tokens);
+    if (Array.isArray(data)) return data;
     if (Array.isArray(data?.email_addresses)) return data.email_addresses;
     if (Array.isArray(data?.emails)) return data.emails;
     if (Array.isArray(data?.results)) return data.results;
@@ -489,6 +646,20 @@ migrateLegacyData();
 ensureDefaultSundayServices();
 
 const db = sqlite;
+
+const ensureTasksColumns = () => {
+    const table = sqlite.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'
+    `).get();
+    if (!table) return;
+    const columns = sqlite.prepare('PRAGMA table_info(tasks)').all().map((col) => col.name);
+    const columnSet = new Set(columns);
+    if (!columnSet.has('completed_at')) {
+        sqlite.exec('ALTER TABLE tasks ADD COLUMN completed_at TEXT');
+    }
+};
+
+ensureTasksColumns();
 
 const normalizeName = (name = '') => name.trim().replace(/\s+/g, ' ');
 const slugifyName = (name) => normalizeName(name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -943,7 +1114,12 @@ const fetchGoogleProfile = async (tokens) => {
 
 app.get('/auth/google', (req, res) => {
     const authUrl = getAuthUrl();
+    console.log('Google auth URL', authUrl);
     res.redirect(authUrl);
+});
+
+app.get('/api/google/auth-url', (_req, res) => {
+    res.json({ url: getAuthUrl(), scopes: GOOGLE_SCOPES });
 });
 
 app.get('/auth/google/callback', async (req, res) => {
@@ -1299,8 +1475,8 @@ app.post('/api/files/open', async (req, res) => {
     }
 });
 
-app.post('/api/files/print', async (req, res) => {
-    const { path } = req.body || {};
+app.get('/api/files/download', async (req, res) => {
+    const path = req.query?.path;
     if (!path) {
         return res.status(400).json({ error: 'path is required' });
     }
@@ -1311,15 +1487,69 @@ app.post('/api/files/print', async (req, res) => {
     }
     try {
         await access(resolvedPath);
-        const escaped = resolvedPath.replace(/'/g, "''");
-        await execFileAsync('powershell', [
-            '-NoProfile',
-            '-Command',
-            `Start-Process -FilePath '${escaped}' -Verb Print`
-        ], { windowsHide: true });
+        return res.download(resolvedPath);
+    } catch (error) {
+        return res.status(404).json({ error: 'File not found' });
+    }
+});
+
+app.post('/api/files/print', async (req, res) => {
+    const { path, printer, copies } = req.body || {};
+    if (!path) {
+        return res.status(400).json({ error: 'path is required' });
+    }
+    console.log('Print request received', { path, printer, copies });
+    const resolvedPath = resolve(path);
+    const allowedRoot = resolve(DROPBOX_ROOT);
+    if (!resolvedPath.startsWith(allowedRoot)) {
+        return res.status(403).json({ error: 'Path not allowed' });
+    }
+    try {
+        await access(resolvedPath);
+        const ext = extname(resolvedPath).toLowerCase();
+        const copyCount = Number.isFinite(Number(copies)) ? Math.max(1, Math.trunc(Number(copies))) : 1;
+        console.log('Print resolved', { resolvedPath, ext, copyCount, printer });
+        if (printer && (ext === '.doc' || ext === '.docx' || ext === '.docm')) {
+            const escaped = resolvedPath.replace(/'/g, "''");
+            const escapedPrinter = String(printer).replace(/'/g, "''");
+            const script = [
+                `$word = New-Object -ComObject Word.Application`,
+                `$word.Visible = $false`,
+                `$word.DisplayAlerts = 0`,
+                `$missing = [System.Type]::Missing`,
+                `$wdPrintAllDocument = 0`,
+                `$wdDocumentContent = 0`,
+                `$doc = $word.Documents.Open('${escaped}', $false, $true)`,
+                `$word.ActivePrinter = '${escapedPrinter}'`,
+                `$copies = [int]${copyCount}`,
+                `$doc.PrintOut($false, $false, $wdPrintAllDocument, $missing, $missing, $missing, $wdDocumentContent, $copies)`,
+                `$doc.Close($false)`,
+                `$word.Quit()`,
+                `[System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null`,
+                `[System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null`
+            ].join('; ');
+            const { stdout, stderr } = await execFileAsync('powershell', [
+                '-NoProfile',
+                '-Command',
+                script
+            ], { windowsHide: true });
+            if (stdout) console.log('Print stdout', stdout.trim());
+            if (stderr) console.log('Print stderr', stderr.trim());
+        } else {
+            const escaped = resolvedPath.replace(/'/g, "''");
+            const { stdout, stderr } = await execFileAsync('powershell', [
+                '-NoProfile',
+                '-Command',
+                `Start-Process -FilePath '${escaped}' -Verb Print`
+            ], { windowsHide: true });
+            if (stdout) console.log('Print stdout', stdout.trim());
+            if (stderr) console.log('Print stderr', stderr.trim());
+        }
         res.json({ success: true });
     } catch (error) {
         console.error('Print failed:', error);
+        if (error?.stdout) console.error('Print stdout:', String(error.stdout).trim());
+        if (error?.stderr) console.error('Print stderr:', String(error.stderr).trim());
         res.status(500).json({ error: 'Print failed' });
     }
 });
@@ -1463,6 +1693,31 @@ app.get('/api/constant-contact/from-emails', async (req, res) => {
     }
 });
 
+app.get('/api/constant-contact/debug-emails', async (req, res) => {
+    try {
+        const userId = getCcUserId(req);
+        const tokens = await ensureCcAccessToken(userId);
+        if (!tokens?.access_token) {
+            return res.status(401).json({ error: 'Constant Contact not connected' });
+        }
+        const response = await fetch(`${CC_API_BASE}/account/emails`, {
+            headers: {
+                Authorization: `Bearer ${tokens.access_token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        const payload = await response.json().catch(() => ({}));
+        res.status(response.ok ? 200 : response.status).json({
+            ok: response.ok,
+            status: response.status,
+            payload
+        });
+    } catch (error) {
+        console.error('Constant Contact debug emails failed:', error);
+        res.status(500).json({ error: 'Failed to debug Constant Contact emails' });
+    }
+});
+
 app.get('/api/constant-contact/lists', async (req, res) => {
     try {
         const userId = getCcUserId(req);
@@ -1494,6 +1749,7 @@ app.get('/auth/constant-contact', (req, res) => {
         scope: 'campaign_data contact_data account_read offline_access',
         state
     });
+    console.log('Constant Contact auth URL', `${CC_AUTH_URL}?${params.toString()}`);
     res.redirect(`${CC_AUTH_URL}?${params.toString()}`);
 });
 
@@ -1566,14 +1822,19 @@ app.post('/api/constant-contact/email', async (req, res) => {
             return res.status(400).json({ error: 'Missing email data' });
         }
 
-        const listId = await findCcListId(tokens, 'Active Members');
+        let listId = await findCcListId(tokens, 'Active Members');
         if (!listId) {
-            return res.status(404).json({ error: 'Active Members list not found' });
+            const listData = await fetchCcJson(`${CC_API_BASE}/contact_lists`, tokens);
+            const lists = Array.isArray(listData?.lists) ? listData.lists : [];
+            listId = lists[0]?.list_id || null;
+        }
+        if (!listId) {
+            return res.status(404).json({ error: 'No Constant Contact lists available' });
         }
 
         const template = testEmpty ? '' : await loadEmailTemplate();
         const html = testEmpty
-            ? '<html><body></body></html>'
+            ? '<html><body><p>Test email</p></body></html>'
             : sanitizeEmailHtml(template
                 .replace(/\[\[\[DATE\]\]\]/g, date)
                 .replace(/\[\[\[SUNDAY_NAME\]\]\]/g, sundayName)
@@ -1619,20 +1880,30 @@ app.post('/api/constant-contact/email', async (req, res) => {
         if (!fromEmail) {
             return res.status(500).json({ error: 'CC_FROM_EMAIL not configured' });
         }
+        const normalizeEntryEmail = (entry) => normalizeEmail(entry?.email_address || entry?.email || entry?.address);
+        const fromEntry = allowedEmails.find((entry) => normalizeEntryEmail(entry) === normalizeEmail(fromEmail));
+        const replyEntry = allowedEmails.find((entry) => normalizeEntryEmail(entry) === normalizeEmail(replyTo));
 
         const baseActivity = {
             format_type: 'HTML',
             from_email: fromEmail,
             from_name: fromName,
             reply_to_email: replyTo,
-            subject: 'Sunday Livestream',
+            subject: testEmpty ? 'Test Email' : 'Sunday Livestream',
             html_content: html,
             contact_list_ids: [listId]
         };
+        if (fromEntry?.email_id) {
+            baseActivity.from_email_id = fromEntry.email_id;
+        }
+        if (replyEntry?.email_id) {
+            baseActivity.reply_to_email_id = replyEntry.email_id;
+        }
         const campaignPayload = {
-            name: 'Sunday Bulletin',
+            name: testEmpty ? `Test Email ${new Date().toISOString()}` : 'Sunday Bulletin',
             email_campaign_activities: [baseActivity]
         };
+        console.log('Constant Contact email meta', { testEmpty: !!testEmpty, fromEmail, replyTo, listId });
 
         let campaign;
         try {
@@ -1684,7 +1955,10 @@ app.post('/api/constant-contact/email', async (req, res) => {
 
         res.json({ success: true, activityId, scheduledDate });
     } catch (error) {
-        console.error('Constant Contact email failed:', error);
+        console.error('Constant Contact email failed:', error?.message || error);
+        if (error?.message?.includes('Constant Contact request failed')) {
+            console.error('Constant Contact email error detail:', error.message);
+        }
         res.status(500).json({ error: 'Failed to create Constant Contact email' });
     }
 });
@@ -2058,13 +2332,22 @@ app.get('/api/buildings', (req, res) => {
     res.json(buildings);
 });
 
-app.get('/api/vendors', (req, res) => {
+app.get('/api/vendors', async (req, res) => {
     const rows = db.prepare(`
         SELECT id, service, vendor, contact, phone, email, notes, contract
         FROM preferred_vendors
         ORDER BY service, vendor
     `).all();
-    res.json(rows);
+    const contractsDir = join(DROPBOX_ROOT, 'Contracts');
+    const vendors = await Promise.all(rows.map(async (row) => {
+        const contract = await resolveContractFile(contractsDir, row.vendor, row.contract);
+        return {
+            ...row,
+            contract_path: contract.path,
+            contract_exists: contract.exists
+        };
+    }));
+    res.json(vendors);
 });
 
 app.post('/api/buildings', (req, res) => {
@@ -2200,7 +2483,8 @@ const buildTicketResponse = (ticketRow) => {
         ticket_id: task.ticket_id,
         text: task.text,
         completed: !!task.completed,
-        created_at: task.created_at
+        created_at: task.created_at,
+        completed_at: task.completed_at || null
     }));
 
     return {
@@ -2356,7 +2640,8 @@ app.get('/api/tasks', (req, res) => {
         ticket_title: row.ticket_title || '',
         text: row.text,
         completed: !!row.completed,
-        created_at: row.created_at
+        created_at: row.created_at,
+        completed_at: row.completed_at || null
     }));
     res.json(tasks);
 });
@@ -2387,7 +2672,8 @@ app.post('/api/tasks', (req, res) => {
         ticket_id,
         text: normalizedText,
         completed: false,
-        created_at: createdAt
+        created_at: createdAt,
+        completed_at: null
     });
 });
 
@@ -2404,15 +2690,17 @@ app.put('/api/tasks/:id', (req, res) => {
         return res.status(400).json({ error: 'Task text is required' });
     }
 
-    db.prepare('UPDATE tasks SET text = ?, completed = ? WHERE id = ?')
-        .run(normalizedText, completed ? 1 : 0, id);
+    const completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
+    db.prepare('UPDATE tasks SET text = ?, completed = ?, completed_at = ? WHERE id = ?')
+        .run(normalizedText, completed ? 1 : 0, completedAt, id);
 
     res.json({
         id,
         ticket_id: existing.ticket_id,
         text: normalizedText,
         completed: !!completed,
-        created_at: existing.created_at
+        created_at: existing.created_at,
+        completed_at: completedAt
     });
 });
 
@@ -3083,6 +3371,29 @@ const parseCurrencyOverride = (value) => {
     return Number.isFinite(parsed) ? parsed : null;
 };
 
+const sanitizeFileName = (value) => String(value || '')
+    .replace(/[<>:"/\\|?*]/g, '')
+    .trim();
+
+const resolveContractFile = async (contractsDir, vendorName, contractField) => {
+    const baseRaw = contractField || vendorName || '';
+    const baseName = sanitizeFileName(baseRaw);
+    if (!baseName) return { path: '', exists: false };
+    const ext = extname(baseName);
+    const extensions = ext ? [''] : ['.pdf', '.docx', '.doc', '.rtf'];
+    const candidates = ext ? [baseName] : extensions.map((suffix) => `${baseName}${suffix}`);
+    for (const candidate of candidates) {
+        const fullPath = join(contractsDir, candidate);
+        try {
+            await access(fullPath);
+            return { path: fullPath, exists: true };
+        } catch {
+            // keep searching
+        }
+    }
+    return { path: join(contractsDir, candidates[0]), exists: false };
+};
+
 const parseJsonValue = (value, fallback = null) => {
     if (value == null) return fallback;
     if (typeof value === 'string') {
@@ -3241,6 +3552,46 @@ app.post('/api/hgk/supplies', (req, res) => {
     }
 });
 
+app.post('/api/hgk/gmail-search', requireAuth, async (req, res) => {
+    try {
+        const tokens = getUserTokens(req.user.id);
+        if (!tokens) {
+            return res.status(401).json({ error: 'Not connected to Google' });
+        }
+        const client = createOAuthClient();
+        setStoredCredentials(client, tokens);
+        const gmail = google.gmail({ version: 'v1', auth: client });
+        const query = 'subject:supplies (HGK OR "Holy Ghost Kitchen")';
+        const listResponse = await gmail.users.messages.list({
+            userId: 'me',
+            q: query,
+            maxResults: 5
+        });
+        const messageId = listResponse.data.messages?.[0]?.id;
+        if (!messageId) {
+            return res.json({ message: null, items: [] });
+        }
+        const messageResponse = await gmail.users.messages.get({
+            userId: 'me',
+            id: messageId,
+            format: 'full'
+        });
+        const payload = messageResponse.data.payload;
+        const headers = Array.isArray(payload?.headers) ? payload.headers : [];
+        const subject = headers.find((header) => header.name?.toLowerCase() === 'subject')?.value || '';
+        const date = headers.find((header) => header.name?.toLowerCase() === 'date')?.value || '';
+        const bodyText = extractGmailMessageText(messageResponse.data) || messageResponse.data.snippet || '';
+        const parsedItems = parseSupplyEmail(bodyText);
+        res.json({
+            message: { id: messageId, subject, date },
+            items: parsedItems
+        });
+    } catch (error) {
+        console.error('HGK Gmail search error:', error);
+        res.status(500).json({ error: 'Failed to search Gmail' });
+    }
+});
+
 app.post('/api/hgk/email/webhook', (req, res) => {
     try {
         if (HGK_WEBHOOK_TOKEN) {
@@ -3275,6 +3626,188 @@ app.post('/api/hgk/email', (req, res) => {
         month: monthKey,
         items: parsedItems
     });
+});
+
+app.post('/api/hgk/instacart', async (req, res) => {
+    try {
+        const items = Array.isArray(req.body?.items) ? req.body.items : [];
+        const title = String(req.body?.title || 'HGK Supplies').trim() || 'HGK Supplies';
+        if (items.length === 0) {
+            return res.status(400).json({ error: 'No items provided' });
+        }
+        const lines = items
+            .map((item) => {
+                const name = String(item?.name || '').trim();
+                const display = String(item?.display || '').trim();
+                if (!name || !display) return null;
+                return `${name}: ${display}`;
+            })
+            .filter(Boolean);
+        if (lines.length === 0) {
+            return res.status(400).json({ error: 'No valid items provided' });
+        }
+
+        const listText = lines.join('\r\n');
+        const listTextBase64 = Buffer.from(listText, 'utf8').toString('base64');
+        const script = `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32 {
+    [DllImport("gdi32.dll", SetLastError=true)]
+    public static extern IntPtr CreateRoundRectRgn(int nLeftRect, int nTopRect, int nRightRect, int nBottomRect, int nWidthEllipse, int nHeightEllipse);
+    [DllImport("user32.dll", SetLastError=true)]
+    public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+}
+public struct MARGINS {
+    public int cxLeftWidth;
+    public int cxRightWidth;
+    public int cyTopHeight;
+    public int cyBottomHeight;
+}
+public class Dwm {
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmExtendFrameIntoClientArea(IntPtr hWnd, ref MARGINS pMargins);
+}
+"@
+
+$rawList = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${listTextBase64}'))
+
+$shadow = New-Object System.Windows.Forms.Form
+$shadow.FormBorderStyle = 'None'
+$shadow.ShowInTaskbar = $false
+$shadow.StartPosition = 'Manual'
+$shadow.BackColor = [System.Drawing.Color]::Black
+$shadow.Opacity = 0.18
+$shadow.TopMost = $true
+$shadow.Size = New-Object System.Drawing.Size(374, 454)
+$shadow.Location = New-Object System.Drawing.Point([System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Right - 377, 47)
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = '${escapePsString(title)}'
+$form.StartPosition = 'Manual'
+$form.TopMost = $true
+$form.FormBorderStyle = 'None'
+$form.ShowInTaskbar = $false
+$form.BackColor = [System.Drawing.Color]::White
+$form.Size = New-Object System.Drawing.Size(360, 440)
+$form.Location = New-Object System.Drawing.Point([System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Right - 370, 40)
+
+$form.Add_Shown({
+    $radius = 20
+    $rgn = [Win32]::CreateRoundRectRgn(0, 0, $form.Width + 1, $form.Height + 1, $radius, $radius)
+    [Win32]::SetWindowRgn($form.Handle, $rgn, $true) | Out-Null
+    $margins = New-Object MARGINS
+    $margins.cxLeftWidth = -1
+    $margins.cxRightWidth = -1
+    $margins.cyTopHeight = -1
+    $margins.cyBottomHeight = -1
+    [Dwm]::DwmExtendFrameIntoClientArea($form.Handle, [ref]$margins) | Out-Null
+})
+
+$syncShadow = {
+    $shadow.Location = New-Object System.Drawing.Point($form.Location.X - 7, $form.Location.Y - 7)
+    $shadow.Size = New-Object System.Drawing.Size($form.Width + 14, $form.Height + 14)
+}
+
+$form.Add_LocationChanged({ & $syncShadow })
+$form.Add_SizeChanged({ & $syncShadow })
+$form.Add_Shown({ & $syncShadow })
+$form.Add_FormClosed({ $shadow.Close() })
+
+$shell = New-Object System.Windows.Forms.Panel
+$shell.Dock = 'Fill'
+$shell.Padding = New-Object System.Windows.Forms.Padding(16, 14, 16, 12)
+$shell.BackColor = [System.Drawing.Color]::White
+$shell.BorderStyle = 'FixedSingle'
+
+$title = New-Object System.Windows.Forms.Label
+$title.Text = '${escapePsString(title)}'
+$title.ForeColor = [System.Drawing.Color]::FromArgb(15, 23, 42)
+$title.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 12)
+$title.Dock = 'Top'
+$title.Height = 32
+$title.Padding = New-Object System.Windows.Forms.Padding(0, 0, 0, 0)
+$title.TextAlign = 'MiddleLeft'
+
+$divider = New-Object System.Windows.Forms.Panel
+$divider.Dock = 'Top'
+$divider.Height = 1
+$divider.BackColor = [System.Drawing.Color]::FromArgb(226, 232, 240)
+
+$listPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+$listPanel.Dock = 'Fill'
+$listPanel.FlowDirection = 'TopDown'
+$listPanel.WrapContents = $false
+$listPanel.AutoScroll = $true
+$listPanel.Padding = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)
+
+$lines = $rawList -split '\r?\n' | Where-Object { $_.Trim().Length -gt 0 }
+
+foreach ($line in $lines) {
+    $row = New-Object System.Windows.Forms.Panel
+    $row.Height = 30
+    $row.Width = 300
+    $row.Margin = New-Object System.Windows.Forms.Padding(0, 2, 0, 2)
+
+    $check = New-Object System.Windows.Forms.CheckBox
+    $check.Width = 22
+    $check.Height = 22
+    $check.Location = New-Object System.Drawing.Point(0, 3)
+    $check.FlatStyle = 'Flat'
+    $check.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(203, 213, 225)
+    $check.FlatAppearance.CheckedBackColor = [System.Drawing.Color]::FromArgb(16, 185, 129)
+    $check.BackColor = [System.Drawing.Color]::White
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $line
+    $label.AutoSize = $false
+    $label.Location = New-Object System.Drawing.Point(28, 0)
+    $label.Size = New-Object System.Drawing.Size(260, 30)
+    $label.ForeColor = [System.Drawing.Color]::FromArgb(51, 65, 85)
+    $label.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $label.TextAlign = 'MiddleLeft'
+
+    $row.Controls.Add($check)
+    $row.Controls.Add($label)
+    $listPanel.Controls.Add($row)
+}
+
+$close = New-Object System.Windows.Forms.Button
+$close.Text = 'Close'
+$close.Dock = 'Bottom'
+$close.Height = 32
+$close.FlatStyle = 'Flat'
+$close.BackColor = [System.Drawing.Color]::FromArgb(241, 245, 249)
+$close.ForeColor = [System.Drawing.Color]::FromArgb(30, 41, 59)
+$close.FlatAppearance.BorderSize = 0
+$close.Add_Click({ $form.Close() })
+
+$shell.Controls.Add($listPanel)
+$shell.Controls.Add($divider)
+$shell.Controls.Add($title)
+$form.Controls.Add($shell)
+$form.Controls.Add($close)
+
+Start-Process '${escapePsString(HGK_INSTACART_LIST_URL)}'
+
+[void]$shadow.Show()
+[System.Windows.Forms.Application]::Run($form)
+`;
+
+        const scriptPath = resolve(tmpdir(), `hgk-instacart-${randomUUID()}.ps1`);
+        await writeFile(scriptPath, script, 'utf8');
+        execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { windowsHide: true }, () => {
+            rm(scriptPath, { force: true }).catch(() => {});
+        });
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('HGK Instacart overlay error:', error);
+        res.status(500).json({ error: 'Failed to open Instacart list' });
+    }
 });
 
 app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res) => {

@@ -10,8 +10,7 @@ import './Buildings.css';
 const Buildings = () => {
     const location = useLocation();
     const [searchParams] = useSearchParams();
-    const [activeTab, setActiveTab] = useState('repairs');
-    const [showModal, setShowModal] = useState(false);
+    const [activeTab, setActiveTab] = useState('tickets');
     const [activeArea, setActiveArea] = useState(null);
     const [hoveredArea, setHoveredArea] = useState(null);
     const [buildings, setBuildings] = useState([]);
@@ -23,6 +22,8 @@ const Buildings = () => {
     const [showTicketModal, setShowTicketModal] = useState(false);
     const [selectedTicketId, setSelectedTicketId] = useState(null);
     const [pendingTicketScroll, setPendingTicketScroll] = useState(false);
+    const [archiveExpanded, setArchiveExpanded] = useState(false);
+    const [ticketStatusExpandedKey, setTicketStatusExpandedKey] = useState(null);
     const ticketsViewRef = useRef(null);
     const [roomsExpanded, setRoomsExpanded] = useState(false);
     const roomsListRef = useRef(null);
@@ -48,14 +49,6 @@ const Buildings = () => {
         }).format(numeric);
     };
 
-    // Repairs Data
-    const [repairs, setRepairs] = useState([
-        { id: 1, title: 'Leaky Faucet in Kitchen', description: 'Sink in the main kitchen drips constantly.', status: 'complaint', date: '2025-12-10' },
-        { id: 2, title: 'Broken pew kneeler', description: 'Row 4, left side.', status: 'repair', date: '2025-12-15' },
-        { id: 3, title: 'HVAC Filter Change', description: 'Routine maintenance.', status: 'complete', date: '2025-11-20' },
-    ]);
-    const [newRepair, setNewRepair] = useState({ title: '', description: '', status: 'complaint' });
-
     // Needs Data
     const [needs, setNeeds] = useState([
         { id: 1, text: 'Repaint Parish Hall', priority: 'High' },
@@ -67,46 +60,6 @@ const Buildings = () => {
     const [vendors, setVendors] = useState([]);
     const [vendorsLoading, setVendorsLoading] = useState(true);
     const [vendorsError, setVendorsError] = useState('');
-
-    const handleRepairSubmit = (e) => {
-        e.preventDefault();
-        setRepairs([...repairs, { ...newRepair, id: Date.now(), date: new Date().toISOString().split('T')[0] }]);
-        setShowModal(false);
-        setNewRepair({ title: '', description: '', status: 'complaint' });
-    };
-
-    const handleStatusChange = (id, newStatus) => {
-        setRepairs(repairs.map(r => r.id === id ? { ...r, status: newStatus } : r));
-    };
-
-    const renderRepairs = () => (
-        <div className="repairs-view">
-            <div className="repairs-grid">
-                {repairs.map(r => (
-                    <div key={r.id} className={`repair-card status-${r.status}`}>
-                        <div className="repair-header">
-                            <span className="repair-date">{r.date}</span>
-                            <span className="repair-status">{r.status}</span>
-                        </div>
-                        <h3>{r.title}</h3>
-                        <p>{r.description}</p>
-                        <div className="repair-actions" style={{ marginTop: '1rem' }}>
-                            <select
-                                value={r.status}
-                                onChange={(e) => handleStatusChange(r.id, e.target.value)}
-                                style={{ padding: '5px' }}
-                            >
-                                <option value="complaint">Complaint</option>
-                                <option value="troubleshoot">Troubleshoot</option>
-                                <option value="repair">Repair</option>
-                                <option value="complete">Complete</option>
-                            </select>
-                        </div>
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
 
     const renderNeeds = () => (
         <Card>
@@ -143,6 +96,19 @@ const Buildings = () => {
         </Card>
     );
 
+    const formatPhone = (value) => {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        const digits = raw.replace(/\D/g, '');
+        if (digits.length === 10) {
+            return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+        }
+        if (digits.length === 11 && digits.startsWith('1')) {
+            return `1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+        }
+        return raw;
+    };
+
     const renderVendors = () => (
         <Card>
             {vendorsError && <div className="ticket-error">{vendorsError}</div>}
@@ -151,7 +117,7 @@ const Buildings = () => {
             ) : vendors.length === 0 ? (
                 <p className="empty-state">No preferred vendors available yet.</p>
             ) : (
-                <table className="vendors-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <table className="vendors-table">
                     <thead>
                         <tr>
                             <th>Service</th>
@@ -169,14 +135,27 @@ const Buildings = () => {
                                 <td><span className="category-tag">{vendor.service}</span></td>
                                 <td>{vendor.vendor}</td>
                                 <td>{vendor.contact || '—'}</td>
-                                <td>{vendor.phone || '—'}</td>
+                                <td>{formatPhone(vendor.phone) || '—'}</td>
                                 <td>
                                     {vendor.email ? (
-                                        <a href={`mailto:${vendor.email}`}>{vendor.email}</a>
+                                        <a href={`mailto:${vendor.email}`} target="_blank" rel="noreferrer">{vendor.email}</a>
                                     ) : '—'}
                                 </td>
                                 <td>{vendor.notes || '—'}</td>
-                                <td>{vendor.contract || '—'}</td>
+                                <td>
+                                    {vendor.contract_exists ? (
+                                        <a
+                                            className="contract-pill"
+                                            href={`${API_URL}/files/download?path=${encodeURIComponent(vendor.contract_path || '')}`}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                        >
+                                            Contract
+                                        </a>
+                                    ) : (
+                                        <span className="contract-pill disabled" aria-disabled="true">Contract</span>
+                                    )}
+                                </td>
                             </tr>
                         ))}
                     </tbody>
@@ -200,6 +179,17 @@ const Buildings = () => {
         };
         loadBuildings();
     }, []);
+
+    useEffect(() => {
+        const storedTab = sessionStorage.getItem('bgActiveTab');
+        if (storedTab && ['tickets', 'map', 'vendors', 'needs'].includes(storedTab)) {
+            setActiveTab(storedTab);
+        }
+    }, []);
+
+    useEffect(() => {
+        sessionStorage.setItem('bgActiveTab', activeTab);
+    }, [activeTab]);
 
     useEffect(() => {
         let canceled = false;
@@ -361,13 +351,69 @@ const Buildings = () => {
 
     const renderTickets = () => (
         <div className="tickets-view" ref={ticketsViewRef}>
+            {(() => {
+                const activeTickets = tickets.filter((ticket) => ticket.status !== 'closed');
+                const archivedTickets = tickets
+                    .filter((ticket) => ticket.status === 'closed')
+                    .sort((a, b) => {
+                        const aRaw = new Date(a.updated_at || a.created_at || 0).getTime();
+                        const bRaw = new Date(b.updated_at || b.created_at || 0).getTime();
+                        const aTime = Number.isNaN(aRaw) ? 0 : aRaw;
+                        const bTime = Number.isNaN(bRaw) ? 0 : bRaw;
+                        return bTime - aTime;
+                    });
+                const statusOptions = [
+                    { value: 'new', label: 'New' },
+                    { value: 'reviewed', label: 'Reviewed' },
+                    { value: 'in_process', label: 'In Process' },
+                    { value: 'closed', label: 'Closed' }
+                ];
+                const renderTicketStatusStack = (key, selected, onSelect) => {
+                    const activeIndex = Math.max(
+                        0,
+                        statusOptions.findIndex((option) => option.value === selected)
+                    );
+                    const expanded = ticketStatusExpandedKey === key;
+                    return (
+                        <div
+                            className={`ticket-status-stack ${expanded ? 'expanded' : ''}`}
+                            style={{ '--stack-count': statusOptions.length, '--active-index': activeIndex }}
+                            onMouseEnter={() => setTicketStatusExpandedKey(key)}
+                            onMouseLeave={() => setTicketStatusExpandedKey(null)}
+                        >
+                            <span className="ticket-status-anchor" aria-hidden="true">
+                                {statusOptions[activeIndex]?.label || 'Status'}
+                            </span>
+                            {statusOptions.map((option, index) => {
+                                const isActive = option.value === selected;
+                                return (
+                                    <button
+                                        key={option.value}
+                                        type="button"
+                                        className={`ticket-status-option ${isActive ? 'active' : ''} status-${option.value}`}
+                                        style={{ '--index': index }}
+                                        onClick={() => {
+                                            if (option.value !== selected) {
+                                                onSelect(option.value);
+                                            }
+                                        }}
+                                    >
+                                        {option.label}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    );
+                };
+                return (
+                    <>
             <div className="tickets-header">
                 <div>
-                    <h2>Issue Tickets</h2>
+                    <h2>Support Tickets</h2>
                     <p>Track maintenance problems across campus areas.</p>
                 </div>
                 <button className="btn-primary" onClick={openTicketModal}>
-                    <FaPlus /> New Ticket
+                    <FaPlus /> Open New Ticket
                 </button>
             </div>
 
@@ -376,10 +422,10 @@ const Buildings = () => {
             <div className="tickets-layout">
                 <Card className="tickets-list">
                     {ticketsLoading && <p className="empty-state">Loading tickets...</p>}
-                    {!ticketsLoading && tickets.length === 0 && (
+                    {!ticketsLoading && activeTickets.length === 0 && (
                         <p className="empty-state">No tickets yet.</p>
                     )}
-                    {!ticketsLoading && tickets.map((ticket) => (
+                    {!ticketsLoading && activeTickets.map((ticket) => (
                         <button
                             key={ticket.id}
                             type="button"
@@ -409,17 +455,13 @@ const Buildings = () => {
                             <div className="ticket-detail-header">
                                 <div>
                                     <h3>{selectedTicket.title}</h3>
-                                    <p>{selectedTicket.description}</p>
+                                    {selectedTicket.description ? <p>{selectedTicket.description}</p> : null}
                                 </div>
-                                <select
-                                    value={selectedTicket.status}
-                                    onChange={(event) => updateTicket(selectedTicket.id, { status: event.target.value })}
-                                >
-                                    <option value="new">New</option>
-                                    <option value="reviewed">Reviewed</option>
-                                    <option value="in_process">In Process</option>
-                                    <option value="closed">Closed</option>
-                                </select>
+                                {renderTicketStatusStack(
+                                    `ticket-${selectedTicket.id}`,
+                                    selectedTicket.status,
+                                    (value) => updateTicket(selectedTicket.id, { status: value })
+                                )}
                             </div>
 
                             <div className="ticket-section">
@@ -447,28 +489,46 @@ const Buildings = () => {
                                     </button>
                                 </div>
                                 <ul className="ticket-task-list">
-                                    {(selectedTicket.tasks || []).length === 0 && (
-                                        <li className="empty-state">No tasks added.</li>
-                                    )}
-                                    {(selectedTicket.tasks || []).map((task) => (
-                                        <li key={task.id} className={`ticket-task ${task.completed ? 'completed' : ''}`}>
-                                            <button
-                                                type="button"
-                                                className="task-toggle"
-                                                onClick={() => toggleTicketTask(task)}
-                                            >
-                                                {task.completed ? <FaClipboardCheck /> : <span />}
-                                            </button>
-                                            <span>{task.text}</span>
-                                            <button
-                                                type="button"
-                                                className="btn-delete"
-                                                onClick={() => deleteTicketTask(task)}
-                                            >
-                                                <FaTrash />
-                                            </button>
-                                        </li>
-                                    ))}
+                                    {(() => {
+                                        const allTasks = selectedTicket.tasks || [];
+                                        if (allTasks.length === 0) {
+                                            return <li className="empty-state">No tasks added.</li>;
+                                        }
+                                        const openTasks = allTasks.filter((task) => !task.completed);
+                                        const completedTasks = allTasks
+                                            .filter((task) => task.completed)
+                                            .sort((a, b) => {
+                                                const aRaw = new Date(a.completed_at || a.created_at || 0).getTime();
+                                                const bRaw = new Date(b.completed_at || b.created_at || 0).getTime();
+                                                const aTime = Number.isNaN(aRaw) ? 0 : aRaw;
+                                                const bTime = Number.isNaN(bRaw) ? 0 : bRaw;
+                                                return bTime - aTime;
+                                            });
+                                        return [...openTasks, ...completedTasks].map((task) => (
+                                            <li key={task.id} className={`ticket-task ${task.completed ? 'completed' : ''}`}>
+                                                <button
+                                                    type="button"
+                                                    className="task-toggle"
+                                                    onClick={() => toggleTicketTask(task)}
+                                                >
+                                                    {task.completed ? <FaClipboardCheck /> : <span />}
+                                                </button>
+                                                <span>{task.text}</span>
+                                                {task.completed && task.completed_at ? (
+                                                    <em className="task-completed-at">
+                                                        Completed {new Date(task.completed_at).toLocaleString()}
+                                                    </em>
+                                                ) : null}
+                                                <button
+                                                    type="button"
+                                                    className="btn-delete"
+                                                    onClick={() => deleteTicketTask(task)}
+                                                >
+                                                    <FaTrash />
+                                                </button>
+                                            </li>
+                                        ));
+                                    })()}
                                 </ul>
                             </div>
 
@@ -489,19 +549,335 @@ const Buildings = () => {
                                     {(selectedTicket.notes || []).length === 0 && (
                                         <li className="empty-state">No notes yet.</li>
                                     )}
-                                    {(selectedTicket.notes || []).map((note) => (
-                                        <li key={note.id}>
-                                            <span>{note.text}</span>
-                                            <em>{new Date(note.created_at).toLocaleString()}</em>
-                                        </li>
-                                    ))}
+                                    {[...(selectedTicket.notes || [])]
+                                        .sort((a, b) => {
+                                            const aRaw = new Date(a.created_at || 0).getTime();
+                                            const bRaw = new Date(b.created_at || 0).getTime();
+                                            const aTime = Number.isNaN(aRaw) ? 0 : aRaw;
+                                            const bTime = Number.isNaN(bRaw) ? 0 : bRaw;
+                                            return bTime - aTime;
+                                        })
+                                        .map((note) => (
+                                            <li key={note.id}>
+                                                <span>{note.text}</span>
+                                                <em>{new Date(note.created_at).toLocaleString()}</em>
+                                            </li>
+                                        ))}
                                 </ul>
                             </div>
                         </>
                     )}
                 </Card>
             </div>
+            <div className="ticket-archive">
+                <button
+                    type="button"
+                    className="ticket-archive-toggle"
+                    onClick={() => setArchiveExpanded((prev) => !prev)}
+                    aria-expanded={archiveExpanded}
+                >
+                    <h3>Archive</h3>
+                    <span className={`archive-caret ${archiveExpanded ? 'open' : ''}`} aria-hidden="true" />
+                </button>
+                <div className={`ticket-archive-panel ${archiveExpanded ? 'expanded' : ''}`}>
+                    {archivedTickets.length === 0 ? (
+                        <p className="empty-state">No archived tickets.</p>
+                    ) : (
+                        <div className="ticket-archive-list">
+                            {archivedTickets.map((ticket) => (
+                                <div key={ticket.id} className="ticket-archive-item">
+                                    <div className="ticket-archive-main">
+                                        <div className="ticket-archive-text">
+                                            <span className="ticket-archive-title">{ticket.title}</span>
+                                            {ticket.description ? (
+                                                <span className="ticket-archive-description">{ticket.description}</span>
+                                            ) : null}
+                                            {(ticket.areas || []).length > 0 && (
+                                                <span className="ticket-archive-chips">
+                                                    {(ticket.areas || []).map((areaId) => (
+                                                        <span key={areaId} className="ticket-area-chip">
+                                                            {areaById[areaId]?.name || areaId}
+                                                        </span>
+                                                    ))}
+                                                </span>
+                                            )}
+                                        </div>
+                                        {renderTicketStatusStack(
+                                            `archive-${ticket.id}`,
+                                            ticket.status,
+                                            (value) => updateTicket(ticket.id, { status: value })
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+                    </>
+                );
+            })()}
         </div>
+    );
+
+    const renderMap = () => (
+        <Card className="campus-map-card">
+            <div className="campus-map-layout">
+                <Card
+                    className="campus-map-panel campus-map-list-panel"
+                    onMouseLeave={() => setHoveredArea(null)}
+                >
+                    <h3>Locations</h3>
+                    <div className="map-list">
+                        {orderedAreas.map((area) => {
+                            const categoryKey = area.category
+                                ? area.category.toLowerCase().replace(/\s+/g, '-')
+                                : '';
+                            const isSelected = activeArea?.id === area.id;
+                            const isHovered = hoveredArea?.id === area.id;
+                            return (
+                                <button
+                                    key={area.id}
+                                    type="button"
+                                    className={`map-list-item ${isSelected ? 'selected' : ''} ${isHovered ? 'active' : ''}`}
+                                    onMouseEnter={() => setHoveredArea(area)}
+                                    onFocus={() => setHoveredArea(area)}
+                                    onClick={() => setActiveArea(area)}
+                                >
+                                    <span
+                                        className={`map-dot map-dot-${area.type} ${categoryKey ? `map-dot-${categoryKey}` : ''}`}
+                                    />
+                                    {area.name}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </Card>
+                <div
+                    className="campus-map-wrapper"
+                    onMouseLeave={() => setHoveredArea(null)}
+                >
+                    <img src="/map.png" alt="Campus map" className="campus-map-image" />
+                    <div className="campus-map-overlay">
+                        <svg
+                            className="campus-map-svg"
+                            viewBox="0 0 554 1504"
+                            preserveAspectRatio="xMidYMid meet"
+                        >
+                            {mapAreas.map((area) => {
+                                const isActive = hoveredArea?.id === area.id || activeArea?.id === area.id;
+                                const categoryKey = area.category
+                                    ? area.category.toLowerCase().replace(/\s+/g, '-')
+                                    : '';
+                                const className = `map-area map-area-${area.type} ${categoryKey ? `map-area-category-${categoryKey}` : ''} ${isActive ? 'active' : ''}`;
+
+                                if (area.shape === 'poly') {
+                                    const points = area.points.map(pair => pair.join(',')).join(' ');
+                                    return (
+                                        <polygon
+                                            key={area.id}
+                                            className={className}
+                                            points={points}
+                                            role="button"
+                                            tabIndex={0}
+                                            aria-label={area.name}
+                                            onMouseEnter={() => setHoveredArea(area)}
+                                            onFocus={() => setHoveredArea(area)}
+                                            onMouseLeave={() => setHoveredArea(null)}
+                                            onBlur={() => setHoveredArea(null)}
+                                            onClick={() => setActiveArea(area)}
+                                        >
+                                            <title>{area.name}</title>
+                                        </polygon>
+                                    );
+                                }
+
+                                return (
+                                    <rect
+                                        key={area.id}
+                                        className={className}
+                                        x={area.rect.x}
+                                        y={area.rect.y}
+                                        width={area.rect.width}
+                                        height={area.rect.height}
+                                        role="button"
+                                        tabIndex={0}
+                                        aria-label={area.name}
+                                        onMouseEnter={() => setHoveredArea(area)}
+                                        onFocus={() => setHoveredArea(area)}
+                                        onMouseLeave={() => setHoveredArea(null)}
+                                        onBlur={() => setHoveredArea(null)}
+                                        onClick={() => setActiveArea(area)}
+                                    >
+                                        <title>{area.name}</title>
+                                    </rect>
+                                );
+                            })}
+                        </svg>
+                    </div>
+                </div>
+                <Card
+                    className="campus-map-panel campus-map-details"
+                    onClickCapture={(event) => event.stopPropagation()}
+                >
+                    {!activeDetails && (
+                        <div className="map-empty">
+                            <h3>Pick a location</h3>
+                            <p>Click on an area of the map to view details.</p>
+                        </div>
+                    )}
+                    {activeDetails && (
+                        <>
+                            <div className="map-pill-row">
+                                <span className={`pill map-tag map-tag-${activeDetails?.type || 'building'}`}>
+                                    {activeDetails?.type === 'parking' ? 'Parking' : activeDetails?.type === 'grounds' ? 'Grounds' : activeDetails?.type === 'entry' ? 'Entry' : 'Building'}
+                                </span>
+                                {activeDetails?.category && (
+                                    <span className={`pill map-category map-category-${activeDetails.category.toLowerCase().replace(/\s+/g, '-')}`}>
+                                        {activeDetails.category}
+                                    </span>
+                                )}
+                            </div>
+                            <h3>{activeDetails?.name}</h3>
+                            <p>{activeDetails?.description}</p>
+                            {buildingsError && (
+                                <div className="map-note">{buildingsError}</div>
+                            )}
+                            {activeBuilding && (
+                                <div className="building-info">
+                                    <div className="building-stats">
+                                        {activeBuilding.capacity ? (
+                                            <div className="building-stat">
+                                                <span>Capacity</span>
+                                                <strong>{activeBuilding.capacity}</strong>
+                                            </div>
+                                        ) : null}
+                                        {activeBuilding.rental_rate_hour ? (
+                                            <div className="building-stat">
+                                                <span>Hourly rate</span>
+                                                <strong>{formatCurrency(activeBuilding.rental_rate_hour)}</strong>
+                                            </div>
+                                        ) : null}
+                                        {activeBuilding.rental_rate_day ? (
+                                            <div className="building-stat">
+                                                <span>Rental rate</span>
+                                                <strong>{formatCurrency(activeBuilding.rental_rate_day)}</strong>
+                                            </div>
+                                        ) : null}
+                                        {activeBuilding.rental_rate && !activeBuilding.rental_rate_day && !activeBuilding.rental_rate_hour ? (
+                                            <div className="building-stat">
+                                                <span>Rental rate</span>
+                                                <strong>{formatCurrency(activeBuilding.rental_rate)}</strong>
+                                            </div>
+                                        ) : null}
+                                        {activeBuilding.parking_spaces ? (
+                                            <div className="building-stat">
+                                                <span>Parking</span>
+                                                <strong>{activeBuilding.parking_spaces}</strong>
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                    {Array.isArray(activeBuilding.rooms) && activeBuilding.rooms.length > 0 && (
+                                        <div className="rooms-section">
+                                            <div className="rooms-header">
+                                                <button
+                                                    type="button"
+                                                    className="rooms-header-toggle"
+                                                    onClick={() => setRoomsExpanded((prev) => !prev)}
+                                                    aria-expanded={roomsExpanded}
+                                                >
+                                                    <span>Rooms</span>
+                                                    <span className={`rooms-caret ${roomsExpanded ? 'open' : ''}`} aria-hidden="true">
+                                                        ƒ-_
+                                                    </span>
+                                                </button>
+                                                <span className="rooms-count">
+                                                    {activeBuilding.rooms.length} rooms
+                                                </span>
+                                            </div>
+                                            <div
+                                                className={`rooms-list-wrapper ${roomsExpanded ? 'expanded' : ''}`}
+                                                aria-hidden={!roomsExpanded}
+                                                style={{ '--rooms-height': `${roomsHeight}px` }}
+                                            >
+                                                {(() => {
+                                                    const floors = Array.from(
+                                                        new Set(
+                                                            activeBuilding.rooms
+                                                                .map((room) => room.floor)
+                                                                .filter((floor) => floor !== null && floor !== '')
+                                                        )
+                                                    );
+                                                    const showFloor = floors.length > 1;
+                                                    const floorLabel = (floor) => {
+                                                        if (floor === 0) return 'Basement';
+                                                        if (floor === 1) return 'First Floor';
+                                                        if (floor === 2) return 'Second Floor';
+                                                        return `Floor ${floor}`;
+                                                    };
+                                                    const sortedRooms = [...activeBuilding.rooms].sort((a, b) => {
+                                                        const aHasRate = a.rental_rate ? 1 : 0;
+                                                        const bHasRate = b.rental_rate ? 1 : 0;
+                                                        if (aHasRate !== bHasRate) return bHasRate - aHasRate;
+                                                        const aFloor = a.floor === null || a.floor === '' ? -1 : Number(a.floor);
+                                                        const bFloor = b.floor === null || b.floor === '' ? -1 : Number(b.floor);
+                                                        if (aFloor !== bFloor) return bFloor - aFloor;
+                                                        return (a.name || '').localeCompare(b.name || '');
+                                                    });
+                                                    return (
+                                                        <div className="rooms-list" ref={roomsListRef}>
+                                                            {sortedRooms.map((room) => (
+                                                                <div key={room.id} className="room-row">
+                                                                    <div>
+                                                                        <div className="room-name">{room.name}</div>
+                                                                        <div className="room-meta">
+                                                                            {showFloor && room.floor !== null && room.floor !== '' ? (
+                                                                                <span>{floorLabel(room.floor)}</span>
+                                                                            ) : null}
+                                                                            {room.capacity ? <span>{room.capacity} seats</span> : null}
+                                                                        </div>
+                                                                    </div>
+                                                                    {room.rental_rate ? (
+                                                                        <span className="room-rate">{formatCurrency(room.rental_rate)}</span>
+                                                                    ) : null}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    );
+                                                })()}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            {activeAreaTickets.length > 0 && (
+                                <div className="map-ticket-section">
+                                    <h4>Active Tickets</h4>
+                                    <div className="map-ticket-list">
+                                        {activeAreaTickets.map((ticket) => (
+                                            <button
+                                                key={ticket.id}
+                                                type="button"
+                                                className="map-ticket-button"
+                                                onClick={() => focusTicket(ticket.id)}
+                                            >
+                                                <div className="map-ticket-header">
+                                                    <h5>{ticket.title}</h5>
+                                                    <span className={`ticket-status status-${ticket.status}`}>
+                                                        {ticket.status.replace('_', ' ')}
+                                                    </span>
+                                                </div>
+                                                <p>{ticket.description || 'No description'}</p>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </>
+                    )}
+                </Card>
+            </div>
+        </Card>
     );
 
     const buildingsById = useMemo(() => {
@@ -608,7 +984,8 @@ const Buildings = () => {
                 const data = await response.json();
                 setTickets(Array.isArray(data) ? data : []);
                 if (!selectedTicketId && Array.isArray(data) && data.length > 0) {
-                    setSelectedTicketId(data[0].id);
+                    const firstActive = data.find((ticket) => ticket.status !== 'closed') || data[0];
+                    setSelectedTicketId(firstActive.id);
                 }
             } catch (error) {
                 console.error('Failed to load tickets:', error);
@@ -619,7 +996,9 @@ const Buildings = () => {
         };
 
         loadTickets();
-    }, [selectedTicketId]);
+        // Only load on mount; reloading on selection resets the active ticket.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const tasksScrollRef = useRef(null);
 
@@ -668,321 +1047,28 @@ const Buildings = () => {
         >
             <header className="buildings-header">
                 <h1>Buildings & Grounds</h1>
-                <button className="btn-primary" onClick={() => openTicketModal(activeArea?.id)}>
-                    <FaPlus /> Open Ticket
-                </button>
             </header>
 
-            <Card className="campus-map-card">
-                <div className="campus-map-layout">
-                    <Card
-                        className="campus-map-panel campus-map-list-panel"
-                        onMouseLeave={() => setHoveredArea(null)}
-                    >
-                        <h3>Locations</h3>
-                        <div className="map-list">
-                            {orderedAreas.map((area) => {
-                                const categoryKey = area.category
-                                    ? area.category.toLowerCase().replace(/\s+/g, '-')
-                                    : '';
-                                const isSelected = activeArea?.id === area.id;
-                                const isHovered = hoveredArea?.id === area.id;
-                                return (
-                                    <button
-                                        key={area.id}
-                                        type="button"
-                                        className={`map-list-item ${isSelected ? 'selected' : ''} ${isHovered ? 'active' : ''}`}
-                                        onMouseEnter={() => setHoveredArea(area)}
-                                        onFocus={() => setHoveredArea(area)}
-                                        onClick={() => setActiveArea(area)}
-                                    >
-                                        <span
-                                            className={`map-dot map-dot-${area.type} ${categoryKey ? `map-dot-${categoryKey}` : ''}`}
-                                        />
-                                        {area.name}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </Card>
-                    <div
-                        className="campus-map-wrapper"
-                        onMouseLeave={() => setHoveredArea(null)}
-                    >
-                        <img src="/map.png" alt="Campus map" className="campus-map-image" />
-                        <div className="campus-map-overlay">
-                            <svg
-                                className="campus-map-svg"
-                                viewBox="0 0 554 1504"
-                                preserveAspectRatio="xMidYMid meet"
-                            >
-                                {mapAreas.map((area) => {
-                                    const isActive = hoveredArea?.id === area.id || activeArea?.id === area.id;
-                                    const categoryKey = area.category
-                                        ? area.category.toLowerCase().replace(/\s+/g, '-')
-                                        : '';
-                                    const className = `map-area map-area-${area.type} ${categoryKey ? `map-area-category-${categoryKey}` : ''} ${isActive ? 'active' : ''}`;
-
-                                    if (area.shape === 'poly') {
-                                        const points = area.points.map(pair => pair.join(',')).join(' ');
-                                        return (
-                                            <polygon
-                                                key={area.id}
-                                                className={className}
-                                                points={points}
-                                                role="button"
-                                                tabIndex={0}
-                                                aria-label={area.name}
-                                                onMouseEnter={() => setHoveredArea(area)}
-                                                onFocus={() => setHoveredArea(area)}
-                                                onMouseLeave={() => setHoveredArea(null)}
-                                                onBlur={() => setHoveredArea(null)}
-                                                onClick={() => setActiveArea(area)}
-                                            >
-                                                <title>{area.name}</title>
-                                            </polygon>
-                                        );
-                                    }
-
-                                    return (
-                                        <rect
-                                            key={area.id}
-                                            className={className}
-                                            x={area.rect.x}
-                                            y={area.rect.y}
-                                            width={area.rect.width}
-                                            height={area.rect.height}
-                                            role="button"
-                                            tabIndex={0}
-                                            aria-label={area.name}
-                                            onMouseEnter={() => setHoveredArea(area)}
-                                            onFocus={() => setHoveredArea(area)}
-                                            onMouseLeave={() => setHoveredArea(null)}
-                                            onBlur={() => setHoveredArea(null)}
-                                            onClick={() => setActiveArea(area)}
-                                        >
-                                            <title>{area.name}</title>
-                                        </rect>
-                                    );
-                                })}
-                            </svg>
-                        </div>
-                    </div>
-                    <Card
-                        className="campus-map-panel campus-map-details"
-                        onClickCapture={(event) => event.stopPropagation()}
-                    >
-                        {!activeDetails && (
-                            <div className="map-empty">
-                                <h3>Pick a location</h3>
-                                <p>Click on an area of the map to view details.</p>
-                            </div>
-                        )}
-                        {activeDetails && (
-                            <>
-                                <div className="map-pill-row">
-                                    <span className={`pill map-tag map-tag-${activeDetails?.type || 'building'}`}>
-                                        {activeDetails?.type === 'parking' ? 'Parking' : activeDetails?.type === 'grounds' ? 'Grounds' : activeDetails?.type === 'entry' ? 'Entry' : 'Building'}
-                                    </span>
-                                    {activeDetails?.category && (
-                                        <span className={`pill map-category map-category-${activeDetails.category.toLowerCase().replace(/\s+/g, '-')}`}>
-                                            {activeDetails.category}
-                                        </span>
-                                    )}
-                                </div>
-                                <h3>{activeDetails?.name}</h3>
-                                <p>{activeDetails?.description}</p>
-                                {buildingsError && (
-                                    <div className="map-note">{buildingsError}</div>
-                                )}
-                                {activeBuilding && (
-                                    <div className="building-info">
-                                        <div className="building-stats">
-                                            {activeBuilding.capacity ? (
-                                                <div className="building-stat">
-                                                    <span>Capacity</span>
-                                                    <strong>{activeBuilding.capacity}</strong>
-                                                </div>
-                                            ) : null}
-                                            {activeBuilding.rental_rate_hour ? (
-                                                <div className="building-stat">
-                                                    <span>Hourly rate</span>
-                                                    <strong>{formatCurrency(activeBuilding.rental_rate_hour)}</strong>
-                                                </div>
-                                            ) : null}
-                                            {activeBuilding.rental_rate_day ? (
-                                                <div className="building-stat">
-                                                    <span>Rental rate</span>
-                                                    <strong>{formatCurrency(activeBuilding.rental_rate_day)}</strong>
-                                                </div>
-                                            ) : null}
-                                            {activeBuilding.rental_rate && !activeBuilding.rental_rate_day && !activeBuilding.rental_rate_hour ? (
-                                                <div className="building-stat">
-                                                    <span>Rental rate</span>
-                                                    <strong>{formatCurrency(activeBuilding.rental_rate)}</strong>
-                                                </div>
-                                            ) : null}
-                                            {activeBuilding.parking_spaces ? (
-                                                <div className="building-stat">
-                                                    <span>Parking</span>
-                                                    <strong>{activeBuilding.parking_spaces}</strong>
-                                                </div>
-                                            ) : null}
-                                        </div>
-                                        {Array.isArray(activeBuilding.rooms) && activeBuilding.rooms.length > 0 && (
-                                            <div className="rooms-section">
-                                                <div className="rooms-header">
-                                                    <button
-                                                        type="button"
-                                                        className="rooms-header-toggle"
-                                                        onClick={() => setRoomsExpanded((prev) => !prev)}
-                                                        aria-expanded={roomsExpanded}
-                                                    >
-                                                        <span>Rooms</span>
-                                                        <span className={`rooms-caret ${roomsExpanded ? 'open' : ''}`} aria-hidden="true">
-                                                            ▾
-                                                        </span>
-                                                    </button>
-                                                    <span className="rooms-count">
-                                                        {activeBuilding.rooms.length} rooms
-                                                    </span>
-                                                </div>
-                                                <div
-                                                    className={`rooms-list-wrapper ${roomsExpanded ? 'expanded' : ''}`}
-                                                    aria-hidden={!roomsExpanded}
-                                                    style={{ '--rooms-height': `${roomsHeight}px` }}
-                                                >
-                                                    {(() => {
-                                                        const floors = Array.from(
-                                                            new Set(
-                                                                activeBuilding.rooms
-                                                                    .map((room) => room.floor)
-                                                                    .filter((floor) => floor !== null && floor !== '')
-                                                            )
-                                                        );
-                                                        const showFloor = floors.length > 1;
-                                                        const floorLabel = (floor) => {
-                                                            if (floor === 0) return 'Basement';
-                                                            if (floor === 1) return 'First Floor';
-                                                            if (floor === 2) return 'Second Floor';
-                                                            return `Floor ${floor}`;
-                                                        };
-                                                        const sortedRooms = [...activeBuilding.rooms].sort((a, b) => {
-                                                            const aHasRate = a.rental_rate ? 1 : 0;
-                                                            const bHasRate = b.rental_rate ? 1 : 0;
-                                                            if (aHasRate !== bHasRate) return bHasRate - aHasRate;
-                                                            const aFloor = a.floor === null || a.floor === '' ? -1 : Number(a.floor);
-                                                            const bFloor = b.floor === null || b.floor === '' ? -1 : Number(b.floor);
-                                                            if (aFloor !== bFloor) return bFloor - aFloor;
-                                                            return (a.name || '').localeCompare(b.name || '');
-                                                        });
-                                                        return (
-                                                            <div className="rooms-list" ref={roomsListRef}>
-                                                                {sortedRooms.map((room) => (
-                                                                    <div key={room.id} className="room-row">
-                                                                        <div>
-                                                                            <div className="room-name">{room.name}</div>
-                                                                            <div className="room-meta">
-                                                                                {showFloor && room.floor !== null && room.floor !== '' ? (
-                                                                                    <span>{floorLabel(room.floor)}</span>
-                                                                                ) : null}
-                                                                                {room.capacity ? <span>{room.capacity} seats</span> : null}
-                                                                            </div>
-                                                                        </div>
-                                                                        {room.rental_rate ? (
-                                                                            <span className="room-rate">{formatCurrency(room.rental_rate)}</span>
-                                                                        ) : null}
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        );
-                                                    })()}
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                                {activeAreaTickets.length > 0 && (
-                                    <div className="map-ticket-section">
-                                        <h4>Active Tickets</h4>
-                                        <div className="map-ticket-list">
-                                            {activeAreaTickets.map((ticket) => (
-                                                <button
-                                                    key={ticket.id}
-                                                    type="button"
-                                                    className="map-ticket-button"
-                                                    onClick={() => focusTicket(ticket.id)}
-                                                >
-                                                    <div className="map-ticket-header">
-                                                        <h5>{ticket.title}</h5>
-                                                        <span className={`ticket-status status-${ticket.status}`}>
-                                                            {ticket.status.replace('_', ' ')}
-                                                        </span>
-                                                    </div>
-                                                    <p>{ticket.description || 'No description'}</p>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                            </>
-                        )}
-                    </Card>
-                </div>
-            </Card>
 
             <div className="buildings-tabs">
-                <button className={`tab-btn ${activeTab === 'repairs' ? 'active' : ''}`} onClick={() => setActiveTab('repairs')}>
-                    <FaTools /> Repairs
+                <button className={`tab-btn ${activeTab === 'tickets' ? 'active' : ''}`} onClick={() => setActiveTab('tickets')}>
+                    <FaClipboardList /> Tickets
                 </button>
-                <button className={`tab-btn ${activeTab === 'needs' ? 'active' : ''}`} onClick={() => setActiveTab('needs')}>
-                    <FaClipboardList /> Long Term Needs
+                <button className={`tab-btn ${activeTab === 'map' ? 'active' : ''}`} onClick={() => setActiveTab('map')}>
+                    <FaTools /> Campus Map
                 </button>
                 <button className={`tab-btn ${activeTab === 'vendors' ? 'active' : ''}`} onClick={() => setActiveTab('vendors')}>
                     <FaAddressBook /> Preferred Vendors
                 </button>
-                <button className={`tab-btn ${activeTab === 'tickets' ? 'active' : ''}`} onClick={() => setActiveTab('tickets')}>
-                    <FaClipboardList /> Tickets
+                <button className={`tab-btn ${activeTab === 'needs' ? 'active' : ''}`} onClick={() => setActiveTab('needs')}>
+                    <FaClipboardList /> Long Term Needs
                 </button>
             </div>
 
-            {activeTab === 'repairs' && renderRepairs()}
-            {activeTab === 'needs' && renderNeeds()}
-            {activeTab === 'vendors' && renderVendors()}
             {activeTab === 'tickets' && renderTickets()}
-
-            <Modal
-                isOpen={showModal}
-                onClose={() => setShowModal(false)}
-                title="Report Repair Issue"
-            >
-                <form className="event-form" onSubmit={handleRepairSubmit}>
-                    <div className="form-group">
-                        <label>Issue Title</label>
-                        <input
-                            type="text"
-                            required
-                            value={newRepair.title}
-                            onChange={(e) => setNewRepair({ ...newRepair, title: e.target.value })}
-                            placeholder="e.g. Broken Window"
-                        />
-                    </div>
-                    <div className="form-group">
-                        <label>Description</label>
-                        <textarea
-                            required
-                            rows="3"
-                            value={newRepair.description}
-                            onChange={(e) => setNewRepair({ ...newRepair, description: e.target.value })}
-                            placeholder="Details about the location and issue..."
-                        />
-                    </div>
-                    <div className="form-actions">
-                        <button type="button" className="btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-                        <button type="submit" className="btn-primary">Submit Report</button>
-                    </div>
-                </form>
-            </Modal>
+            {activeTab === 'map' && renderMap()}
+            {activeTab === 'vendors' && renderVendors()}
+            {activeTab === 'needs' && renderNeeds()}
 
             <Modal
                 isOpen={showTicketModal}

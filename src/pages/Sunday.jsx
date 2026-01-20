@@ -7,7 +7,7 @@ import { ROLE_DEFINITIONS } from '../models/roles';
 import { clearLiturgicalCache, getFollowingSunday, getLiturgicalDay, getNextSunday, getPreviousSunday, getServicesByDate } from '../services/liturgicalService';
 import { getSundayDetails, saveSundayDetails } from '../services/sundayDetails';
 import { useEvents } from '../context/EventsContext';
-import { FaFolderOpen, FaYoutube, FaUpload, FaPrint, FaSyncAlt } from 'react-icons/fa';
+import { FaFolderOpen, FaYoutube, FaUpload, FaPrint } from 'react-icons/fa';
 import './Sunday.css';
 import './People.css';
 
@@ -62,10 +62,10 @@ const HGK_DEFAULT_ITEMS = [
     'Bread',
     'Peanut Butter',
     'Jelly',
-    'Chips',
-    'Granola Bars',
+    'Chips (box)',
+    'Granola Bars (box)',
     'Oranges',
-    'Rice Krispie Treats',
+    'Rice Krispie Treats (box)',
     'Water',
     'Lunch Bags',
     'Sandwich Bags',
@@ -82,18 +82,46 @@ const HGK_STATUS_LABELS = {
 };
 
 const buildHgkSupplyList = (rawItems = [], knownNames = []) => {
+    const legacyNameMap = {
+        'chips': 'Chips (box)',
+        'granola bars': 'Granola Bars (box)',
+        'rice krispie treats': 'Rice Krispie Treats (box)'
+    };
+    const normalizedRawItems = Array.isArray(rawItems)
+        ? rawItems.reduce((acc, item) => {
+            const originalName = String(item?.item_name || '').trim();
+            if (!originalName) return acc;
+            const mappedName = legacyNameMap[originalName.toLowerCase()] || originalName;
+            const key = mappedName.toLowerCase();
+            const existing = acc.get(key);
+            if (!existing) {
+                acc.set(key, { ...item, item_name: mappedName });
+            } else {
+                const next = {
+                    ...existing,
+                    item_name: mappedName,
+                    quantity: existing.quantity || item?.quantity || '',
+                    notes: existing.notes || item?.notes || '',
+                    status: existing.status || item?.status
+                };
+                acc.set(key, next);
+            }
+            return acc;
+        }, new Map())
+        : new Map();
+    const normalizedItems = Array.from(normalizedRawItems.values());
     const normalizedNames = Array.isArray(knownNames)
         ? knownNames.map((name) => String(name || '').trim()).filter(Boolean)
         : [];
     const fallbackNames = normalizedNames.length > 0 ? normalizedNames : HGK_DEFAULT_ITEMS.slice();
-    const extraNames = Array.isArray(rawItems)
-        ? rawItems
+    const extraNames = normalizedItems.length > 0
+        ? normalizedItems
             .map((item) => String(item?.item_name || '').trim())
             .filter((name) => name && !fallbackNames.some((existing) => existing.toLowerCase() === name.toLowerCase()))
         : [];
     const mergedNames = [...fallbackNames, ...extraNames];
     const itemMap = new Map();
-    (rawItems || []).forEach((item) => {
+    normalizedItems.forEach((item) => {
         const key = String(item?.item_name || '').trim().toLowerCase();
         if (!key) return;
         itemMap.set(key, item);
@@ -135,19 +163,15 @@ const Sunday = () => {
     const [error, setError] = useState('');
     const [livestreamUrl, setLivestreamUrl] = useState('');
     const [livestreamError, setLivestreamError] = useState('');
-    const [ccFromEmails, setCcFromEmails] = useState([]);
-    const [ccFromEmail, setCcFromEmail] = useState('office-saintedmunds.org@shared1.ccsend.com');
-    const [ccFromEmailError, setCcFromEmailError] = useState('');
     const [docsLoading, setDocsLoading] = useState(false);
     const [uploadingBulletin, setUploadingBulletin] = useState(false);
     const [uploadError, setUploadError] = useState('');
-    const [emailBusy, setEmailBusy] = useState(false);
-    const [emailError, setEmailError] = useState('');
     const [bulletinDoc, setBulletinDoc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [bulletin8Doc, setBulletin8Doc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [insertDoc, setInsertDoc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [statusDrafts, setStatusDrafts] = useState({});
     const [statusExpandedKey, setStatusExpandedKey] = useState(null);
+    const [bulletinPrintCopies, setBulletinPrintCopies] = useState({ bulletin10: 1, bulletin8: 1 });
     const [selectedEventId, setSelectedEventId] = useState(null);
     const [hgkItemNames, setHgkItemNames] = useState([]);
     const [hgkRawSupplies, setHgkRawSupplies] = useState([]);
@@ -157,9 +181,11 @@ const Sunday = () => {
     const [hgkSupplyLoading, setHgkSupplyLoading] = useState(false);
     const [hgkSupplySaving, setHgkSupplySaving] = useState(false);
     const [hgkSupplyError, setHgkSupplyError] = useState('');
+    const [hgkInstacartBusy, setHgkInstacartBusy] = useState(false);
     const [hgkNotes, setHgkNotes] = useState('');
     const [hgkEmailInput, setHgkEmailInput] = useState('');
     const [hgkEmailBusy, setHgkEmailBusy] = useState(false);
+    const [hgkSearchBusy, setHgkSearchBusy] = useState(false);
 
     const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
     const peopleByName = useMemo(() => {
@@ -370,54 +396,6 @@ const Sunday = () => {
         loadLivestream();
     }, [currentDate]);
 
-    const loadCcFromEmails = useCallback(async (keepCurrent = true) => {
-        setCcFromEmailError('');
-        try {
-            const response = await fetch(`${API_URL}/constant-contact/from-emails`);
-            if (!response.ok) {
-                if (response.status === 401) return;
-                throw new Error('Failed to load Constant Contact emails');
-            }
-            const data = await response.json().catch(() => ({}));
-            const emails = Array.isArray(data?.emails)
-                ? data.emails
-                : Array.isArray(data?.email_addresses)
-                    ? data.email_addresses
-                    : Array.isArray(data?.results)
-                        ? data.results
-                        : [];
-            const normalize = (value) => (value || '').toLowerCase().trim();
-            const confirmed = emails.filter((entry) => {
-                const status = (entry?.status || '').toLowerCase();
-                return status === 'confirmed' || status === 'verified' || status === 'active';
-            });
-            const pickFirst = (list) => {
-                for (const entry of list) {
-                    const candidate = entry?.email_address || entry?.email || entry?.address || '';
-                    if (candidate) return candidate;
-                }
-                return '';
-            };
-            setCcFromEmails(emails);
-            setCcFromEmail((prev) => {
-                const prevNormalized = normalize(prev);
-                const hasPrev = prevNormalized && emails.some((entry) => {
-                    const candidate = normalize(entry?.email_address || entry?.email || entry?.address);
-                    return candidate === prevNormalized;
-                });
-                if (keepCurrent && hasPrev) return prev;
-                return pickFirst(confirmed) || pickFirst(emails) || prev;
-            });
-        } catch (err) {
-            console.error(err);
-            setCcFromEmails([]);
-            setCcFromEmailError('Unable to load sender emails.');
-        }
-    }, []);
-
-    useEffect(() => {
-        loadCcFromEmails(true);
-    }, [loadCcFromEmails]);
 
     useEffect(() => {
         if (!currentDate) return;
@@ -584,20 +562,23 @@ const Sunday = () => {
         }
     };
 
-    const printFile = async (path) => {
+    const printFile = async (path, options = {}) => {
         if (!path) return;
         try {
-            await fetch(`${API_URL}/files/print`, {
+            const response = await fetch(`${API_URL}/files/print`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path })
+                body: JSON.stringify({ path, ...options })
             });
+            if (!response.ok) throw new Error('Print failed');
+            return true;
         } catch (err) {
             console.error(err);
+            return false;
         }
     };
 
-    const renderStatusStack = (key, options, selected, onSelect, disabled) => {
+    const renderStatusStack = (key, options, selected, onSelect, disabled, lockedOptions = []) => {
         const resolvedSelected = options.includes(selected) ? selected : options[0];
         const activeIndex = Math.max(0, options.indexOf(resolvedSelected));
         const draft = statusDrafts[key];
@@ -621,21 +602,24 @@ const Sunday = () => {
                 <span className="status-anchor" aria-hidden="true">
                     {displaySelected}
                 </span>
-                {options.map((option, index) => (
-                    <button
-                        key={option}
-                        type="button"
-                        className={`status-option ${displaySelected === option ? 'active' : ''}`}
-                        style={{ '--index': index }}
-                        onClick={() => {
-                            if (disabled) return;
-                            setStatusDrafts((prev) => ({ ...prev, [key]: option }));
-                        }}
-                        disabled={disabled}
-                    >
-                        {option}
-                    </button>
-                ))}
+                {options.map((option, index) => {
+                    const isLocked = lockedOptions.includes(option);
+                    return (
+                        <button
+                            key={option}
+                            type="button"
+                            className={`status-option ${displaySelected === option ? 'active' : ''} ${isLocked ? 'locked' : ''}`}
+                            style={{ '--index': index }}
+                            onClick={() => {
+                                if (disabled || isLocked) return;
+                                setStatusDrafts((prev) => ({ ...prev, [key]: option }));
+                            }}
+                            disabled={disabled}
+                        >
+                            {option}
+                        </button>
+                    );
+                })}
             </div>
         );
     };
@@ -663,61 +647,6 @@ const Sunday = () => {
             setUploadError('Upload failed.');
         } finally {
             setUploadingBulletin(false);
-        }
-    };
-
-    const handleCreateEmail = async () => {
-        if (emailBusy) return;
-        setEmailBusy(true);
-        setEmailError('');
-        try {
-            if (!currentDate) throw new Error('Missing date');
-            const payload = {
-                date: format(currentDate, 'MMMM d, yyyy'),
-                sundayName: liturgicalInfo?.name || liturgicalInfo?.feast || 'Sunday',
-                youtubeLink: livestreamUrl,
-                pdfUrl: details.bulletinUploadUrl,
-                imageUrl: details.bulletinImageUrl,
-                fromEmail: ccFromEmail || undefined
-            };
-            const response = await fetch(`${API_URL}/constant-contact/email`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            if (!response.ok) {
-                const data = await response.json().catch(() => ({}));
-                throw new Error(data?.error || 'Email creation failed');
-            }
-            updateDetailField('emailCreated', true);
-            updateDetailField('emailScheduled', true);
-        } catch (err) {
-            console.error(err);
-            setEmailError('Unable to create Constant Contact email.');
-        } finally {
-            setEmailBusy(false);
-        }
-    };
-
-    const handleTestEmail = async () => {
-        if (emailBusy) return;
-        setEmailBusy(true);
-        setEmailError('');
-        try {
-            const response = await fetch(`${API_URL}/constant-contact/email`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ testEmpty: true, fromEmail: ccFromEmail || undefined })
-            });
-            if (!response.ok) {
-                const data = await response.json().catch(() => ({}));
-                throw new Error(data?.error || 'Test email failed');
-            }
-        } catch (err) {
-            console.error(err);
-            setEmailError('Unable to create test email.');
-        } finally {
-            setEmailBusy(false);
         }
     };
 
@@ -773,15 +702,58 @@ const Sunday = () => {
         );
     };
 
-    const bulletin10Status = bulletinDoc?.exists ? (details.bulletinStatus10 || 'draft') : 'Not Started';
-    const bulletin8Status = bulletin8Doc?.exists ? (details.bulletinStatus8 || 'draft') : 'Not Started';
+    const bulletin10Status = bulletinDoc?.preview ? (details.bulletinStatus10 || 'draft') : 'Not Started';
+    const bulletin8Status = bulletin8Doc?.preview ? (details.bulletinStatus8 || 'draft') : 'Not Started';
     const insertStatus = insertDoc.exists ? (details.bulletinInsertStatus || 'Not Started') : 'Not Started';
-    const bulletin10Display = bulletinDoc?.exists ? bulletin10Status : 'Not Started';
-    const bulletin8Display = bulletin8Doc?.exists ? bulletin8Status : 'Not Started';
+    const bulletin10Display = bulletinDoc?.preview ? bulletin10Status : 'Not Started';
+    const bulletin8Display = bulletin8Doc?.preview ? bulletin8Status : 'Not Started';
     const insertDisplay = insertDoc.exists ? insertStatus : 'Not Started';
     const isBulletin10Complete = (statusDrafts.bulletin10 || bulletin10Status) === 'printed';
     const isBulletin8Complete = (statusDrafts.bulletin8 || bulletin8Status) === 'printed';
     const isInsertComplete = (statusDrafts.insert || insertStatus) === 'stuffed';
+
+    const getBulletinDefaultCopies = (status, readyCopies) => (
+        String(status || '').toLowerCase() === 'ready' ? readyCopies : 1
+    );
+
+    const isReadyStatus = (status) => String(status || '').toLowerCase() === 'ready';
+
+    useEffect(() => {
+        setBulletinPrintCopies({
+            bulletin10: getBulletinDefaultCopies(bulletin10Display, 90),
+            bulletin8: getBulletinDefaultCopies(bulletin8Display, 20)
+        });
+    }, [bulletin10Display, bulletin8Display]);
+
+    useEffect(() => {
+        if (!bulletinDoc?.preview) return;
+        setDetails((prev) => {
+            if (!prev?.bulletinStatus10 || prev.bulletinStatus10 === 'Not Started') {
+                return { ...prev, bulletinStatus10: 'draft' };
+            }
+            return prev;
+        });
+    }, [bulletinDoc?.preview]);
+
+    useEffect(() => {
+        if (!bulletin8Doc?.preview) return;
+        setDetails((prev) => {
+            if (!prev?.bulletinStatus8 || prev.bulletinStatus8 === 'Not Started') {
+                return { ...prev, bulletinStatus8: 'draft' };
+            }
+            return prev;
+        });
+    }, [bulletin8Doc?.preview]);
+
+    const toggleEmailChecklistItem = (field) => {
+        updateDetailField(field, !details[field]);
+    };
+
+    const isEmailChecklistComplete = !!livestreamUrl
+        && details.bulletinUploaded
+        && details.emailCreated
+        && details.emailScheduled
+        && details.emailSent;
     const sundayEvents = useMemo(() => {
         if (!currentDate) return [];
         return events
@@ -1042,6 +1014,47 @@ const Sunday = () => {
         });
     };
 
+    const buildHgkInstacartItems = () => {
+        const packSizes = {
+            'Napkins': 500,
+            'Sandwich Bags': 1100
+        };
+        const items = [];
+        hgkSupplies.forEach((entry) => {
+            const name = String(entry.item_name || '').trim();
+            const quantityMatch = String(entry.quantity || '').match(/(\d+(?:\.\d+)?)/);
+            const requested = quantityMatch ? Number(quantityMatch[1]) : 0;
+            if (!name || !Number.isFinite(requested) || requested <= 0) return;
+            const packSize = packSizes[name];
+            if (packSize) {
+                const boxes = Math.max(1, Math.ceil(requested / packSize));
+                const boxLabel = boxes === 1 ? 'box' : 'boxes';
+                items.push({
+                    name,
+                    display: `${boxes} ${boxLabel} (${packSize} each)`
+                });
+            } else {
+                items.push({
+                    name,
+                    display: `${requested}`
+                });
+            }
+        });
+        return items;
+    };
+
+    const applyParsedHgkItems = (parsed = []) => {
+        const parsedMap = new Map(
+            parsed.map((entry) => [String(entry.item_name || '').trim().toLowerCase(), entry])
+        );
+        setHgkSupplies((prev) => prev.map((entry) => {
+            const key = String(entry.item_name || '').trim().toLowerCase();
+            const match = parsedMap.get(key);
+            if (!match || !match.quantity) return entry;
+            return { ...entry, quantity: String(match.quantity).trim() };
+        }));
+    };
+
     const handleParseHgkEmail = async () => {
         if (!hgkEmailInput.trim()) return;
         const monthKey = hgkSupplyMonth || format(selectedEvent?.date || new Date(), 'yyyy-MM');
@@ -1063,18 +1076,62 @@ const Sunday = () => {
                 setHgkSupplyError('No supply quantities detected in that email.');
                 return;
             }
-            const parsedMap = new Map(parsed.map((entry) => [String(entry.item_name || '').trim().toLowerCase(), entry]));
-            setHgkSupplies((prev) => prev.map((entry) => {
-                const key = String(entry.item_name || '').trim().toLowerCase();
-                const match = parsedMap.get(key);
-                if (!match || !match.quantity) return entry;
-                return { ...entry, quantity: String(match.quantity).trim() };
-            }));
+            applyParsedHgkItems(parsed);
         } catch (err) {
             console.error(err);
             setHgkSupplyError('Unable to parse that supply email.');
         } finally {
             setHgkEmailBusy(false);
+        }
+    };
+
+    const handleSearchHgkEmail = async () => {
+        setHgkSearchBusy(true);
+        setHgkSupplyError('');
+        try {
+            const response = await fetch(`${API_URL}/hgk/gmail-search`, {
+                method: 'POST',
+                credentials: 'include'
+            });
+            if (!response.ok) throw new Error('Failed to search Gmail');
+            const data = await response.json();
+            const parsed = Array.isArray(data.items) ? data.items : [];
+            if (!parsed.length) {
+                setHgkSupplyError('No matching supply request found in Gmail.');
+                return;
+            }
+            applyParsedHgkItems(parsed);
+        } catch (err) {
+            console.error(err);
+            setHgkSupplyError('Unable to search Gmail for the supply request.');
+        } finally {
+            setHgkSearchBusy(false);
+        }
+    };
+
+    const handleOpenHgkInstacart = async () => {
+        const items = buildHgkInstacartItems();
+        if (items.length === 0) {
+            setHgkSupplyError('No quantities found to send to Instacart.');
+            return;
+        }
+        setHgkInstacartBusy(true);
+        setHgkSupplyError('');
+        try {
+            const response = await fetch(`${API_URL}/hgk/instacart`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    title: `HGK Supplies ${hgkSupplyMonthLabel || ''}`.trim(),
+                    items
+                })
+            });
+            if (!response.ok) throw new Error('Failed to open Instacart list');
+        } catch (err) {
+            console.error(err);
+            setHgkSupplyError('Unable to open the Instacart list.');
+        } finally {
+            setHgkInstacartBusy(false);
         }
     };
 
@@ -1180,10 +1237,30 @@ const Sunday = () => {
                             >
                                 <FaFolderOpen />
                             </button>
+                            <input
+                                type="number"
+                                min="1"
+                                className="print-copies-input"
+                                value={bulletinPrintCopies.bulletin10}
+                                onChange={(event) => {
+                                    const next = Math.max(1, Number(event.target.value) || 1);
+                                    setBulletinPrintCopies((prev) => ({ ...prev, bulletin10: next }));
+                                }}
+                                aria-label="10am bulletin copies"
+                            />
                             <button
                                 type="button"
                                 className="btn-icon btn-icon-ghost"
-                                onClick={() => printFile(bulletinDoc?.path)}
+                                onClick={async () => {
+                                    const ok = await printFile(bulletinDoc?.path, {
+                                        printer: 'SHARP-BULLETIN',
+                                        copies: bulletinPrintCopies.bulletin10
+                                    });
+                                    const expectedCopies = getBulletinDefaultCopies(bulletin10Display, 90);
+                                    if (ok && isReadyStatus(bulletin10Display) && bulletinPrintCopies.bulletin10 === expectedCopies) {
+                                        updateDetailField('bulletinStatus10', 'printed');
+                                    }
+                                }}
                                 disabled={!bulletinDoc?.exists}
                                 aria-label="Print 10am bulletin"
                                 title="Print"
@@ -1217,7 +1294,8 @@ const Sunday = () => {
                             bulletinOptions,
                             bulletin10Display,
                             (option) => updateDetailField('bulletinStatus10', option),
-                            !bulletinDoc?.exists
+                            !bulletinDoc?.preview,
+                            ['printed']
                         )}
                     </div>
                     {uploadError && <div className="text-muted">{uploadError}</div>}
@@ -1240,10 +1318,30 @@ const Sunday = () => {
                             >
                                 <FaFolderOpen />
                             </button>
+                            <input
+                                type="number"
+                                min="1"
+                                className="print-copies-input"
+                                value={bulletinPrintCopies.bulletin8}
+                                onChange={(event) => {
+                                    const next = Math.max(1, Number(event.target.value) || 1);
+                                    setBulletinPrintCopies((prev) => ({ ...prev, bulletin8: next }));
+                                }}
+                                aria-label="8am bulletin copies"
+                            />
                             <button
                                 type="button"
                                 className="btn-icon btn-icon-ghost"
-                                onClick={() => printFile(bulletin8Doc?.path)}
+                                onClick={async () => {
+                                    const ok = await printFile(bulletin8Doc?.path, {
+                                        printer: 'SHARP-BULLETIN',
+                                        copies: bulletinPrintCopies.bulletin8
+                                    });
+                                    const expectedCopies = getBulletinDefaultCopies(bulletin8Display, 20);
+                                    if (ok && isReadyStatus(bulletin8Display) && bulletinPrintCopies.bulletin8 === expectedCopies) {
+                                        updateDetailField('bulletinStatus8', 'printed');
+                                    }
+                                }}
                                 disabled={!bulletin8Doc?.exists}
                                 aria-label="Print 8am bulletin"
                                 title="Print"
@@ -1267,7 +1365,8 @@ const Sunday = () => {
                             bulletinOptions,
                             bulletin8Display,
                             (option) => updateDetailField('bulletinStatus8', option),
-                            !bulletin8Doc?.exists
+                            !bulletin8Doc?.preview,
+                            ['printed']
                         )}
                     </div>
                 </Card>
@@ -1319,7 +1418,8 @@ const Sunday = () => {
                         )}
                     </div>
                 </Card>
-                <Card className="sunday-panel livestream-card">
+                <Card className={`sunday-panel livestream-card ${isEmailChecklistComplete ? 'panel-complete' : ''}`}>
+                    {isEmailChecklistComplete && <span className="check-badge panel-check" aria-hidden="true">✓</span>}
                     <div className="panel-header">
                         <h3>Livestream Email</h3>
                     </div>
@@ -1343,95 +1443,49 @@ const Sunday = () => {
                                     </a>
                                 )}
                             </div>
-                            <div className={`check-item ${details.bulletinUploaded || details.bulletinUploadUrl ? 'done' : ''}`}>
-                                <span className={`check-badge check-badge--sm ${details.bulletinUploaded || details.bulletinUploadUrl ? '' : 'check-badge--empty'}`} aria-hidden="true">
-                                    {details.bulletinUploaded || details.bulletinUploadUrl ? '✓' : ''}
+                            <button
+                                type="button"
+                                className={`check-item check-action ${details.bulletinUploaded ? 'done' : ''}`}
+                                onClick={() => toggleEmailChecklistItem('bulletinUploaded')}
+                            >
+                                <span className={`check-badge check-badge--sm ${details.bulletinUploaded ? '' : 'check-badge--empty'}`} aria-hidden="true">
+                                    {details.bulletinUploaded ? '✓' : ''}
                                 </span>
                                 <span>Bulletin uploaded</span>
-                            </div>
-                        <button
-                            type="button"
-                            className={`check-item check-action ${details.emailCreated ? 'done' : ''}`}
-                            disabled={
-                                !livestreamUrl ||
-                                !(details.bulletinUploaded || details.bulletinUploadUrl) ||
-                                !details.bulletinImageUrl ||
-                                emailBusy
-                            }
-                            onClick={handleCreateEmail}
-                        >
-                            <span className={`check-badge check-badge--sm ${details.emailCreated ? '' : 'check-badge--empty'}`} aria-hidden="true">
-                                {details.emailCreated ? '✓' : ''}
-                            </span>
-                            <span>{emailBusy ? 'Creating email...' : 'Create email'}</span>
-                        </button>
-                        <button
-                            type="button"
-                            className="check-item check-action"
-                            disabled={emailBusy}
-                            onClick={handleTestEmail}
-                        >
-                            <span className="check-badge check-badge--sm check-badge--empty" aria-hidden="true" />
-                            <span>{emailBusy ? 'Testing email...' : 'Test empty email'}</span>
-                        </button>
-                            <div className={`check-item ${details.emailScheduled ? 'done' : ''}`}>
+                            </button>
+                            <button
+                                type="button"
+                                className={`check-item check-action ${details.emailCreated ? 'done' : ''}`}
+                                onClick={() => toggleEmailChecklistItem('emailCreated')}
+                            >
+                                <span className={`check-badge check-badge--sm ${details.emailCreated ? '' : 'check-badge--empty'}`} aria-hidden="true">
+                                    {details.emailCreated ? '✓' : ''}
+                                </span>
+                                <span>Email created</span>
+                            </button>
+                            <button
+                                type="button"
+                                className={`check-item check-action ${details.emailScheduled ? 'done' : ''}`}
+                                onClick={() => toggleEmailChecklistItem('emailScheduled')}
+                            >
                                 <span className={`check-badge check-badge--sm ${details.emailScheduled ? '' : 'check-badge--empty'}`} aria-hidden="true">
                                     {details.emailScheduled ? '✓' : ''}
                                 </span>
                                 <span>Email scheduled</span>
-                            </div>
-                            <div className={`check-item ${details.emailSent ? 'done' : ''}`}>
+                            </button>
+                            <button
+                                type="button"
+                                className={`check-item check-action ${details.emailSent ? 'done' : ''}`}
+                                onClick={() => toggleEmailChecklistItem('emailSent')}
+                            >
                                 <span className={`check-badge check-badge--sm ${details.emailSent ? '' : 'check-badge--empty'}`} aria-hidden="true">
                                     {details.emailSent ? '✓' : ''}
                                 </span>
                                 <span>Email sent</span>
-                            </div>
+                            </button>
                         </div>
                     </div>
-                    <div className="email-sender-row">
-                        <span className="email-sender-label">From</span>
-                        <select
-                            className="email-sender-select"
-                            value={ccFromEmail}
-                            onChange={(event) => setCcFromEmail(event.target.value)}
-                        >
-                            <option value="">Select sender</option>
-                            {!ccFromEmails.some((entry) => {
-                                const emailValue = entry?.email_address || entry?.email || entry?.address || '';
-                                return emailValue === 'office@saintedmunds.org';
-                            }) && (
-                                <option value="office@saintedmunds.org">office@saintedmunds.org</option>
-                            )}
-                            {ccFromEmail && !ccFromEmails.some((entry) => {
-                                const emailValue = entry?.email_address || entry?.email || entry?.address || '';
-                                return emailValue === ccFromEmail;
-                            }) && (
-                                <option value={ccFromEmail}>{ccFromEmail}</option>
-                            )}
-                            {ccFromEmails.map((entry) => {
-                                const emailValue = entry?.email_address || entry?.email || entry?.address || '';
-                                if (!emailValue) return null;
-                                const status = entry?.status ? ` (${entry.status})` : '';
-                                return (
-                                    <option key={emailValue} value={emailValue}>
-                                        {emailValue}{status}
-                                    </option>
-                                );
-                            })}
-                        </select>
-                        <button
-                            type="button"
-                            className="btn-icon btn-icon-ghost"
-                            onClick={() => loadCcFromEmails(false)}
-                            aria-label="Refresh senders"
-                            title="Refresh senders"
-                        >
-                            <FaSyncAlt />
-                        </button>
-                    </div>
                     {livestreamError && <div className="text-muted">{livestreamError}</div>}
-                    {ccFromEmailError && <div className="text-muted">{ccFromEmailError}</div>}
-                    {emailError && <div className="text-muted">{emailError}</div>}
                 </Card>
             </div>
 
@@ -1517,14 +1571,24 @@ const Sunday = () => {
                                                         onChange={(event) => setHgkEmailInput(event.target.value)}
                                                         placeholder="Paste the monthly supply email text to populate quantities."
                                                     />
-                                                    <button
-                                                        type="button"
-                                                        className="btn-primary hgk-email-button"
-                                                        onClick={handleParseHgkEmail}
-                                                        disabled={hgkEmailBusy || !hgkEmailInput.trim()}
-                                                    >
-                                                        {hgkEmailBusy ? 'Parsing...' : 'Use email'}
-                                                    </button>
+                                                    <div className="hgk-email-actions">
+                                                        <button
+                                                            type="button"
+                                                            className="btn-secondary hgk-email-button"
+                                                            onClick={handleSearchHgkEmail}
+                                                            disabled={hgkSearchBusy}
+                                                        >
+                                                            {hgkSearchBusy ? 'Searching...' : 'Search for Supply Request'}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="btn-primary hgk-email-button"
+                                                            onClick={handleParseHgkEmail}
+                                                            disabled={hgkEmailBusy || !hgkEmailInput.trim()}
+                                                        >
+                                                            {hgkEmailBusy ? 'Parsing...' : 'Use email'}
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             </div>
                                             <div className="hgk-supply-grid">
@@ -1572,6 +1636,14 @@ const Sunday = () => {
                                                 )}
                                             </div>
                                             <div className="hgk-supply-actions">
+                                                <button
+                                                    type="button"
+                                                    className="btn-secondary"
+                                                    onClick={handleOpenHgkInstacart}
+                                                    disabled={hgkInstacartBusy || hgkSupplyLoading}
+                                                >
+                                                    {hgkInstacartBusy ? 'Opening...' : 'Open Instacart List'}
+                                                </button>
                                                 <button
                                                     type="button"
                                                     className="btn-primary"
