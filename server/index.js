@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
+import { addMonths, format } from 'date-fns';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { access, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
 import { join, dirname, resolve, basename, extname } from 'path';
@@ -10,6 +11,8 @@ import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createHash, randomUUID } from 'crypto';
+import PizZip from 'pizzip';
+import Docxtemplater from 'docxtemplater';
 import { sqlite } from './db.js';
 import { runMigrations } from './db/migrate.js';
 import { seedNormalized } from './db/seedNormalized.js';
@@ -771,6 +774,10 @@ const DROPBOX_ROOT = process.env.DROPBOX_ROOT
     || join(homedir(), 'Dropbox', 'Parish Administrator');
 const DROPBOX_BULLETINS_DIR = 'Bulletins';
 const DROPBOX_INSERTS_DIR = 'Bulletin Inserts';
+const CERTIFICATE_TEMPLATE_DIR = join(homedir(), 'Dropbox', 'Parish Administrator', 'Vestry', 'Certificates');
+const FUND_A_CERT_DIR = join(homedir(), 'Dropbox', 'SENS REPORTS', 'Certificates', 'Certificates Fund A');
+const FUND_B_CERT_BASE_DIR = join(homedir(), 'Dropbox', 'SENS REPORTS', 'Certificates');
+const FIDELITY_CERT_DIR = join(homedir(), 'Dropbox', 'SENS REPORTS', 'Fidelity Account', 'Certificates for Transfer');
 
 const normalizeToken = (value) => String(value || '')
     .toLowerCase()
@@ -3245,6 +3252,66 @@ app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
     }
 });
 
+app.post('/api/vestry/certificate', async (req, res) => {
+    try {
+        const { data, templatePath, outputName, outputDir } = await prepareVestryCertificate(req.body);
+        await mkdir(outputDir, { recursive: true });
+        const docBuffer = await renderDocxTemplate(templatePath, data);
+        await writeFile(join(outputDir, outputName), docBuffer);
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        res.setHeader('Content-Disposition', `attachment; filename="${outputName}"`);
+        res.send(docBuffer);
+    } catch (error) {
+        const status = error?.status || 500;
+        console.error('Vestry certificate error:', error);
+        res.status(status).json({ error: error?.message || 'Failed to build certificate' });
+    }
+});
+
+app.post('/api/vestry/certificate/preview', async (req, res) => {
+    try {
+        const { data, templatePath, outputName } = await prepareVestryCertificate(req.body);
+        const docBuffer = await renderDocxTemplate(templatePath, data);
+        const pngBase64 = await convertDocxBufferToPreviewBase64(docBuffer, outputName);
+        res.json({
+            filename: outputName,
+            pngBase64
+        });
+    } catch (error) {
+        const status = error?.status || 500;
+        console.error('Vestry certificate preview error:', error);
+        res.status(status).json({ error: error?.message || 'Failed to build certificate preview' });
+    }
+});
+
+app.post('/api/vestry/certificate/save', async (req, res) => {
+    try {
+        const { data, templatePath, outputName, outputDir } = await prepareVestryCertificate(req.body);
+        await mkdir(outputDir, { recursive: true });
+        const docBuffer = await renderDocxTemplate(templatePath, data);
+        await writeFile(join(outputDir, outputName), docBuffer);
+        res.json({ filename: outputName });
+    } catch (error) {
+        const status = error?.status || 500;
+        console.error('Vestry certificate save error:', error);
+        res.status(status).json({ error: error?.message || 'Failed to save certificate' });
+    }
+});
+
+app.post('/api/vestry/certificate/print', async (req, res) => {
+    try {
+        const { data, templatePath } = await prepareVestryCertificate(req.body);
+        const docBuffer = await renderDocxTemplate(templatePath, data);
+        await printDocxBuffer(docBuffer);
+        res.json({ success: true });
+    } catch (error) {
+        const status = error?.status || 500;
+        console.error('Vestry certificate print error:', error);
+        res.status(status).json({ error: error?.message || 'Failed to print certificate' });
+    }
+});
+
 app.get('/api/vestry/checklist', (req, res) => {
     const month = Number(req.query.month);
     if (!month || Number.isNaN(month)) {
@@ -3371,6 +3438,234 @@ const parseCurrencyOverride = (value) => {
     return Number.isFinite(parsed) ? parsed : null;
 };
 
+const formatCurrencyValue = (value) => {
+    const parsed = parseCurrencyOverride(value);
+    if (!Number.isFinite(parsed)) return '';
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    }).format(parsed);
+};
+
+const sumCurrencyValues = (...values) => {
+    const total = values.reduce((acc, entry) => {
+        const parsed = parseCurrencyOverride(entry);
+        return Number.isFinite(parsed) ? acc + parsed : acc;
+    }, 0);
+    if (!Number.isFinite(total) || total === 0) return '';
+    return formatCurrencyValue(total);
+};
+
+const getQuarterWord = (meetingDate) => {
+    const previousMonth = (meetingDate.getMonth() + 11) % 12;
+    const quarterIndex = Math.floor(previousMonth / 3);
+    return ['first', 'second', 'third', 'fourth'][quarterIndex] || 'first';
+};
+
+const getQuarterMonthLabels = (meetingDate) => {
+    const previousMonth = (meetingDate.getMonth() + 11) % 12;
+    const quarterIndex = Math.floor(previousMonth / 3);
+    const startMonthIndex = quarterIndex * 3;
+    const monthNames = [
+        'January',
+        'February',
+        'March',
+        'April',
+        'May',
+        'June',
+        'July',
+        'August',
+        'September',
+        'October',
+        'November',
+        'December'
+    ];
+    return {
+        start: monthNames[startMonthIndex],
+        end: monthNames[startMonthIndex + 2]
+    };
+};
+
+const findVestryClerkName = () => {
+    const rows = db.prepare('SELECT display_name, roles, tags FROM people ORDER BY display_name').all();
+    const matches = rows.find((row) => {
+        const roleTokens = normalizePersonRoles(row.roles).map((role) => normalizeToken(role));
+        const tagTokens = parseJsonField(row.tags).map((tag) => normalizeToken(tag));
+        const allTokens = [...roleTokens, ...tagTokens];
+        return allTokens.some((token) => token === 'vestry clerk' || token === 'vestryclerk' || token === 'clerk');
+    });
+    return matches?.display_name || 'Anne Sirimane';
+};
+
+const resolveCertificateTemplatePath = (fundKey, isQuarterly) => {
+    if (fundKey === 'fidelity') {
+        return join(CERTIFICATE_TEMPLATE_DIR, 'CERTIFICATE FOR TRANSFER-- Fidelity template.docx');
+    }
+    if (!isQuarterly) return '';
+    const fundLabel = fundKey === 'funda' ? 'Fund A' : 'Fund B';
+    return join(CERTIFICATE_TEMPLATE_DIR, `CERTIFICATE FOR REIMBURSEMENT-- ${fundLabel} template QTR.docx`);
+};
+
+const resolveCertificateOutputDir = (fundKey, yearLabel) => {
+    if (fundKey === 'fidelity') return FIDELITY_CERT_DIR;
+    if (fundKey === 'funda') return FUND_A_CERT_DIR;
+    return join(FUND_B_CERT_BASE_DIR, `Certificates Fund B ${yearLabel}`);
+};
+
+const renderDocxTemplate = async (templatePath, data) => {
+    const content = await readFile(templatePath, 'binary');
+    const zip = new PizZip(content);
+    const doc = new Docxtemplater(zip, {
+        paragraphLoop: true,
+        linebreaks: true,
+        delimiters: { start: '[[', end: ']]' },
+        nullGetter: () => ''
+    });
+    doc.render(data);
+    return doc.getZip().generate({ type: 'nodebuffer' });
+};
+
+async function prepareVestryCertificate(payload) {
+    const rawFund = String(payload?.fund || '').toLowerCase();
+    const normalizedFund = rawFund.replace(/[^a-z]/g, '');
+    if (!['funda', 'fundb', 'fidelity'].includes(normalizedFund)) {
+        const error = new Error('Unknown fund selected.');
+        error.status = 400;
+        throw error;
+    }
+
+    const meetingDate = new Date(payload?.meetingDate || '');
+    if (Number.isNaN(meetingDate.getTime())) {
+        const error = new Error('A valid meeting date is required.');
+        error.status = 400;
+        throw error;
+    }
+
+    const isQuarterly = payload?.quarterly === true;
+    if (!isQuarterly) {
+        const error = new Error('Quarterly templates are not configured yet.');
+        error.status = 400;
+        throw error;
+    }
+
+    const amounts = payload?.amounts || {};
+    const monthlyAmount = String(amounts?.monthly || '');
+    const interestAmount = String(amounts?.interest || '');
+
+    const templatePath = resolveCertificateTemplatePath(normalizedFund, isQuarterly);
+    if (!templatePath) {
+        const error = new Error('Certificate template is not available.');
+        error.status = 400;
+        throw error;
+    }
+    await access(templatePath);
+
+    const coveredMonthDate = addMonths(meetingDate, -1);
+    const monthLabel = format(coveredMonthDate, 'MMMM');
+    const yearLabel = format(coveredMonthDate, 'yyyy');
+    const meetingLabel = format(meetingDate, 'MMMM d, yyyy');
+    const quarterWord = getQuarterWord(meetingDate);
+    const quarterLabels = getQuarterMonthLabels(meetingDate);
+    const clerkName = findVestryClerkName();
+
+    const totalValue = normalizedFund === 'fidelity'
+        ? sumCurrencyValues(interestAmount)
+        : sumCurrencyValues(monthlyAmount, interestAmount);
+
+    const data = {
+        MTG_DATE: meetingLabel,
+        AMT_TOTAL: totalValue,
+        AMT: totalValue,
+        AMT_JL: normalizedFund === 'fundb' ? formatCurrencyValue(monthlyAmount) : '',
+        AMT_INT: formatCurrencyValue(interestAmount),
+        AMT_AR: normalizedFund === 'funda' ? formatCurrencyValue(monthlyAmount) : '',
+        MONTH: monthLabel,
+        YEAR: yearLabel,
+        QUARTER: quarterWord,
+        QTR_START: quarterLabels.start,
+        QTR_END: quarterLabels.end,
+        CLERK: clerkName,
+        CLERK_NAME: clerkName
+    };
+
+    const outputPrefix = normalizedFund === 'fidelity'
+        ? 'CERTIFICATE FOR TRANSFER--'
+        : 'CERTIFICATE FOR REIMBURSEMENT--';
+    const outputName = `${outputPrefix}${monthLabel} ${yearLabel}.docx`;
+    const outputDir = resolveCertificateOutputDir(normalizedFund, yearLabel);
+
+    return {
+        data,
+        templatePath,
+        outputName,
+        outputDir
+    };
+}
+
+async function convertDocxBufferToPreviewBase64(docBuffer, outputName) {
+    const baseName = sanitizeFileName(basename(outputName || 'certificate', extname(outputName || ''))) || 'certificate';
+    const outputDir = join(tmpdir(), `vestry-certificate-preview-${randomUUID()}`);
+    const docxPath = join(outputDir, `${baseName}.docx`);
+    await mkdir(outputDir, { recursive: true });
+    try {
+        await writeFile(docxPath, docBuffer);
+        const previewDataUrl = await buildDocumentPreview(docxPath);
+        if (!previewDataUrl) {
+            throw new Error('Preview image could not be generated.');
+        }
+        const match = previewDataUrl.match(/^data:image\/png;base64,(.+)$/i);
+        if (!match) {
+            throw new Error('Preview image could not be generated.');
+        }
+        return match[1];
+    } finally {
+        await rm(outputDir, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
+async function getDefaultPrinterName() {
+    const { stdout } = await execFileAsync('powershell', [
+        '-NoProfile',
+        '-Command',
+        "(Get-CimInstance Win32_Printer | Where-Object { $_.Default -eq $true }).Name"
+    ], { windowsHide: true });
+    const name = String(stdout || '')
+        .split(/\r?\n/)
+        .map((entry) => entry.trim())
+        .find(Boolean);
+    if (!name) {
+        throw new Error('Default printer not found.');
+    }
+    return name;
+}
+
+async function printDocxBuffer(docBuffer) {
+    const scriptPath = resolve(__dirname, '..', 'Print-WordToPrinter.ps1');
+    await access(scriptPath);
+    const printerName = await getDefaultPrinterName();
+    const outputDir = join(tmpdir(), `vestry-certificate-print-${randomUUID()}`);
+    const docxPath = join(outputDir, 'vestry-certificate.docx');
+    await mkdir(outputDir, { recursive: true });
+    try {
+        await writeFile(docxPath, docBuffer);
+        await execFileAsync('powershell', [
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            scriptPath,
+            '-DocPath',
+            docxPath,
+            '-PrinterName',
+            printerName
+        ], { windowsHide: true });
+    } finally {
+        await rm(outputDir, { recursive: true, force: true }).catch(() => {});
+    }
+}
+
 const sanitizeFileName = (value) => String(value || '')
     .replace(/[<>:"/\\|?*]/g, '')
     .trim();
@@ -3491,6 +3786,38 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
         if (!res.headersSent) {
             res.status(500).json({ error: 'Failed to build manual deposit slip' });
         }
+    } finally {
+        if (outputDir) {
+            await rm(outputDir, { recursive: true, force: true }).catch(() => {});
+        }
+    }
+});
+
+app.post('/api/deposit-slip/print-base64', async (req, res) => {
+    let outputDir = null;
+    try {
+        const rawBase64 = String(req.body?.pdfBase64 || '').trim();
+        if (!rawBase64) {
+            return res.status(400).json({ error: 'pdfBase64 is required' });
+        }
+        const normalized = rawBase64.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
+        const pdfBuffer = Buffer.from(normalized, 'base64');
+        outputDir = join(tmpdir(), `deposit-slip-print-${randomUUID()}`);
+        await mkdir(outputDir, { recursive: true });
+        const pdfPath = join(outputDir, 'deposit-slip.pdf');
+        await writeFile(pdfPath, pdfBuffer);
+        const escaped = pdfPath.replace(/'/g, "''");
+        await execFileAsync('powershell', [
+            '-NoProfile',
+            '-Command',
+            `Start-Process -FilePath '${escaped}' -Verb Print`
+        ], { windowsHide: true });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Deposit slip print error:', error);
+        if (error?.stdout) console.error('Deposit slip print stdout:', String(error.stdout).trim());
+        if (error?.stderr) console.error('Deposit slip print stderr:', String(error.stderr).trim());
+        res.status(500).json({ error: 'Failed to print deposit slip' });
     } finally {
         if (outputDir) {
             await rm(outputDir, { recursive: true, force: true }).catch(() => {});

@@ -14,6 +14,10 @@ try {
   # Target your dedicated logical printer
   $word.ActivePrinter = $PrinterName
 
+  # Refresh fields/layout before printing to ensure template replacements render.
+  $doc.Fields.Update()
+  $doc.Repaginate()
+
   # Print using the printer instance defaults (booklet/saddle stitch live there)
   $doc.PrintOut()
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { FaDownload } from 'react-icons/fa';
+import { FaEye, FaPrint, FaSave } from 'react-icons/fa';
 import Card from '../components/Card';
+import Modal from '../components/Modal';
 import { API_URL } from '../services/apiConfig';
 import './Finance.css';
 
@@ -95,6 +96,14 @@ const Finance = () => {
     const [slipBusy, setSlipBusy] = useState(false);
     const [slipError, setSlipError] = useState('');
     const [saveMessage, setSaveMessage] = useState('');
+    const [previewModal, setPreviewModal] = useState({
+        open: false,
+        url: '',
+        pdfBase64: ''
+    });
+    const [previewNotice, setPreviewNotice] = useState('');
+    const [previewError, setPreviewError] = useState('');
+    const [previewActionBusy, setPreviewActionBusy] = useState({ save: false, print: false });
     const saveMessageTimeoutRef = useRef(null);
     const pdfInputRef = useRef(null);
 
@@ -134,6 +143,8 @@ const Finance = () => {
         event.target.value = '';
         setSlipError('');
         setSlipUrl('');
+        setPreviewError('');
+        setPreviewNotice('');
         setSlipBusy(true);
         try {
             const formData = new FormData();
@@ -163,6 +174,14 @@ const Finance = () => {
                 if (prev) URL.revokeObjectURL(prev);
                 return URL.createObjectURL(blob);
             });
+            setPreviewModal((prev) => {
+                if (prev.url) URL.revokeObjectURL(prev.url);
+                return {
+                    open: true,
+                    url: URL.createObjectURL(blob),
+                    pdfBase64: data.pdfBase64
+                };
+            });
         } catch (error) {
             console.error('Deposit slip PDF error:', error);
             setSlipError('Unable to build deposit slip from the uploaded PDF.');
@@ -171,15 +190,10 @@ const Finance = () => {
         }
     };
 
-    useEffect(() => {
-        if (!slipUrl) return undefined;
-        const anchor = document.createElement('a');
-        anchor.href = slipUrl;
-        anchor.download = 'deposit-slip.pdf';
-        anchor.click();
-        return () => {
+    useEffect(() => () => {
+        if (slipUrl) {
             URL.revokeObjectURL(slipUrl);
-        };
+        }
     }, [slipUrl]);
 
     useEffect(() => () => {
@@ -187,6 +201,14 @@ const Finance = () => {
             clearTimeout(saveMessageTimeoutRef.current);
         }
     }, []);
+
+    useEffect(() => {
+        return () => {
+            if (previewModal.url) {
+                URL.revokeObjectURL(previewModal.url);
+            }
+        };
+    }, [previewModal.url]);
 
     const budgetTotals = useMemo(() => {
         return checks.reduce((acc, check) => {
@@ -225,6 +247,8 @@ const Finance = () => {
     const handleGenerateDepositSlip = async () => {
         setSlipError('');
         setSlipUrl('');
+        setPreviewError('');
+        setPreviewNotice('');
         setSlipBusy(true);
         try {
             const payloadChecks = checks.map((entry) => ({
@@ -254,11 +278,90 @@ const Finance = () => {
                 if (prev) URL.revokeObjectURL(prev);
                 return URL.createObjectURL(blob);
             });
+            setPreviewModal((prev) => {
+                if (prev.url) URL.revokeObjectURL(prev.url);
+                return {
+                    open: true,
+                    url: URL.createObjectURL(blob),
+                    pdfBase64: data.pdfBase64
+                };
+            });
         } catch (error) {
             console.error('Deposit slip error:', error);
             setSlipError('Unable to generate deposit slip with the provided entries.');
         } finally {
             setSlipBusy(false);
+        }
+    };
+
+    const closePreviewModal = () => {
+        if (previewModal.url) {
+            URL.revokeObjectURL(previewModal.url);
+        }
+        setPreviewModal({ open: false, url: '', pdfBase64: '' });
+        setPreviewNotice('');
+        setPreviewError('');
+        setPreviewActionBusy({ save: false, print: false });
+    };
+
+    const handleSaveSlip = async () => {
+        if (!previewModal.pdfBase64) return;
+        setPreviewError('');
+        setPreviewNotice('');
+        setPreviewActionBusy((prev) => ({ ...prev, save: true }));
+        try {
+            const blob = base64ToBlob(previewModal.pdfBase64, 'application/pdf');
+            if (window?.showSaveFilePicker) {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: 'deposit-slip.pdf',
+                    types: [
+                        {
+                            description: 'PDF',
+                            accept: { 'application/pdf': ['.pdf'] }
+                        }
+                    ]
+                });
+                const writable = await handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                setPreviewNotice('Deposit slip saved.');
+                return;
+            }
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = 'deposit-slip.pdf';
+            anchor.click();
+            URL.revokeObjectURL(url);
+            setPreviewNotice('Deposit slip saved.');
+        } catch (error) {
+            console.error('Deposit slip save error:', error);
+            setPreviewError('Unable to save the deposit slip.');
+        } finally {
+            setPreviewActionBusy((prev) => ({ ...prev, save: false }));
+        }
+    };
+
+    const handlePrintSlip = async () => {
+        if (!previewModal.pdfBase64) return;
+        setPreviewError('');
+        setPreviewNotice('');
+        setPreviewActionBusy((prev) => ({ ...prev, print: true }));
+        try {
+            const response = await fetch(`${API_URL}/deposit-slip/print-base64`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pdfBase64: previewModal.pdfBase64 })
+            });
+            if (!response.ok) {
+                throw new Error('Unable to print the deposit slip.');
+            }
+            setPreviewNotice('Sent to printer.');
+        } catch (error) {
+            console.error('Deposit slip print error:', error);
+            setPreviewError(error?.message || 'Unable to print the deposit slip.');
+        } finally {
+            setPreviewActionBusy((prev) => ({ ...prev, print: false }));
         }
     };
 
@@ -295,9 +398,9 @@ const Finance = () => {
                             className="deposit-download-button"
                             onClick={handleGenerateDepositSlip}
                             disabled={slipBusy || overallTotal <= 0}
-                            aria-label="Download deposit slip"
+                            aria-label="Preview deposit slip"
                         >
-                            <FaDownload />
+                            <FaEye />
                         </button>
                     </div>
                 </div>
@@ -392,6 +495,42 @@ const Finance = () => {
                     </div>
                 </div>
             </Card>
+
+            <Modal isOpen={previewModal.open} onClose={closePreviewModal} title="Deposit Slip Preview" className="modal-large">
+                <div className="deposit-preview">
+                    <div className="deposit-preview-toolbar">
+                        <div className="deposit-preview-actions">
+                            <button
+                                className="btn-icon"
+                                type="button"
+                                aria-label="Save deposit slip"
+                                disabled={!previewModal.pdfBase64 || previewActionBusy.save}
+                                onClick={handleSaveSlip}
+                            >
+                                <FaSave />
+                            </button>
+                            <button
+                                className="btn-icon"
+                                type="button"
+                                aria-label="Print deposit slip"
+                                disabled={!previewModal.pdfBase64 || previewActionBusy.print}
+                                onClick={handlePrintSlip}
+                            >
+                                <FaPrint />
+                            </button>
+                        </div>
+                    </div>
+                    {previewError && <div className="alert error">{previewError}</div>}
+                    {previewNotice && <div className="alert success">{previewNotice}</div>}
+                    <div className="deposit-preview-frame">
+                        {previewModal.url ? (
+                            <iframe src={previewModal.url} title="Deposit slip preview" />
+                        ) : (
+                            <span className="text-muted">No preview available.</span>
+                        )}
+                    </div>
+                </div>
+            </Modal>
         </div>
     );
 };

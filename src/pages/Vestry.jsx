@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FaDownload, FaPaperPlane, FaPlus, FaTrash } from 'react-icons/fa';
+import { FaDownload, FaPaperPlane, FaPlus, FaPrint, FaSave, FaTrash } from 'react-icons/fa';
 import { addMonths, format, isSameDay, startOfDay } from 'date-fns';
 import Card from '../components/Card';
+import Modal from '../components/Modal';
 import { API_URL } from '../services/apiConfig';
 import { ROLE_DEFINITIONS } from '../models/roles';
 import { getVestryDetails, saveVestryDetails } from '../services/vestryDetails';
@@ -32,6 +33,15 @@ const getVestryMeetingDate = (year, month) => {
     return getNthThursday(year, month, nth);
 };
 
+const normalizeChecklistPhase = (phase) => {
+    const raw = String(phase || '').toLowerCase();
+    if (!raw) return 'Other';
+    if (raw.includes('pre')) return 'Pre-Vestry';
+    if (raw.includes('post')) return 'Post-Vestry';
+    if (raw.includes('package') || raw.includes('packet')) return 'Vestry Package';
+    return phase || 'Other';
+};
+
 const Vestry = () => {
     const { events } = useEvents();
     const [vestryMembers, setVestryMembers] = useState([]);
@@ -45,6 +55,17 @@ const Vestry = () => {
     const [draggedId, setDraggedId] = useState(null);
     const [dragOverId, setDragOverId] = useState(null);
     const [openTooltipKey, setOpenTooltipKey] = useState(null);
+    const [certificateBusy, setCertificateBusy] = useState({ fundA: false, fundB: false, fidelity: false });
+    const [certificateError, setCertificateError] = useState('');
+    const [previewModal, setPreviewModal] = useState({
+        open: false,
+        url: '',
+        filename: '',
+        fundKey: ''
+    });
+    const [previewError, setPreviewError] = useState('');
+    const [previewNotice, setPreviewNotice] = useState('');
+    const [previewActionBusy, setPreviewActionBusy] = useState({ save: false, print: false });
     const getQuarterLabel = (meetingDate) => {
         const baseDate = meetingDate || new Date();
         const previousMonth = (baseDate.getMonth() + 11) % 12;
@@ -53,14 +74,16 @@ const Vestry = () => {
     };
 
     const buildDefaultReasons = (quarterLabel) => ({
-        monthly: {
-            fundAReason: "20% of Associate Rector's salary",
-            fundBReason: '50% of shared expenses'
+        fundA: {
+            monthlyReason: "20% of Associate Rector's salary",
+            interestReason: `Interest earned in ${quarterLabel}`
         },
-        quarterly: {
-            fundAReason: `Interest earned by Fund A in ${quarterLabel}`,
-            fundBReason: `Interest earned by Fund B in ${quarterLabel}`,
-            fidelityReason: `Interest earned by Fidelity in ${quarterLabel}`
+        fundB: {
+            monthlyReason: '50% of shared expenses',
+            interestReason: `Interest earned in ${quarterLabel}`
+        },
+        fidelity: {
+            interestReason: `Interest earned in ${quarterLabel}`
         }
     });
 
@@ -68,8 +91,20 @@ const Vestry = () => {
         const quarterLabel = getQuarterLabel(null);
         const defaults = buildDefaultReasons(quarterLabel);
         return {
-            monthly: { fundA: '', fundB: '', ...defaults.monthly },
-            quarterly: { fundA: '', fundB: '', fidelity: '', ...defaults.quarterly }
+            fundA: {
+                monthlyAmount: '$1,144.00',
+                interestAmount: '',
+                ...defaults.fundA
+            },
+            fundB: {
+                monthlyAmount: '',
+                interestAmount: '',
+                ...defaults.fundB
+            },
+            fidelity: {
+                interestAmount: '',
+                ...defaults.fidelity
+            }
         };
     });
 
@@ -100,6 +135,12 @@ const Vestry = () => {
             if (packetUrl) URL.revokeObjectURL(packetUrl);
         };
     }, [packetUrl]);
+
+    useEffect(() => {
+        return () => {
+            if (previewModal.url) URL.revokeObjectURL(previewModal.url);
+        };
+    }, [previewModal.url]);
 
     useEffect(() => {
         const handleClick = (event) => {
@@ -262,16 +303,19 @@ const Vestry = () => {
     useEffect(() => {
         const defaults = buildDefaultReasons(quarterLabel);
         setCertificateAmounts((prev) => ({
-            monthly: {
-                ...prev.monthly,
-                fundAReason: prev.monthly.fundAReason || defaults.monthly.fundAReason,
-                fundBReason: prev.monthly.fundBReason || defaults.monthly.fundBReason
+            fundA: {
+                ...prev.fundA,
+                monthlyReason: prev.fundA.monthlyReason || defaults.fundA.monthlyReason,
+                interestReason: prev.fundA.interestReason || defaults.fundA.interestReason
             },
-            quarterly: {
-                ...prev.quarterly,
-                fundAReason: prev.quarterly.fundAReason || defaults.quarterly.fundAReason,
-                fundBReason: prev.quarterly.fundBReason || defaults.quarterly.fundBReason,
-                fidelityReason: prev.quarterly.fidelityReason || defaults.quarterly.fidelityReason
+            fundB: {
+                ...prev.fundB,
+                monthlyReason: prev.fundB.monthlyReason || defaults.fundB.monthlyReason,
+                interestReason: prev.fundB.interestReason || defaults.fundB.interestReason
+            },
+            fidelity: {
+                ...prev.fidelity,
+                interestReason: prev.fidelity.interestReason || defaults.fidelity.interestReason
             }
         }));
     }, [quarterLabel]);
@@ -331,7 +375,7 @@ const Vestry = () => {
 
     const packetChecklistDocs = useMemo(() => {
         return checklistItems
-            .filter((item) => item.phase === 'Vestry Package')
+            .filter((item) => normalizeChecklistPhase(item.phase) === 'Vestry Package')
             .filter((item) => !item.task.toLowerCase().includes('certificate'))
             .map((item) => ({
                 id: `checklist-${item.id}`,
@@ -376,20 +420,31 @@ const Vestry = () => {
         const grouped = phases.map((phase) => ({
             phase,
             items: checklistItems.filter((item) => {
-                if (phase !== 'Vestry Package') return item.phase === phase;
-                return item.phase === phase && !item.task.toLowerCase().includes('certificate');
+                const normalized = normalizeChecklistPhase(item.phase);
+                if (phase !== 'Vestry Package') return normalized === phase;
+                return normalized === phase && !item.task.toLowerCase().includes('certificate');
             })
         }));
-        const other = checklistItems.filter((item) => !phases.includes(item.phase));
+        const other = checklistItems.filter((item) => !phases.includes(normalizeChecklistPhase(item.phase)));
         if (other.length) grouped.push({ phase: 'Other', items: other });
-        return grouped
-            .filter((group) => group.items.length > 0);
+        const visibleGroups = grouped.filter((group) => group.items.length > 0);
+        if (visibleGroups.length || checklistItems.length === 0) {
+            return visibleGroups;
+        }
+        const fallback = phases.map((phase) => ({
+            phase,
+            items: checklistItems.filter((item) => normalizeChecklistPhase(item.phase) === phase)
+        }));
+        const fallbackOther = checklistItems.filter((item) => !phases.includes(normalizeChecklistPhase(item.phase)));
+        if (fallbackOther.length) fallback.push({ phase: 'Other', items: fallbackOther });
+        return fallback.filter((group) => group.items.length > 0);
     }, [checklistItems]);
 
     const certificateItems = useMemo(() => {
-        return checklistItems.filter((item) =>
-            item.phase === 'Vestry Package' && item.task.toLowerCase().includes('certificate')
-        );
+        return checklistItems.filter((item) => {
+            const normalized = normalizeChecklistPhase(item.phase);
+            return normalized === 'Vestry Package' && item.task.toLowerCase().includes('certificate');
+        });
     }, [checklistItems]);
 
     const certificateGroups = useMemo(() => {
@@ -426,10 +481,138 @@ const Vestry = () => {
         }));
     };
 
+    const buildCertificatePayload = (fundKey) => ({
+        fund: fundKey,
+        meetingDate: selectedMeeting.toISOString(),
+        quarterly: certificateGroups.quarterly.length > 0,
+        amounts: {
+            monthly: fundKey !== 'fidelity' ? certificateAmounts[fundKey].monthlyAmount || '' : '',
+            interest: certificateAmounts[fundKey].interestAmount || ''
+        }
+    });
+
+    const closePreviewModal = () => {
+        if (previewModal.url) URL.revokeObjectURL(previewModal.url);
+        setPreviewModal({ open: false, url: '', filename: '', fundKey: '' });
+        setPreviewError('');
+        setPreviewNotice('');
+        setPreviewActionBusy({ save: false, print: false });
+    };
+
+    const generateCertificatePreview = async (fundKey) => {
+        if (!selectedMeeting) return;
+        setCertificateError('');
+        setPreviewError('');
+        setPreviewNotice('');
+        setCertificateBusy((prev) => ({ ...prev, [fundKey]: true }));
+        try {
+            const payload = buildCertificatePayload(fundKey);
+            const response = await fetch(`${API_URL}/vestry/certificate/preview`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                let message = 'Unable to generate the certificate.';
+                try {
+                    const data = await response.json();
+                    if (data?.error) message = data.error;
+                } catch {
+                    // Use fallback message.
+                }
+                throw new Error(message);
+            }
+            const data = await response.json();
+            const pngBase64 = data?.pngBase64 || '';
+            if (!pngBase64) {
+                throw new Error('Preview data missing.');
+            }
+            const byteCharacters = atob(pngBase64);
+            const byteNumbers = Array.from(byteCharacters).map((char) => char.charCodeAt(0));
+            const blob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
+            const url = URL.createObjectURL(blob);
+            setPreviewModal({
+                open: true,
+                url,
+                filename: data?.filename || 'certificate.docx',
+                fundKey
+            });
+        } catch (error) {
+            console.error('Certificate generation error:', error);
+            setCertificateError(error?.message || 'Unable to generate the certificate.');
+        } finally {
+            setCertificateBusy((prev) => ({ ...prev, [fundKey]: false }));
+        }
+    };
+
+    const saveCertificate = async () => {
+        if (!previewModal.fundKey || !selectedMeeting) return;
+        setPreviewError('');
+        setPreviewNotice('');
+        setPreviewActionBusy((prev) => ({ ...prev, save: true }));
+        try {
+            const payload = buildCertificatePayload(previewModal.fundKey);
+            const response = await fetch(`${API_URL}/vestry/certificate/save`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                let message = 'Unable to save the certificate.';
+                try {
+                    const data = await response.json();
+                    if (data?.error) message = data.error;
+                } catch {
+                    // Use fallback message.
+                }
+                throw new Error(message);
+            }
+            const data = await response.json();
+            setPreviewNotice(`Saved ${data?.filename || 'certificate'}.`);
+        } catch (error) {
+            console.error('Certificate save error:', error);
+            setPreviewError(error?.message || 'Unable to save the certificate.');
+        } finally {
+            setPreviewActionBusy((prev) => ({ ...prev, save: false }));
+        }
+    };
+
+    const printCertificate = async () => {
+        if (!previewModal.fundKey || !selectedMeeting) return;
+        setPreviewError('');
+        setPreviewNotice('');
+        setPreviewActionBusy((prev) => ({ ...prev, print: true }));
+        try {
+            const payload = buildCertificatePayload(previewModal.fundKey);
+            const response = await fetch(`${API_URL}/vestry/certificate/print`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) {
+                let message = 'Unable to print the certificate.';
+                try {
+                    const data = await response.json();
+                    if (data?.error) message = data.error;
+                } catch {
+                    // Use fallback message.
+                }
+                throw new Error(message);
+            }
+            setPreviewNotice('Sent to printer.');
+        } catch (error) {
+            console.error('Certificate print error:', error);
+            setPreviewError(error?.message || 'Unable to print the certificate.');
+        } finally {
+            setPreviewActionBusy((prev) => ({ ...prev, print: false }));
+        }
+    };
+
     const completedCount = checklistItems.filter((item) => checklistProgress[item.id]).length;
     const requiredDocs = packetItems.filter((item) => item.required);
     const requiredUploaded = requiredDocs.filter((item) => item.file).length;
     const optionalUploaded = packetItems.filter((item) => !item.required && item.file).length;
+    const hasQuarterlyInterest = certificateGroups.quarterly.length > 0;
 
     return (
         <div className="page-vestry">
@@ -529,108 +712,140 @@ const Vestry = () => {
                             <span className="text-muted">No certificates listed for this meeting.</span>
                         ) : (
                             <>
-                                {certificateGroups.monthly.length > 0 && (
-                                    <div className="certificate-group">
-                                        <div className="certificate-title">Shared Monthly Expenses</div>
-                                        <div className="certificate-fields">
+                                {certificateError && <div className="alert error">{certificateError}</div>}
+                                <div className="certificate-group">
+                                    <div className="certificate-title">Fund A</div>
+                                    <div className="certificate-fields">
+                                        <label className="certificate-field">
+                                            <span>Shared expenses transfer</span>
+                                            <input
+                                                type="text"
+                                                inputMode="decimal"
+                                                placeholder="$0.00"
+                                                value={certificateAmounts.fundA.monthlyAmount}
+                                                onChange={(event) => updateCertificateAmount('fundA', 'monthlyAmount', event.target.value)}
+                                                onBlur={(event) => updateCertificateAmount('fundA', 'monthlyAmount', formatCurrency(event.target.value))}
+                                            />
+                                            <input
+                                                type="text"
+                                                placeholder="Reason"
+                                                value={certificateAmounts.fundA.monthlyReason}
+                                                onChange={(event) => updateCertificateAmount('fundA', 'monthlyReason', event.target.value)}
+                                            />
+                                        </label>
+                                        {hasQuarterlyInterest && (
                                             <label className="certificate-field">
-                                                <span>Fund A</span>
+                                                <span>Quarterly interest transfer</span>
                                                 <input
                                                     type="text"
                                                     inputMode="decimal"
                                                     placeholder="$0.00"
-                                                    value={certificateAmounts.monthly.fundA}
-                                                    onChange={(event) => updateCertificateAmount('monthly', 'fundA', event.target.value)}
-                                                    onBlur={(event) => updateCertificateAmount('monthly', 'fundA', formatCurrency(event.target.value))}
+                                                    value={certificateAmounts.fundA.interestAmount}
+                                                    onChange={(event) => updateCertificateAmount('fundA', 'interestAmount', event.target.value)}
+                                                    onBlur={(event) => updateCertificateAmount('fundA', 'interestAmount', formatCurrency(event.target.value))}
                                                 />
                                                 <input
                                                     type="text"
                                                     placeholder="Reason"
-                                                    value={certificateAmounts.monthly.fundAReason}
-                                                    onChange={(event) => updateCertificateAmount('monthly', 'fundAReason', event.target.value)}
+                                                    value={certificateAmounts.fundA.interestReason}
+                                                    onChange={(event) => updateCertificateAmount('fundA', 'interestReason', event.target.value)}
                                                 />
                                             </label>
-                                            <label className="certificate-field">
-                                                <span>Fund B</span>
-                                                <input
-                                                    type="text"
-                                                    inputMode="decimal"
-                                                    placeholder="$0.00"
-                                                    value={certificateAmounts.monthly.fundB}
-                                                    onChange={(event) => updateCertificateAmount('monthly', 'fundB', event.target.value)}
-                                                    onBlur={(event) => updateCertificateAmount('monthly', 'fundB', formatCurrency(event.target.value))}
-                                                />
-                                                <input
-                                                    type="text"
-                                                    placeholder="Reason"
-                                                    value={certificateAmounts.monthly.fundBReason}
-                                                    onChange={(event) => updateCertificateAmount('monthly', 'fundBReason', event.target.value)}
-                                                />
-                                            </label>
-                                        </div>
-                                        <button className="btn-secondary certificate-action" type="button">
-                                            Generate Certificate
-                                        </button>
+                                        )}
                                     </div>
-                                )}
-                                {certificateGroups.quarterly.length > 0 && (
+                                    <button
+                                        className="btn-secondary certificate-action"
+                                        type="button"
+                                        disabled={!hasQuarterlyInterest || certificateBusy.fundA}
+                                        onClick={() => generateCertificatePreview('fundA')}
+                                    >
+                                        {certificateBusy.fundA ? 'Generating...' : 'Generate Preview'}
+                                    </button>
+                                    {!hasQuarterlyInterest && (
+                                        <span className="text-muted">Quarterly templates not configured yet.</span>
+                                    )}
+                                </div>
+                                <div className="certificate-group">
+                                    <div className="certificate-title">Fund B</div>
+                                    <div className="certificate-fields">
+                                        <label className="certificate-field">
+                                            <span>Shared expenses transfer</span>
+                                            <input
+                                                type="text"
+                                                inputMode="decimal"
+                                                placeholder="$0.00"
+                                                value={certificateAmounts.fundB.monthlyAmount}
+                                                onChange={(event) => updateCertificateAmount('fundB', 'monthlyAmount', event.target.value)}
+                                                onBlur={(event) => updateCertificateAmount('fundB', 'monthlyAmount', formatCurrency(event.target.value))}
+                                            />
+                                            <input
+                                                type="text"
+                                                placeholder="Reason"
+                                                value={certificateAmounts.fundB.monthlyReason}
+                                                onChange={(event) => updateCertificateAmount('fundB', 'monthlyReason', event.target.value)}
+                                            />
+                                        </label>
+                                        {hasQuarterlyInterest && (
+                                            <label className="certificate-field">
+                                                <span>Quarterly interest transfer</span>
+                                                <input
+                                                    type="text"
+                                                    inputMode="decimal"
+                                                    placeholder="$0.00"
+                                                    value={certificateAmounts.fundB.interestAmount}
+                                                    onChange={(event) => updateCertificateAmount('fundB', 'interestAmount', event.target.value)}
+                                                    onBlur={(event) => updateCertificateAmount('fundB', 'interestAmount', formatCurrency(event.target.value))}
+                                                />
+                                                <input
+                                                    type="text"
+                                                    placeholder="Reason"
+                                                    value={certificateAmounts.fundB.interestReason}
+                                                    onChange={(event) => updateCertificateAmount('fundB', 'interestReason', event.target.value)}
+                                                />
+                                            </label>
+                                        )}
+                                    </div>
+                                    <button
+                                        className="btn-secondary certificate-action"
+                                        type="button"
+                                        disabled={!hasQuarterlyInterest || certificateBusy.fundB}
+                                        onClick={() => generateCertificatePreview('fundB')}
+                                    >
+                                        {certificateBusy.fundB ? 'Generating...' : 'Generate Preview'}
+                                    </button>
+                                    {!hasQuarterlyInterest && (
+                                        <span className="text-muted">Quarterly templates not configured yet.</span>
+                                    )}
+                                </div>
+                                {hasQuarterlyInterest && (
                                     <div className="certificate-group">
-                                        <div className="certificate-title">Quarterly Interest Transfers</div>
+                                        <div className="certificate-title">Fidelity Fund</div>
                                         <div className="certificate-fields">
                                             <label className="certificate-field">
-                                                <span>Fund A</span>
+                                                <span>Quarterly interest transfer</span>
                                                 <input
                                                     type="text"
                                                     inputMode="decimal"
                                                     placeholder="$0.00"
-                                                    value={certificateAmounts.quarterly.fundA}
-                                                    onChange={(event) => updateCertificateAmount('quarterly', 'fundA', event.target.value)}
-                                                    onBlur={(event) => updateCertificateAmount('quarterly', 'fundA', formatCurrency(event.target.value))}
+                                                    value={certificateAmounts.fidelity.interestAmount}
+                                                    onChange={(event) => updateCertificateAmount('fidelity', 'interestAmount', event.target.value)}
+                                                    onBlur={(event) => updateCertificateAmount('fidelity', 'interestAmount', formatCurrency(event.target.value))}
                                                 />
                                                 <input
                                                     type="text"
                                                     placeholder="Reason"
-                                                    value={certificateAmounts.quarterly.fundAReason}
-                                                    onChange={(event) => updateCertificateAmount('quarterly', 'fundAReason', event.target.value)}
-                                                />
-                                            </label>
-                                            <label className="certificate-field">
-                                                <span>Fund B</span>
-                                                <input
-                                                    type="text"
-                                                    inputMode="decimal"
-                                                    placeholder="$0.00"
-                                                    value={certificateAmounts.quarterly.fundB}
-                                                    onChange={(event) => updateCertificateAmount('quarterly', 'fundB', event.target.value)}
-                                                    onBlur={(event) => updateCertificateAmount('quarterly', 'fundB', formatCurrency(event.target.value))}
-                                                />
-                                                <input
-                                                    type="text"
-                                                    placeholder="Reason"
-                                                    value={certificateAmounts.quarterly.fundBReason}
-                                                    onChange={(event) => updateCertificateAmount('quarterly', 'fundBReason', event.target.value)}
-                                                />
-                                            </label>
-                                            <label className="certificate-field">
-                                                <span>Fidelity</span>
-                                                <input
-                                                    type="text"
-                                                    inputMode="decimal"
-                                                    placeholder="$0.00"
-                                                    value={certificateAmounts.quarterly.fidelity}
-                                                    onChange={(event) => updateCertificateAmount('quarterly', 'fidelity', event.target.value)}
-                                                    onBlur={(event) => updateCertificateAmount('quarterly', 'fidelity', formatCurrency(event.target.value))}
-                                                />
-                                                <input
-                                                    type="text"
-                                                    placeholder="Reason"
-                                                    value={certificateAmounts.quarterly.fidelityReason}
-                                                    onChange={(event) => updateCertificateAmount('quarterly', 'fidelityReason', event.target.value)}
+                                                    value={certificateAmounts.fidelity.interestReason}
+                                                    onChange={(event) => updateCertificateAmount('fidelity', 'interestReason', event.target.value)}
                                                 />
                                             </label>
                                         </div>
-                                        <button className="btn-secondary certificate-action" type="button">
-                                            Generate Certificate
+                                        <button
+                                            className="btn-secondary certificate-action"
+                                            type="button"
+                                            disabled={certificateBusy.fidelity}
+                                            onClick={() => generateCertificatePreview('fidelity')}
+                                        >
+                                            {certificateBusy.fidelity ? 'Generating...' : 'Generate Preview'}
                                         </button>
                                     </div>
                                 )}
@@ -781,6 +996,52 @@ const Vestry = () => {
                 </div>
                 </Card>
             </div>
+
+            <Modal
+                isOpen={previewModal.open}
+                onClose={closePreviewModal}
+                title="Certificate Preview"
+                className="modal-large"
+            >
+                <div className="certificate-preview">
+                    <div className="certificate-preview-toolbar">
+                        <div className="certificate-preview-meta">
+                            <span className="certificate-preview-filename">
+                                {previewModal.filename || 'Certificate Preview'}
+                            </span>
+                        </div>
+                        <div className="certificate-preview-actions">
+                            <button
+                                className="btn-icon"
+                                type="button"
+                                aria-label="Save certificate"
+                                disabled={!previewModal.url || previewActionBusy.save}
+                                onClick={saveCertificate}
+                            >
+                                <FaSave />
+                            </button>
+                            <button
+                                className="btn-icon"
+                                type="button"
+                                aria-label="Print certificate"
+                                disabled={!previewModal.url || previewActionBusy.print}
+                                onClick={printCertificate}
+                            >
+                                <FaPrint />
+                            </button>
+                        </div>
+                    </div>
+                    {previewError && <div className="alert error">{previewError}</div>}
+                    {previewNotice && <div className="alert success">{previewNotice}</div>}
+                    <div className="certificate-preview-frame">
+                        {previewModal.url ? (
+                            <img src={previewModal.url} alt="Certificate preview" />
+                        ) : (
+                            <span className="text-muted">No preview available.</span>
+                        )}
+                    </div>
+                </div>
+            </Modal>
         </div>
     );
 };

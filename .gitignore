@@ -50,3 +50,8 @@ update_roster.js
 update_sound.js
 convert_schedule.js
 convert_excel.ps1
+
+# Tauri
+src-tauri/target/
+src-tauri/node_modules/
+
