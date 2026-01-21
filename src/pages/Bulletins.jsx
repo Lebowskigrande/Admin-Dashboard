@@ -44,11 +44,16 @@ const Bulletins = () => {
 
     return (
         <div className="page-bulletins">
-            <header className="page-header-controls">
-                <h1>Sunday Bulletins</h1>
-                <button className="btn-primary" onClick={() => setShowModal(true)}>
-                    <FaPlus /> New Bulletin
-                </button>
+            <header className="page-header-controls page-header-bar">
+                <div className="page-header-title">
+                    <h1>Sunday Bulletins</h1>
+                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                </div>
+                <div className="page-header-actions">
+                    <button className="btn-primary" onClick={() => setShowModal(true)}>
+                        <FaPlus /> New Bulletin
+                    </button>
+                </div>
             </header>
 
             <div className="kanban-board">

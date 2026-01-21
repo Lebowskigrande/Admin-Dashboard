@@ -30,6 +30,74 @@ body,
     min-height: 100%;
 }
 
+.page-header-bar {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-lg);
+    min-height: 72px;
+    margin-bottom: var(--space-sm);
+    padding-top: 0;
+}
+
+.page-header-title {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.page-header-title h1 {
+    margin: 0;
+    font-size: var(--font-size-2xl);
+    font-weight: 700;
+    color: var(--color-primary-dark);
+}
+
+.page-header-kicker {
+    margin: 0;
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+}
+
+.page-header-subtitle {
+    margin: 0;
+    font-size: 0.95rem;
+    color: var(--color-text-secondary);
+    max-width: 720px;
+}
+
+.page-header-subtitle.is-empty {
+    visibility: hidden;
+    min-height: 1.2rem;
+}
+
+.page-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.page-header-meta {
+    font-weight: 600;
+    color: var(--color-primary);
+}
+
+@media (max-width: 960px) {
+    .page-header-bar {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .page-header-actions {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+}
+
 h1,
 h2,
 h3,

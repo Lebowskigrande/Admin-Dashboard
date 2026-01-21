@@ -108,7 +108,12 @@ const Settings = () => {
 
     return (
         <div className="page-settings">
-            <h1>Settings</h1>
+            <header className="page-header-bar">
+                <div className="page-header-title">
+                    <h1>Settings</h1>
+                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                </div>
+            </header>
 
             <Card title="Google Calendar Integration">
                 <div className="settings-section">

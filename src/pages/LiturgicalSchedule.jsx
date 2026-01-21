@@ -478,14 +478,16 @@ const LiturgicalSchedule = () => {
 
     return (
         <div className="page-liturgical">
-            <header className="page-header">
-                <div>
+            <header className="page-header page-header-bar">
+                <div className="page-header-title">
                     <h1>Liturgical Schedule</h1>
-                    <p>Sunday service assignments by team and role.</p>
+                    <p className="page-header-subtitle">Sunday service assignments by team and role.</p>
                 </div>
-                <button className="btn-secondary" onClick={loadData} disabled={loading}>
-                    {loading ? 'Refreshing...' : 'Refresh'}
-                </button>
+                <div className="page-header-actions">
+                    <button className="btn-secondary" onClick={loadData} disabled={loading}>
+                        {loading ? 'Refreshing...' : 'Refresh'}
+                    </button>
+                </div>
             </header>
 
             {error && <div className="alert error">{error}</div>}

@@ -1,7 +1,11 @@
+.page-finance {
+    padding: var(--space-sm);
+}
+
 .finance-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
     margin-bottom: var(--space-lg);
 }
 
@@ -14,7 +18,7 @@
 
 .summary-card {
     background: white;
-    padding: var(--space-md);
+    padding: var(--space-sm);
     border-radius: var(--radius-lg);
     display: flex;
     align-items: center;
@@ -233,7 +237,7 @@
 .deposit-total-panel {
     border: 1px solid #e2e8f0;
     border-radius: var(--radius-lg);
-    padding: var(--space-md);
+    padding: var(--space-sm);
     background: #f8fafc;
     display: flex;
     flex-direction: column;

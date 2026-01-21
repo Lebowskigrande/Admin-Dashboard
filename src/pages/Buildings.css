@@ -5,14 +5,14 @@
     --map-color-entry: #f59e0b;
     --map-color-worship: #f97316;
     --map-color-all-purpose: #0ea5e9;
-    padding: 1rem;
+    padding: var(--space-sm);
 }
 
 .buildings-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    margin-bottom: 1rem;
+    align-items: flex-start;
+    margin-bottom: var(--space-lg);
 }
 
 .campus-map-card {
@@ -311,13 +311,13 @@
     justify-content: space-between;
     gap: 0.45rem;
     align-items: flex-start;
-    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 .rooms-list .room-row:hover {
-    background: var(--color-bg);
-    border-color: rgba(15, 23, 42, 0.2);
-    box-shadow: var(--shadow-sm);
+    background: var(--list-hover-bg);
+    border-color: var(--list-hover-border);
+    box-shadow: none;
 }
 
 .room-name {
@@ -378,13 +378,14 @@
     border-radius: 12px;
     padding: 0.6rem 0.75rem;
     cursor: pointer;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color 0.2s ease, background 0.2s ease;
 }
 
 .map-ticket-button:hover,
 .map-ticket-button:focus {
-    border-color: #c7d2fe;
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12);
+    border-color: var(--list-hover-border);
+    background: var(--list-hover-bg);
+    box-shadow: none;
 }
 
 .map-ticket-button h5 {
@@ -438,8 +439,8 @@
 .map-list-item:hover,
 .map-list-item:focus,
 .map-list-item.active {
-    border-color: #cbd5f5;
-    background: #eef2ff;
+    border-color: var(--list-hover-border);
+    background: var(--list-hover-bg);
 }
 
 .map-list-item.selected {
@@ -575,12 +576,12 @@
 }
 
 .vendors-table tbody tr {
-    transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .vendors-table tbody tr:hover {
-    background: #f8fafc;
-    box-shadow: inset 0 0 0 1px #e2e8f0;
+    background: var(--list-hover-bg);
+    box-shadow: inset 0 0 0 1px var(--list-hover-border);
 }
 
 .vendors-table tbody tr:nth-child(even) {
@@ -856,8 +857,8 @@
 
 .ticket-row:hover,
 .ticket-row.active {
-    border-color: #cbd5f5;
-    background: #eef2ff;
+    border-color: var(--list-hover-border);
+    background: var(--list-hover-bg);
 }
 
 .ticket-row-header {

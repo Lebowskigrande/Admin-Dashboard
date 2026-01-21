@@ -18,6 +18,10 @@
   --color-text-primary: var(--color-text-main);
   --color-text-muted: var(--color-text-secondary);
 
+  /* List hover */
+  --list-hover-bg: #eef2ff;
+  --list-hover-border: #cbd5f5;
+
   /* Spacing */
   --space-xs: 0.5rem;
   --space-sm: 0.75rem;

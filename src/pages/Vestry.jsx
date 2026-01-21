@@ -616,11 +616,10 @@ const Vestry = () => {
 
     return (
         <div className="page-vestry">
-            <header className="vestry-header">
-                <div>
-                    <p className="page-kicker">Vestry planning</p>
+            <header className="vestry-header page-header-bar">
+                <div className="page-header-title">
                     <h1>Vestry</h1>
-                    <p className="page-subtitle">
+                    <p className="page-subtitle page-header-subtitle">
                         Track members, meeting cadence, committee schedules, and packet documents.
                     </p>
                 </div>

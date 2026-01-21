@@ -639,15 +639,14 @@ const People = () => {
 
     return (
         <section className="page-people">
-            <header className="people-header">
-                <div>
-                    <p className="page-kicker">People Directory</p>
+            <header className="people-header page-header-bar">
+                <div className="page-header-title">
                     <h1>People</h1>
-                    <p className="page-subtitle">
+                    <p className="page-subtitle page-header-subtitle">
                         Maintain the canonical people database used across schedules, teams, and communications.
                     </p>
                 </div>
-                <div className="people-header-actions">
+                <div className="people-header-actions page-header-actions">
                     <button className="btn-secondary" type="button" onClick={handleRestoreBackup} disabled={backupBusy}>
                         {backupBusy ? 'Checking backup...' : 'Restore Backup'}
                     </button>

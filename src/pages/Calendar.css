@@ -1,14 +1,12 @@
+.page-calendar {
+    padding: var(--space-sm);
+}
+
 .calendar-header-controls {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--space-md);
-}
-
-.month-display h2 {
-    font-size: var(--font-size-2xl);
-    margin: 0;
-    color: var(--color-primary-dark);
+    align-items: flex-start;
+    margin-bottom: var(--space-lg);
 }
 
 .calendar-actions {

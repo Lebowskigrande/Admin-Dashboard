@@ -89,27 +89,32 @@ const Todo = () => {
 
     return (
         <div className="page-todo">
-            <header className="page-header-controls">
-                <h1>To-Do List</h1>
-                <div className="task-filters">
-                    <button
-                        className={`filter-btn ${filter === 'all' ? 'active' : ''}`}
-                        onClick={() => setFilter('all')}
-                    >
-                        All
-                    </button>
-                    <button
-                        className={`filter-btn ${filter === 'active' ? 'active' : ''}`}
-                        onClick={() => setFilter('active')}
-                    >
-                        Active
-                    </button>
-                    <button
-                        className={`filter-btn ${filter === 'completed' ? 'active' : ''}`}
-                        onClick={() => setFilter('completed')}
-                    >
-                        Completed
-                    </button>
+            <header className="page-header-controls page-header-bar">
+                <div className="page-header-title">
+                    <h1>To-Do List</h1>
+                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                </div>
+                <div className="page-header-actions">
+                    <div className="task-filters">
+                        <button
+                            className={`filter-btn ${filter === 'all' ? 'active' : ''}`}
+                            onClick={() => setFilter('all')}
+                        >
+                            All
+                        </button>
+                        <button
+                            className={`filter-btn ${filter === 'active' ? 'active' : ''}`}
+                            onClick={() => setFilter('active')}
+                        >
+                            Active
+                        </button>
+                        <button
+                            className={`filter-btn ${filter === 'completed' ? 'active' : ''}`}
+                            onClick={() => setFilter('completed')}
+                        >
+                            Completed
+                        </button>
+                    </div>
                 </div>
             </header>
 

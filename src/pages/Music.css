@@ -1,0 +1,25 @@
+.page-music {
+    padding: var(--space-sm);
+}
+
+.search-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: #ffffff;
+    padding: 0.5rem 0.9rem;
+    border-radius: 999px;
+    border: 1px solid #e5e7eb;
+}
+
+.search-bar input {
+    border: none;
+    outline: none;
+    font-family: inherit;
+    font-size: 0.9rem;
+    background: transparent;
+}
+
+.search-icon {
+    color: var(--color-text-secondary);
+}

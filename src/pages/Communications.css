@@ -1,12 +1,12 @@
 .page-communications {
-    padding: 1rem;
+    padding: var(--space-sm);
 }
 
 .comms-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    margin-bottom: 2rem;
+    align-items: flex-start;
+    margin-bottom: var(--space-lg);
 }
 
 .comms-tabs {

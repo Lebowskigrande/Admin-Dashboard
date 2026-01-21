@@ -94,14 +94,13 @@
     padding: var(--space-sm) var(--space-md);
     border: 1px solid rgba(0, 0, 0, 0.08);
     border-radius: var(--radius-md);
-    transition: border-color 0.2s, background 0.2s, transform 0.2s;
+    transition: border-color 0.2s, background 0.2s;
     background: #fff;
 }
 
 .glance-item:hover {
-    border-color: var(--color-primary);
-    background: rgba(37, 99, 235, 0.06);
-    transform: translateY(-1px);
+    border-color: var(--list-hover-border);
+    background: var(--list-hover-bg);
 }
 
 .glance-label {

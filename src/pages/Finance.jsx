@@ -367,8 +367,11 @@ const Finance = () => {
 
     return (
         <div className="page-finance">
-            <header className="finance-header">
-                <h1>Finance & Accounts</h1>
+            <header className="finance-header page-header-bar">
+                <div className="page-header-title">
+                    <h1>Finance & Accounts</h1>
+                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                </div>
             </header>
 
             <Card className="deposit-card manual-deposit">

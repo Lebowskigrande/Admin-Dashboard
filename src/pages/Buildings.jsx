@@ -1045,8 +1045,11 @@ const Buildings = () => {
                 }
             }}
         >
-            <header className="buildings-header">
-                <h1>Buildings & Grounds</h1>
+            <header className="buildings-header page-header-bar">
+                <div className="page-header-title">
+                    <h1>Buildings & Grounds</h1>
+                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                </div>
             </header>
 
 

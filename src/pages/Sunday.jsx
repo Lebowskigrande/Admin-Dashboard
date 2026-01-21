@@ -1194,10 +1194,12 @@ const Sunday = () => {
 
     return (
         <div className="page-sunday">
-            <header className="sunday-header">
-                <div className="sunday-title">
+            <header className="sunday-header page-header-bar">
+                <div className="sunday-title page-header-title">
                     <h1>Sunday Planner: {currentDate ? format(currentDate, 'MMMM d, yyyy') : ''}</h1>
-                    <div className="sunday-subtitle">{liturgicalInfo?.name || liturgicalInfo?.feast || 'Sunday'}</div>
+                    <div className="sunday-subtitle page-header-subtitle">{liturgicalInfo?.name || liturgicalInfo?.feast || 'Sunday'}</div>
+                </div>
+                <div className="page-header-actions">
                     <div className="sunday-nav">
                         <button className="nav-icon" onClick={() => handleNavigate('prev')} aria-label="Previous Sunday">
                             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -1210,10 +1212,10 @@ const Sunday = () => {
                             </svg>
                         </button>
                     </div>
+                    <button className="btn-primary" onClick={saveSunday} disabled={saving}>
+                        {saving ? 'Saving...' : 'Save Updates'}
+                    </button>
                 </div>
-                <button className="btn-primary" onClick={saveSunday} disabled={saving}>
-                    {saving ? 'Saving...' : 'Save Updates'}
-                </button>
             </header>
 
             {error && <div className="alert error">{error}</div>}

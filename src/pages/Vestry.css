@@ -1,14 +1,14 @@
 @import '../styles/people-shared.css';
 
 .page-vestry {
-    padding: 1.5rem;
+    padding: var(--space-sm);
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
 }
 
 .vestry-header h1 {
-    margin: 0.2rem 0;
+    margin: 0;
 }
 
 .vestry-grid {
@@ -131,13 +131,12 @@
     border-radius: 8px;
     padding: 0.25rem 0.4rem 0.25rem 0.05rem;
     border: 1px solid transparent;
-    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .vestry-checklist-item:hover {
-    border-color: #93c5fd;
-    background: #eff6ff;
-    transform: translateY(-1px);
+    border-color: var(--list-hover-border);
+    background: var(--list-hover-bg);
 }
 
 .vestry-checklist-check {
@@ -266,13 +265,12 @@
     border-radius: 12px;
     border: 1px solid #e5e7eb;
     background: #f9fafb;
-    transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+    transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .certificate-group:hover {
-    border-color: #93c5fd;
-    background: #eff6ff;
-    transform: translateY(-1px);
+    border-color: var(--list-hover-border);
+    background: var(--list-hover-bg);
 }
 
 .certificate-title {
@@ -352,7 +350,7 @@
     text-align: left;
     font-family: inherit;
     color: inherit;
-    transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+    transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .meeting-row strong {
@@ -370,9 +368,8 @@
 }
 
 .meeting-row:hover {
-    border-color: #93c5fd;
-    background: #eff6ff;
-    transform: translateY(-1px);
+    border-color: var(--list-hover-border);
+    background: var(--list-hover-bg);
 }
 
 .meeting-row.active {
@@ -416,13 +413,15 @@
     grid-template-columns: minmax(160px, 1.4fr) repeat(3, minmax(110px, 1fr)) auto;
     gap: 0.5rem;
     align-items: center;
+    border: 1px solid transparent;
     border-radius: 10px;
     padding: 0.25rem 0.35rem;
     transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .committee-row:hover {
-    background: #f9fafb;
+    background: var(--list-hover-bg);
+    border-color: var(--list-hover-border);
 }
 
 .committee-row input {
@@ -470,7 +469,7 @@
     border-radius: 12px;
     border: 1px solid #e5e7eb;
     background: #fff;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .packet-row.compact {
@@ -478,9 +477,9 @@
 }
 
 .packet-row:hover {
-    border-color: #cbd5f5;
-    box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
-    transform: translateY(-1px);
+    border-color: var(--list-hover-border);
+    background: var(--list-hover-bg);
+    box-shadow: none;
 }
 
 .packet-order {

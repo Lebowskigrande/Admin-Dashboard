@@ -8,14 +8,15 @@
     height: auto !important;
     min-height: 0;
     max-height: none;
+    padding: var(--space-sm);
 }
 
 .sunday-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--space-lg);
-    padding-bottom: var(--space-sm);
+    padding-bottom: 0;
 }
 
 .sunday-title {
@@ -30,7 +31,6 @@
 }
 
 .sunday-header .btn-primary {
-    margin-left: auto;
     padding: 0.75rem 1.5rem;
 }
 
@@ -91,7 +91,8 @@
 }
 
 .events-panel .event-row:hover {
-    background: rgba(15, 23, 42, 0.08);
+    background: var(--list-hover-bg);
+    border-color: var(--list-hover-border);
 }
 
 .events-panel .event-row.active {

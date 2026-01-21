@@ -115,11 +115,12 @@ const Calendar = () => {
 
     const header = () => {
         return (
-            <header className="calendar-header-controls">
-                <div className="month-display">
-                    <h2>{format(currentDate, 'MMMM yyyy')}</h2>
+            <header className="calendar-header-controls page-header-bar">
+                <div className="page-header-title">
+                    <h1>Calendar</h1>
+                    <p className="page-header-subtitle">{format(currentDate, 'MMMM yyyy')}</p>
                 </div>
-                <div className="calendar-actions">
+                <div className="calendar-actions page-header-actions">
                     <button className="btn-icon" onClick={() => setCurrentDate(subMonths(currentDate, 1))}>
                         <FaChevronLeft />
                     </button>

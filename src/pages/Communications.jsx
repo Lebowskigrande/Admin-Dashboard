@@ -91,13 +91,18 @@ const Communications = () => {
 
     return (
         <div className="page-communications">
-            <header className="comms-header">
-                <h1>Communications</h1>
-                {activeTab === 'mail' && (
-                    <button className="btn-primary" onClick={() => setShowModal(true)}>
-                        <FaPlus /> Log Mail
-                    </button>
-                )}
+            <header className="comms-header page-header-bar">
+                <div className="page-header-title">
+                    <h1>Communications</h1>
+                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                </div>
+                <div className="page-header-actions">
+                    {activeTab === 'mail' && (
+                        <button className="btn-primary" onClick={() => setShowModal(true)}>
+                            <FaPlus /> Log Mail
+                        </button>
+                    )}
+                </div>
             </header>
 
             <div className="comms-tabs">

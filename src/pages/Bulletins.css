@@ -1,7 +1,11 @@
+.page-bulletins {
+    padding: var(--space-sm);
+}
+
 .page-header-controls {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
     margin-bottom: var(--space-lg);
 }
 

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { FaMusic, FaSearch, FaDownload } from 'react-icons/fa';
 import Card from '../components/Card';
 import './Finance.css'; // Reusing table styles
+import './Music.css';
 
 const Music = () => {
     const [searchTerm, setSearchTerm] = useState('');
@@ -17,18 +18,22 @@ const Music = () => {
     );
 
     return (
-        <div className="page-music" style={{ padding: '1rem' }}>
-            <header className="page-header" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2rem' }}>
-                <h1>Music Library</h1>
-                <div className="search-bar" style={{ display: 'flex', alignItems: 'center', background: 'white', padding: '0.5rem 1rem', borderRadius: '20px', border: '1px solid #ddd' }}>
-                    <FaSearch style={{ color: '#888', marginRight: '0.5rem' }} />
-                    <input
-                        type="text"
-                        placeholder="Search library..."
-                        style={{ border: 'none', outline: 'none' }}
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                    />
+        <div className="page-music">
+            <header className="page-header page-header-bar">
+                <div className="page-header-title">
+                    <h1>Music Library</h1>
+                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                </div>
+                <div className="page-header-actions">
+                    <div className="search-bar">
+                        <FaSearch className="search-icon" />
+                        <input
+                            type="text"
+                            placeholder="Search library..."
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                        />
+                    </div>
                 </div>
             </header>
 
