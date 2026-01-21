@@ -778,6 +778,8 @@ const CERTIFICATE_TEMPLATE_DIR = join(homedir(), 'Dropbox', 'Parish Administrato
 const FUND_A_CERT_DIR = join(homedir(), 'Dropbox', 'SENS REPORTS', 'Certificates', 'Certificates Fund A');
 const FUND_B_CERT_BASE_DIR = join(homedir(), 'Dropbox', 'SENS REPORTS', 'Certificates');
 const FIDELITY_CERT_DIR = join(homedir(), 'Dropbox', 'SENS REPORTS', 'Fidelity Account', 'Certificates for Transfer');
+const VESTRY_PACKET_CACHE_DIR = join(__dirname, 'vestry-packet-cache');
+const VESTRY_PACKET_CACHE_FILE = join(VESTRY_PACKET_CACHE_DIR, 'cache.json');
 
 const normalizeToken = (value) => String(value || '')
     .toLowerCase()
@@ -3172,21 +3174,29 @@ app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
     const files = req.files || [];
     const filesById = new Map(files.map((file) => [file.fieldname, file]));
     const convertedFiles = [];
+    const convertedDirs = [];
     try {
         const order = JSON.parse(req.body?.order || '[]');
+        const cached = JSON.parse(req.body?.cached || '[]');
         if (!Array.isArray(order) || order.length === 0) {
             return res.status(400).json({ error: 'Packet order is required' });
         }
 
         const packetDoc = await PDFDocument.create();
 
-        const ensurePdf = async (file) => {
-            const filePath = file.path;
-            const originalName = file.originalname || '';
+        const cachedMap = new Map(
+            Array.isArray(cached)
+                ? cached.filter((item) => item?.id && item?.cacheId).map((item) => [item.id, item.cacheId])
+                : []
+        );
+        const cacheEntries = await readVestryPacketCache();
+
+        const ensurePdf = async ({ filePath, originalName = '', mimetype = '' }) => {
             const originalExt = extname(originalName).toLowerCase();
-            const isPdf = originalExt === '.pdf' || file.mimetype === 'application/pdf';
+            const isPdf = originalExt === '.pdf' || mimetype === 'application/pdf';
             if (isPdf) return filePath;
-            const outputDir = dirname(filePath);
+            const outputDir = join(tmpdir(), `vestry-packet-convert-${randomUUID()}`);
+            await mkdir(outputDir, { recursive: true });
             try {
                 await execFileAsync('soffice', [
                     '--headless',
@@ -3199,6 +3209,7 @@ app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
                 const baseName = originalExt ? basename(originalName, originalExt) : basename(filePath);
                 const outputPath = join(outputDir, `${baseName}.pdf`);
                 convertedFiles.push(outputPath);
+                convertedDirs.push(outputDir);
                 return outputPath;
             } catch (error) {
                 const message = error?.code === 'ENOENT'
@@ -3211,13 +3222,36 @@ app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
         for (const item of order) {
             if (!item || !item.id) continue;
             const file = filesById.get(item.id);
-            if (!file) {
+            let fileDescriptor = null;
+            if (file) {
+                fileDescriptor = {
+                    filePath: file.path,
+                    originalName: file.originalname || '',
+                    mimetype: file.mimetype || ''
+                };
+            } else {
+                const cacheId = cachedMap.get(item.id);
+                const entry = cacheId ? cacheEntries?.[item.id] : null;
+                if (entry && entry.cacheId === cacheId && entry.path) {
+                    try {
+                        await access(entry.path);
+                        fileDescriptor = {
+                            filePath: entry.path,
+                            originalName: entry.originalName || basename(entry.path),
+                            mimetype: ''
+                        };
+                    } catch {
+                        fileDescriptor = null;
+                    }
+                }
+            }
+            if (!fileDescriptor) {
                 if (item.required) {
                     return res.status(400).json({ error: `Missing required document: ${item.label || item.id}` });
                 }
                 continue;
             }
-            const pdfPath = await ensurePdf(file);
+            const pdfPath = await ensurePdf(fileDescriptor);
             const srcBytes = await readFile(pdfPath);
             const srcDoc = await PDFDocument.load(srcBytes);
             const pages = await packetDoc.copyPages(srcDoc, srcDoc.getPageIndices());
@@ -3249,6 +3283,87 @@ app.post('/api/vestry/packet', vestryUpload.any(), async (req, res) => {
             ...files.map((file) => rm(file.path, { force: true }).catch(() => {})),
             ...convertedFiles.map((filePath) => rm(filePath, { force: true }).catch(() => {}))
         ]);
+        await Promise.all(
+            convertedDirs.map((dirPath) => rm(dirPath, { recursive: true, force: true }).catch(() => {}))
+        );
+    }
+});
+
+app.get('/api/vestry/packet/cache', async (req, res) => {
+    try {
+        const cache = await readVestryPacketCache();
+        const items = Object.entries(cache || {}).map(([id, entry]) => ({
+            id,
+            cacheId: entry.cacheId,
+            originalName: entry.originalName,
+            updatedAt: entry.updatedAt || null
+        }));
+        res.json({ items });
+    } catch (error) {
+        console.error('Vestry packet cache list error:', error);
+        res.status(500).json({ error: 'Failed to load cached files' });
+    }
+});
+
+app.post('/api/vestry/packet/cache', vestryUpload.single('file'), async (req, res) => {
+    const file = req.file;
+    const itemId = String(req.body?.itemId || '').trim();
+    if (!itemId || !file) {
+        if (file?.path) {
+            await rm(file.path, { force: true }).catch(() => {});
+        }
+        return res.status(400).json({ error: 'itemId and file are required' });
+    }
+    const safeId = safePacketCacheId(itemId);
+    if (!safeId) {
+        if (file?.path) {
+            await rm(file.path, { force: true }).catch(() => {});
+        }
+        return res.status(400).json({ error: 'Invalid itemId' });
+    }
+    const cacheId = `${safeId}-${Date.now()}`;
+    const originalName = file.originalname || 'document';
+    const ext = extname(originalName) || extname(file.path) || '';
+    const targetName = `${cacheId}${ext}`;
+    const targetPath = join(VESTRY_PACKET_CACHE_DIR, targetName);
+    try {
+        await mkdir(VESTRY_PACKET_CACHE_DIR, { recursive: true });
+        await copyFile(file.path, targetPath);
+        const cache = await readVestryPacketCache();
+        const existing = cache?.[itemId];
+        await removeCachedPacketFile(existing);
+        cache[itemId] = {
+            cacheId,
+            originalName,
+            path: targetPath,
+            updatedAt: new Date().toISOString()
+        };
+        await writeVestryPacketCache(cache);
+        res.json({
+            itemId,
+            cacheId,
+            originalName
+        });
+    } catch (error) {
+        console.error('Vestry packet cache upload error:', error);
+        res.status(500).json({ error: 'Failed to cache file' });
+    } finally {
+        if (file?.path) {
+            await rm(file.path, { force: true }).catch(() => {});
+        }
+    }
+});
+
+app.delete('/api/vestry/packet/cache', async (req, res) => {
+    try {
+        const cache = await readVestryPacketCache();
+        const entries = Object.values(cache || {});
+        await Promise.all(entries.map((entry) => removeCachedPacketFile(entry)));
+        await writeVestryPacketCache({});
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Vestry packet cache clear error:', error);
+        res.status(500).json({ error: 'Failed to clear cached files' });
     }
 });
 
@@ -3669,6 +3784,30 @@ async function printDocxBuffer(docBuffer) {
 const sanitizeFileName = (value) => String(value || '')
     .replace(/[<>:"/\\|?*]/g, '')
     .trim();
+
+const safePacketCacheId = (value) => String(value || '')
+    .replace(/[^a-z0-9-_]/gi, '')
+    .slice(0, 80);
+
+async function readVestryPacketCache() {
+    try {
+        const raw = await readFile(VESTRY_PACKET_CACHE_FILE, 'utf8');
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+async function writeVestryPacketCache(cache) {
+    await mkdir(VESTRY_PACKET_CACHE_DIR, { recursive: true });
+    await writeFile(VESTRY_PACKET_CACHE_FILE, JSON.stringify(cache || {}, null, 2));
+}
+
+async function removeCachedPacketFile(entry) {
+    if (!entry?.path) return;
+    await rm(entry.path, { force: true }).catch(() => {});
+}
 
 const resolveContractFile = async (contractsDir, vendorName, contractField) => {
     const baseRaw = contractField || vendorName || '';

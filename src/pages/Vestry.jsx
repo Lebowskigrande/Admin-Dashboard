@@ -52,6 +52,9 @@ const Vestry = () => {
     const [packetError, setPacketError] = useState('');
     const [packetUrl, setPacketUrl] = useState('');
     const [packetFilename, setPacketFilename] = useState('Vestry packet.pdf');
+    const [packetCache, setPacketCache] = useState({});
+    const [packetCacheBusy, setPacketCacheBusy] = useState(false);
+    const [packetCacheError, setPacketCacheError] = useState('');
     const [draggedId, setDraggedId] = useState(null);
     const [dragOverId, setDragOverId] = useState(null);
     const [openTooltipKey, setOpenTooltipKey] = useState(null);
@@ -135,6 +138,34 @@ const Vestry = () => {
             if (packetUrl) URL.revokeObjectURL(packetUrl);
         };
     }, [packetUrl]);
+
+    useEffect(() => {
+        const loadPacketCache = async () => {
+            try {
+                setPacketCacheBusy(true);
+                const response = await fetch(`${API_URL}/vestry/packet/cache`);
+                if (!response.ok) throw new Error('Failed to load cached files');
+                const data = await response.json();
+                const items = Array.isArray(data?.items) ? data.items : [];
+                const cacheMap = items.reduce((acc, entry) => {
+                    if (entry?.id && entry?.cacheId) {
+                        acc[entry.id] = {
+                            cacheId: entry.cacheId,
+                            originalName: entry.originalName || ''
+                        };
+                    }
+                    return acc;
+                }, {});
+                setPacketCache(cacheMap);
+            } catch (error) {
+                console.error('Packet cache load error:', error);
+                setPacketCacheError('Unable to load cached packet files.');
+            } finally {
+                setPacketCacheBusy(false);
+            }
+        };
+        loadPacketCache();
+    }, []);
 
     useEffect(() => {
         return () => {
@@ -228,7 +259,7 @@ const Vestry = () => {
     const addCustomDoc = () => {
         setPacketItems((prev) => ([
             ...prev,
-            { id: `custom-${Date.now()}`, label: 'Additional Document', required: false, file: null, custom: true }
+            { id: `custom-${Date.now()}`, label: 'Additional Document', required: false, file: null, cachedFile: null, custom: true }
         ]));
     };
 
@@ -236,11 +267,70 @@ const Vestry = () => {
         setPacketItems((prev) => prev.filter((item) => item.id !== id));
     };
 
+    const hasPacketFile = (item) => !!(item.file || item.cachedFile);
+
+    const handlePacketFileUpload = async (itemId, file) => {
+        if (!file) return;
+        setPacketError('');
+        setPacketCacheError('');
+        updatePacketItem(itemId, { uploading: true });
+        try {
+            const formData = new FormData();
+            formData.append('itemId', itemId);
+            formData.append('file', file);
+            const response = await fetch(`${API_URL}/vestry/packet/cache`, {
+                method: 'POST',
+                body: formData
+            });
+            if (!response.ok) {
+                throw new Error('Failed to cache packet file');
+            }
+            const data = await response.json();
+            const cachedFile = {
+                cacheId: data?.cacheId || '',
+                originalName: data?.originalName || file.name
+            };
+            setPacketCache((prev) => ({ ...prev, [itemId]: cachedFile }));
+            updatePacketItem(itemId, {
+                file: null,
+                cachedFile,
+                uploading: false
+            });
+        } catch (error) {
+            console.error('Packet cache upload error:', error);
+            setPacketCacheError('Unable to cache the uploaded file.');
+            updatePacketItem(itemId, { uploading: false });
+        }
+    };
+
+    const clearPacketCache = async () => {
+        setPacketCacheError('');
+        setPacketCacheBusy(true);
+        try {
+            const response = await fetch(`${API_URL}/vestry/packet/cache`, {
+                method: 'DELETE'
+            });
+            if (!response.ok) {
+                throw new Error('Failed to clear cache');
+            }
+            setPacketCache({});
+            setPacketItems((prev) => prev.map((item) => ({
+                ...item,
+                cachedFile: null
+            })));
+        } catch (error) {
+            console.error('Packet cache clear error:', error);
+            setPacketCacheError('Unable to clear cached packet files.');
+        } finally {
+            setPacketCacheBusy(false);
+        }
+    };
+
     const buildPacket = async () => {
         setPacketError('');
         setPacketBusy(true);
         try {
-            const missing = packetItems.filter((item) => item.required && !item.file);
+            const missing = packetItems.filter((item) => item.required && !hasPacketFile(item));
             if (missing.length > 0) {
                 setPacketError('Upload all required documents before building the packet.');
                 setPacketBusy(false);
@@ -254,6 +344,14 @@ const Vestry = () => {
                 }
             });
             formData.append('order', JSON.stringify(packetItems.map(({ id, label, required }) => ({ id, label, required }))));
+            formData.append(
+                'cached',
+                JSON.stringify(
+                    packetItems
+                        .filter((item) => item.cachedFile?.cacheId)
+                        .map((item) => ({ id: item.id, cacheId: item.cachedFile.cacheId }))
+                )
+            );
 
             const response = await fetch(`${API_URL}/vestry/packet`, {
                 method: 'POST',
@@ -405,15 +503,34 @@ const Vestry = () => {
             const customItems = prev.filter((item) => item.custom);
             const baseItems = BASE_PACKET_DOCS.map((doc) => ({
                 ...doc,
-                file: prevById.get(doc.id)?.file || null
+                file: prevById.get(doc.id)?.file || null,
+                cachedFile: prevById.get(doc.id)?.cachedFile || packetCache[doc.id] || null,
+                uploading: prevById.get(doc.id)?.uploading || false
             }));
             const checklistItemsMapped = packetChecklistDocs.map((doc) => ({
                 ...doc,
-                file: prevById.get(doc.id)?.file || null
+                file: prevById.get(doc.id)?.file || null,
+                cachedFile: prevById.get(doc.id)?.cachedFile || packetCache[doc.id] || null,
+                uploading: prevById.get(doc.id)?.uploading || false
             }));
-            return [...baseItems, ...checklistItemsMapped, ...customItems];
+            const knownIds = new Set([
+                ...baseItems.map((item) => item.id),
+                ...checklistItemsMapped.map((item) => item.id),
+                ...customItems.map((item) => item.id)
+            ]);
+            const cachedCustomItems = Object.keys(packetCache || {})
+                .filter((id) => !knownIds.has(id))
+                .map((id) => ({
+                    id,
+                    label: packetCache[id]?.originalName || 'Additional Document',
+                    required: false,
+                    file: null,
+                    cachedFile: packetCache[id] || null,
+                    custom: true
+                }));
+            return [...baseItems, ...checklistItemsMapped, ...customItems, ...cachedCustomItems];
         });
-    }, [packetChecklistDocs]);
+    }, [packetChecklistDocs, packetCache]);
 
     const checklistGroups = useMemo(() => {
         const phases = ['Pre-Vestry', 'Vestry Package', 'Post-Vestry'];
@@ -610,8 +727,8 @@ const Vestry = () => {
 
     const completedCount = checklistItems.filter((item) => checklistProgress[item.id]).length;
     const requiredDocs = packetItems.filter((item) => item.required);
-    const requiredUploaded = requiredDocs.filter((item) => item.file).length;
-    const optionalUploaded = packetItems.filter((item) => !item.required && item.file).length;
+    const requiredUploaded = requiredDocs.filter((item) => hasPacketFile(item)).length;
+    const optionalUploaded = packetItems.filter((item) => !item.required && hasPacketFile(item)).length;
     const hasQuarterlyInterest = certificateGroups.quarterly.length > 0;
 
     return (
@@ -916,6 +1033,9 @@ const Vestry = () => {
                             <button className="btn-secondary" onClick={addCustomDoc}>
                                 <FaPlus /> Add Document
                             </button>
+                            <button className="btn-secondary" onClick={clearPacketCache} disabled={packetCacheBusy}>
+                                {packetCacheBusy ? 'Clearing...' : 'Clear Cached Files'}
+                            </button>
                             <button className="btn-primary" onClick={buildPacket} disabled={packetBusy}>
                                 {packetBusy ? 'Building...' : 'Build Packet'}
                             </button>
@@ -938,6 +1058,7 @@ const Vestry = () => {
                         </div>
                     </div>
                     {packetError && <div className="alert error">{packetError}</div>}
+                    {packetCacheError && <div className="alert error">{packetCacheError}</div>}
                     <div className="packet-list compact">
                         {packetItems.map((item, index) => (
                             <div
@@ -975,15 +1096,27 @@ const Vestry = () => {
                                     )}
                                     <div className="packet-status">
                                         {item.required && <span className="packet-required">Required</span>}
-                                        <span className={item.file ? 'status-pill ready' : 'status-pill missing'}>
-                                            {item.file ? `Uploaded: ${item.file.name}` : 'No file yet'}
+                                        <span className={hasPacketFile(item) ? 'status-pill ready' : 'status-pill missing'}>
+                                            {item.uploading
+                                                ? 'Uploading...'
+                                                : item.file
+                                                    ? `Uploaded: ${item.file.name}`
+                                                    : item.cachedFile
+                                                        ? `Cached: ${item.cachedFile.originalName || 'document'}`
+                                                        : 'No file yet'}
                                         </span>
                                     </div>
                                 </div>
                                 <input
                                     type="file"
                                     accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                    onChange={(event) => updatePacketItem(item.id, { file: event.target.files?.[0] || null })}
+                                    onChange={(event) => {
+                                        const file = event.target.files?.[0] || null;
+                                        if (file) {
+                                            handlePacketFileUpload(item.id, file);
+                                        }
+                                        event.target.value = '';
+                                    }}
                                 />
                             {item.custom && (
                                 <button className="btn-link" onClick={() => removeCustomDoc(item.id)}>
