@@ -664,6 +664,366 @@ const ensureTasksColumns = () => {
 
 ensureTasksColumns();
 
+function seedTaskEngine() {
+    if (!tableExists('tasks_new') || !tableExists('task_instances') || !tableExists('task_origins')) {
+        return;
+    }
+
+    // Remove legacy placeholder manual tasks (pre-engine).
+    if (tableExists('task_instances') && tableExists('task_origins')) {
+        const legacyManual = db.prepare(`
+            SELECT ti.id, ti.task_id
+            FROM task_instances ti
+            JOIN task_origins o ON o.scope = 'instance' AND o.task_instance_id = ti.id
+            WHERE ti.generated_from = 'legacy_import' AND o.origin_type = 'manual'
+        `).all();
+        legacyManual.forEach((row) => {
+            deleteTaskInstance(row.id);
+        });
+    }
+
+    // Seed open ticket tasks (if none exist for the ticket).
+    const openTickets = db.prepare(`
+        SELECT id, title, status, created_at
+        FROM tickets
+        WHERE status != 'closed'
+    `).all();
+    openTickets.forEach((ticket) => {
+        const existing = db.prepare(`
+            SELECT 1
+            FROM task_origins o
+            JOIN task_instances ti ON ti.id = o.task_instance_id
+            WHERE o.origin_type = 'ticket' AND o.origin_id = ?
+              AND ti.state != 'done'
+            LIMIT 1
+        `).get(ticket.id);
+        if (existing) return;
+        createTaskInstance({
+            title: `Resolve ticket: ${ticket.title}`,
+            taskType: 'support',
+            priorityBase: getDefaultPriorityBase('support'),
+            dueAt: null,
+            originType: 'ticket',
+            originId: ticket.id,
+            originEvent: 'ticket',
+            generationKey: `ticket:${ticket.id}:resolve`
+        });
+    });
+
+    // Seed vestry checklist tasks for current month.
+    if (tableExists('vestry_checklist')) {
+        const now = new Date();
+        const month = now.getMonth() + 1;
+        const year = now.getFullYear();
+        const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+        const checklist = db.prepare(`
+            SELECT id, task, phase
+            FROM vestry_checklist
+            WHERE month = ?
+            ORDER BY sort_order, id
+        `).all(month);
+        checklist.forEach((item) => {
+            createTaskInstance({
+                title: item.task,
+                taskType: 'vestry',
+                priorityBase: getDefaultPriorityBase('vestry'),
+                dueAt: null,
+                originType: 'vestry',
+                originId: monthKey,
+                originEvent: item.phase || 'checklist',
+                generationKey: `vestry:${monthKey}:${item.id}`
+            });
+        });
+    }
+
+    // Seed Sunday planner tasks for upcoming Sundays.
+    if (tableExists('liturgical_days')) {
+        const upcomingSundays = db.prepare(`
+            SELECT date
+            FROM liturgical_days
+            WHERE date >= date('now') AND strftime('%w', date) = '0'
+            ORDER BY date
+            LIMIT 4
+        `).all().map((row) => row.date);
+        const sundayTasks = [
+            { key: 'livestream_setup', title: 'Livestream setup' },
+            { key: 'bulletin_uploaded', title: 'Bulletin uploaded' },
+            { key: 'email_created', title: 'Email created' },
+            { key: 'email_scheduled', title: 'Email scheduled' },
+            { key: 'email_sent', title: 'Email sent' }
+        ];
+        upcomingSundays.forEach((dateKey) => {
+            sundayTasks.forEach((task) => {
+                createTaskInstance({
+                    title: task.title,
+                    taskType: 'bulletin',
+                    priorityBase: getDefaultPriorityBase('bulletin'),
+                    dueAt: dateKey,
+                    originType: 'sunday',
+                    originId: dateKey,
+                    originEvent: 'planner',
+                    generationKey: `sunday:${dateKey}:${task.key}`
+                });
+            });
+        });
+    }
+
+    // Seed communications checklist tasks (bulletins + weekly email).
+    const commsTasks = [
+        { originId: 'bulletins', taskType: 'bulletin', title: 'Collect scripture readings' },
+        { originId: 'bulletins', taskType: 'bulletin', title: 'Select hymns with Music Director' },
+        { originId: 'bulletins', taskType: 'bulletin', title: 'Draft 8am Service' },
+        { originId: 'bulletins', taskType: 'bulletin', title: 'Draft 10am Service' },
+        { originId: 'bulletins', taskType: 'bulletin', title: 'Print Inserts' },
+        { originId: 'bulletins', taskType: 'bulletin', title: 'Print & fold Bulletins' },
+        { originId: 'bulletins', taskType: 'bulletin', title: 'Stuff inserts' },
+        { originId: 'bulletins', taskType: 'bulletin', title: 'Place in Narthex' },
+        { originId: 'weekly-email', taskType: 'bulletin', title: 'Collect announcements' },
+        { originId: 'weekly-email', taskType: 'bulletin', title: "Write Rector's corner" },
+        { originId: 'weekly-email', taskType: 'bulletin', title: 'Update calendar section' },
+        { originId: 'weekly-email', taskType: 'bulletin', title: 'Proofread' },
+        { originId: 'weekly-email', taskType: 'bulletin', title: 'Schedule/Send via Constant Contact' }
+    ];
+    commsTasks.forEach((task) => {
+        createTaskInstance({
+            title: task.title,
+            taskType: task.taskType,
+            priorityBase: getDefaultPriorityBase('bulletin'),
+            originType: 'communications',
+            originId: task.originId,
+            originEvent: 'checklist',
+            generationKey: `communications:${task.originId}:${task.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+        });
+    });
+}
+
+const DEFAULT_TASK_PRIORITY_BY_TYPE = {
+    support: 60,
+    bulletin: 70,
+    inventory: 50,
+    cleanup: 30,
+    vestry: 60
+};
+
+const getPriorityPolicy = (taskType) => {
+    if (!taskType) return null;
+    const table = sqlite.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_priority_policy'
+    `).get();
+    if (!table) return null;
+    return sqlite.prepare('SELECT * FROM task_priority_policy WHERE task_type = ?').get(taskType) || null;
+};
+
+const getDefaultPriorityBase = (taskType) => {
+    const policy = getPriorityPolicy(taskType);
+    if (policy && Number.isFinite(Number(policy.default_priority_base))) {
+        return Number(policy.default_priority_base);
+    }
+    if (taskType && Object.prototype.hasOwnProperty.call(DEFAULT_TASK_PRIORITY_BY_TYPE, taskType)) {
+        return DEFAULT_TASK_PRIORITY_BY_TYPE[taskType];
+    }
+    return 50;
+};
+
+const toEntityLinkId = (fromType, fromId, toType, toId, role) => {
+    const safe = (value) => String(value || '').replace(/[^a-z0-9-_]/gi, '').slice(0, 40);
+    return `link-${safe(fromType)}-${safe(fromId)}-${safe(toType)}-${safe(toId)}-${safe(role || 'rel')}`;
+};
+
+const upsertEntityLink = (payload) => {
+    const {
+        fromType,
+        fromId,
+        toType,
+        toId,
+        role,
+        metaJson = null,
+        createdAt = new Date().toISOString()
+    } = payload || {};
+    if (!fromType || !fromId || !toType || !toId) return null;
+    const id = payload?.id || toEntityLinkId(fromType, fromId, toType, toId, role);
+    sqlite.prepare(`
+        INSERT OR IGNORE INTO entity_links (
+            id, from_type, from_id, to_type, to_id, role, created_at, meta_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, fromType, fromId, toType, toId, role || null, createdAt, metaJson);
+    return id;
+};
+
+const deleteEntityLinks = ({ fromType, fromId, role }) => {
+    sqlite.prepare(`
+        DELETE FROM entity_links
+        WHERE from_type = ? AND from_id = ? AND (? IS NULL OR role = ?)
+    `).run(fromType, fromId, role || null, role || null);
+};
+
+const tableExists = (name) => {
+    return !!sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+    `).get(name);
+};
+
+const createTaskInstance = (payload) => {
+    const {
+        title,
+        taskType = null,
+        priorityBase = 50,
+        dueAt = null,
+        slaTargetAt = null,
+        originType,
+        originId,
+        originEvent = 'seed',
+        generationKey
+    } = payload || {};
+    if (!title || !originType || !originId || !generationKey) return null;
+    if (db.prepare('SELECT 1 FROM task_instances WHERE generation_key = ?').get(generationKey)) {
+        return null;
+    }
+    const now = new Date().toISOString();
+    const taskId = `taskdef-${randomUUID()}`;
+    const taskInstanceId = `taskinst-${randomUUID()}`;
+
+    db.prepare(`
+        INSERT INTO tasks_new (
+            id, title, description, status, priority_base, task_type, due_mode,
+            default_duration_min, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        taskId,
+        title,
+        null,
+        'active',
+        priorityBase,
+        taskType,
+        'floating',
+        null,
+        now,
+        now
+    );
+
+    db.prepare(`
+        INSERT INTO task_instances (
+            id, task_id, state, due_at, start_at, completed_at, generated_from,
+            generation_key, priority_override, rank, sla_target_at, blocked
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        taskInstanceId,
+        taskId,
+        'open',
+        dueAt,
+        null,
+        null,
+        'seed',
+        generationKey,
+        null,
+        null,
+        slaTargetAt,
+        0
+    );
+
+    const existingOrigin = db.prepare(`
+        SELECT id FROM task_origins
+        WHERE scope = 'instance'
+          AND origin_type = ?
+          AND origin_id = ?
+          AND origin_event = ?
+        LIMIT 1
+    `).get(originType, originId, originEvent);
+    if (!existingOrigin) {
+        db.prepare(`
+            INSERT INTO task_origins (
+                id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            `origin-${taskInstanceId}`,
+            'instance',
+            taskId,
+            taskInstanceId,
+            originType,
+            originId,
+            originEvent,
+            now
+        );
+    }
+
+    upsertEntityLink({
+        fromType: 'task_instance',
+        fromId: taskInstanceId,
+        toType: originType,
+        toId: originId,
+        role: 'source',
+        metaJson: JSON.stringify({ origin_event: originEvent })
+    });
+
+    return taskInstanceId;
+};
+
+seedTaskEngine();
+
+const formatTaskInstanceRow = (row) => {
+    const effectivePriority = computeEffectivePriority(
+        row.priority_base,
+        row.priority_override,
+        row.due_at,
+        row.sla_target_at
+    );
+    const tier = getPriorityTier(effectivePriority);
+    const completed = row.instance_state === 'done' || row.completed_at != null;
+    const rawState = row.instance_state || 'open';
+    const normalizedState = row.blocked && rawState !== 'done' ? 'blocked' : rawState;
+    return {
+        id: row.task_instance_id,
+        task_id: row.task_id,
+        text: row.title,
+        description: row.description || '',
+        completed,
+        created_at: row.task_created_at || row.created_at || null,
+        completed_at: row.completed_at || null,
+        due_at: row.due_at || null,
+        sla_target_at: row.sla_target_at || null,
+        start_at: row.start_at || null,
+        state: normalizedState,
+        blocked: !!row.blocked || row.instance_state === 'blocked',
+        priority_base: Number.isFinite(Number(row.priority_base)) ? Number(row.priority_base) : 50,
+        priority_override: row.priority_override != null ? Number(row.priority_override) : null,
+        priority_effective: effectivePriority,
+        priority_tier: tier,
+        rank: row.rank != null ? Number(row.rank) : null,
+        task_type: row.task_type || null,
+        origin_type: row.origin_type || null,
+        origin_id: row.origin_id || null,
+        origin_event: row.origin_event || null,
+        ticket_id: row.origin_type === 'ticket' ? row.origin_id : null,
+        ticket_title: row.ticket_title || ''
+    };
+};
+
+const sortTasksByPriority = (tasks) => {
+    const stateOrder = {
+        open: 0,
+        in_progress: 1,
+        blocked: 2,
+        done: 3
+    };
+    return [...tasks].sort((a, b) => {
+        const stateA = stateOrder[a.state] ?? 99;
+        const stateB = stateOrder[b.state] ?? 99;
+        if (stateA !== stateB) return stateA - stateB;
+        const rankA = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
+        const rankB = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
+        if (rankA !== rankB) return rankA - rankB;
+        if (a.priority_effective !== b.priority_effective) {
+            return b.priority_effective - a.priority_effective;
+        }
+        const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
+        const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+        if (dueA !== dueB) return dueA - dueB;
+        const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return createdA - createdB;
+    });
+};
+
 const normalizeName = (name = '') => name.trim().replace(/\s+/g, ' ');
 const slugifyName = (name) => normalizeName(name).toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
@@ -756,6 +1116,50 @@ const normalizePersonName = (value) => {
         .replace(/[^a-z0-9]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
+};
+
+const clampPriority = (value) => {
+    if (!Number.isFinite(value)) return 0;
+    return Math.min(100, Math.max(0, Math.round(value)));
+};
+
+const getDueDate = (dueAt, slaTargetAt) => {
+    const raw = dueAt || slaTargetAt;
+    if (!raw) return null;
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return null;
+    return date;
+};
+
+const getUrgencyAdjustment = (dueAt, slaTargetAt, now = new Date()) => {
+    const dueDate = getDueDate(dueAt, slaTargetAt);
+    if (!dueDate) return 0;
+    const diffMs = dueDate.getTime() - now.getTime();
+    const daysToDue = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    if (daysToDue < 0) return 40;
+    if (daysToDue === 0) return 25;
+    if (daysToDue === 1) return 15;
+    if (daysToDue <= 3) return 8;
+    if (daysToDue <= 7) return 3;
+    return 0;
+};
+
+const computeEffectivePriority = (priorityBase, priorityOverride, dueAt, slaTargetAt) => {
+    if (priorityOverride != null && priorityOverride !== '') {
+        return clampPriority(Number(priorityOverride));
+    }
+    const base = Number.isFinite(Number(priorityBase)) ? Number(priorityBase) : 50;
+    const adjustment = getUrgencyAdjustment(dueAt, slaTargetAt);
+    return clampPriority(base + adjustment);
+};
+
+const getPriorityTier = (score) => {
+    const value = clampPriority(score);
+    if (value >= 80) return 'Critical';
+    if (value >= 60) return 'High';
+    if (value >= 40) return 'Normal';
+    if (value >= 20) return 'Low';
+    return 'Someday';
 };
 
 const DEFAULT_LOCATION_BY_TIME = {
@@ -2485,15 +2889,130 @@ app.delete('/api/buildings/:id', (req, res) => {
 
 // --- Tickets & Tasks ---
 
+const getTicketAreaIds = (ticketId) => {
+    if (!tableExists('entity_links')) {
+        return db.prepare('SELECT area_id FROM ticket_areas WHERE ticket_id = ?').all(ticketId).map((r) => r.area_id);
+    }
+    const linkRows = db.prepare(`
+        SELECT to_id FROM entity_links
+        WHERE from_type = 'ticket' AND from_id = ? AND role = 'location'
+    `).all(ticketId);
+    if (linkRows.length) {
+        return linkRows.map((row) => row.to_id);
+    }
+    return db.prepare('SELECT area_id FROM ticket_areas WHERE ticket_id = ?').all(ticketId).map((r) => r.area_id);
+};
+
+const setTicketAreas = (ticketId, areaIds = []) => {
+    deleteEntityLinks({ fromType: 'ticket', fromId: ticketId, role: 'location' });
+    db.prepare('DELETE FROM ticket_areas WHERE ticket_id = ?').run(ticketId);
+    const insertArea = db.prepare('INSERT OR IGNORE INTO ticket_areas (ticket_id, area_id) VALUES (?, ?)');
+    areaIds.forEach((areaId) => {
+        if (!areaId) return;
+        upsertEntityLink({
+            fromType: 'ticket',
+            fromId: ticketId,
+            toType: 'area',
+            toId: areaId,
+            role: 'location'
+        });
+        insertArea.run(ticketId, areaId);
+    });
+};
+
+const listTaskInstances = (whereClause, params = []) => {
+    if (!tableExists('task_instances') || !tableExists('tasks_new')) {
+        const legacyRows = db.prepare(`
+            SELECT tasks.*, tickets.title AS ticket_title
+            FROM tasks
+            LEFT JOIN tickets ON tasks.ticket_id = tickets.id
+            ORDER BY tasks.created_at DESC
+        `).all();
+        return legacyRows.map((row) => ({
+            id: row.id,
+            task_id: row.id,
+            text: row.text,
+            description: '',
+            completed: !!row.completed,
+            created_at: row.created_at,
+            completed_at: row.completed_at || null,
+            due_at: null,
+            sla_target_at: null,
+            start_at: null,
+            state: row.completed ? 'done' : 'open',
+            blocked: false,
+            priority_base: 50,
+            priority_override: null,
+            priority_effective: 50,
+            priority_tier: getPriorityTier(50),
+            rank: null,
+            task_type: null,
+            origin_type: row.ticket_id ? 'ticket' : 'manual',
+            origin_id: row.ticket_id || 'manual',
+            origin_event: 'legacy',
+            ticket_id: row.ticket_id || null,
+            ticket_title: row.ticket_title || ''
+        }));
+    }
+    const rows = db.prepare(`
+        SELECT
+            ti.id AS task_instance_id,
+            t.id AS task_id,
+            t.title,
+            t.description,
+            t.status AS task_status,
+            ti.state AS instance_state,
+            ti.due_at,
+            ti.start_at,
+            ti.completed_at,
+            ti.priority_override,
+            t.priority_base,
+            t.task_type,
+            ti.rank,
+            ti.sla_target_at,
+            ti.blocked,
+            src.origin_type,
+            src.origin_id,
+            src.origin_event,
+            t.created_at AS task_created_at,
+            tickets.title AS ticket_title
+        FROM task_instances ti
+        JOIN tasks_new t ON t.id = ti.task_id
+        LEFT JOIN view_task_source src ON src.task_instance_id = ti.id
+        LEFT JOIN tickets ON src.origin_type = 'ticket' AND src.origin_id = tickets.id
+        ${whereClause}
+    `).all(...params);
+    return rows.map(formatTaskInstanceRow);
+};
+
+const deleteTaskInstance = (taskInstanceId) => {
+    const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
+    if (!row) return false;
+    db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
+    db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
+    db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
+    const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
+    if (!remaining) {
+        db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
+        db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
+    }
+    return true;
+};
+
 const buildTicketResponse = (ticketRow) => {
-    const areas = db.prepare('SELECT area_id FROM ticket_areas WHERE ticket_id = ?').all(ticketRow.id).map(r => r.area_id);
-    const tasks = db.prepare('SELECT * FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC').all(ticketRow.id).map(task => ({
+    const areas = getTicketAreaIds(ticketRow.id);
+    const tasks = listTaskInstances(
+        `WHERE src.origin_type = 'ticket' AND src.origin_id = ? ORDER BY t.created_at DESC`,
+        [ticketRow.id]
+    ).map((task) => ({
         id: task.id,
         ticket_id: task.ticket_id,
         text: task.text,
-        completed: !!task.completed,
+        completed: task.completed,
         created_at: task.created_at,
-        completed_at: task.completed_at || null
+        completed_at: task.completed_at || null,
+        priority_effective: task.priority_effective,
+        priority_tier: task.priority_tier
     }));
 
     return {
@@ -2559,11 +3078,8 @@ app.post('/api/tickets', (req, res) => {
         now
     );
 
-    const insertArea = db.prepare('INSERT OR IGNORE INTO ticket_areas (ticket_id, area_id) VALUES (?, ?)');
     if (Array.isArray(area_ids)) {
-        area_ids.forEach(areaId => {
-            if (areaId) insertArea.run(id, areaId);
-        });
+        setTicketAreas(id, area_ids);
     }
 
     const row = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
@@ -2614,11 +3130,7 @@ app.put('/api/tickets/:id', (req, res) => {
     );
 
     if (Array.isArray(area_ids)) {
-        db.prepare('DELETE FROM ticket_areas WHERE ticket_id = ?').run(id);
-        const insertArea = db.prepare('INSERT OR IGNORE INTO ticket_areas (ticket_id, area_id) VALUES (?, ?)');
-        area_ids.forEach(areaId => {
-            if (areaId) insertArea.run(id, areaId);
-        });
+        setTicketAreas(id, area_ids);
     }
 
     const row = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
@@ -2628,7 +3140,14 @@ app.put('/api/tickets/:id', (req, res) => {
 app.delete('/api/tickets/:id', (req, res) => {
     const { id } = req.params;
     db.prepare('DELETE FROM ticket_areas WHERE ticket_id = ?').run(id);
-    db.prepare('DELETE FROM tasks WHERE ticket_id = ?').run(id);
+    deleteEntityLinks({ fromType: 'ticket', fromId: id, role: 'location' });
+    const ticketTasks = listTaskInstances(
+        `WHERE src.origin_type = 'ticket' AND src.origin_id = ?`,
+        [id]
+    );
+    ticketTasks.forEach((task) => {
+        deleteTaskInstance(task.id);
+    });
     const result = db.prepare('DELETE FROM tickets WHERE id = ?').run(id);
     if (result.changes === 0) {
         return res.status(404).json({ error: 'Ticket not found' });
@@ -2637,26 +3156,59 @@ app.delete('/api/tickets/:id', (req, res) => {
 });
 
 app.get('/api/tasks', (req, res) => {
-    const rows = db.prepare(`
-        SELECT tasks.*, tickets.title as ticket_title
-        FROM tasks
-        LEFT JOIN tickets ON tasks.ticket_id = tickets.id
-        ORDER BY tasks.created_at DESC
-    `).all();
-    const tasks = rows.map(row => ({
-        id: row.id,
-        ticket_id: row.ticket_id,
-        ticket_title: row.ticket_title || '',
-        text: row.text,
-        completed: !!row.completed,
-        created_at: row.created_at,
-        completed_at: row.completed_at || null
-    }));
+    const originType = String(req.query.origin_type || '').trim();
+    const originId = String(req.query.origin_id || '').trim();
+    const whereClause = originType && originId
+        ? `WHERE src.origin_type = ? AND src.origin_id = ?`
+        : '';
+    const rows = listTaskInstances(whereClause, originType && originId ? [originType, originId] : []);
+    const tasks = sortTasksByPriority(rows);
     res.json(tasks);
 });
 
 app.post('/api/tasks', (req, res) => {
-    const { text, ticket_id = null } = req.body || {};
+    if (!tableExists('task_instances') || !tableExists('tasks_new')) {
+        const { text, ticket_id = null } = req.body || {};
+        const normalizedText = normalizeName(text);
+        if (!normalizedText) {
+            return res.status(400).json({ error: 'Task text is required' });
+        }
+        if (ticket_id) {
+            const ticketExists = db.prepare('SELECT 1 FROM tickets WHERE id = ?').get(ticket_id);
+            if (!ticketExists) {
+                return res.status(400).json({ error: 'Ticket not found' });
+            }
+        }
+        const id = ensureUniqueId(`task-${Date.now()}`, 'tasks');
+        const createdAt = new Date().toISOString();
+        db.prepare(`
+            INSERT INTO tasks (id, ticket_id, text, completed, created_at)
+            VALUES (?, ?, ?, 0, ?)
+        `).run(id, ticket_id, normalizedText, createdAt);
+        return res.status(201).json({
+            id,
+            ticket_id,
+            text: normalizedText,
+            completed: false,
+            created_at: createdAt,
+            completed_at: null
+        });
+    }
+    const {
+        text,
+        ticket_id = null,
+        source_type = null,
+        source_id = null,
+        source_event = null,
+        task_type = null,
+        priority_base = null,
+        priority_override = null,
+        due_at = null,
+        sla_target_at = null,
+        rank = null,
+        state = null,
+        blocked = 0
+    } = req.body || {};
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
         return res.status(400).json({ error: 'Task text is required' });
@@ -2669,55 +3221,266 @@ app.post('/api/tasks', (req, res) => {
         }
     }
 
-    const id = ensureUniqueId(`task-${Date.now()}`, 'tasks');
-    const createdAt = new Date().toISOString();
-    db.prepare(`
-        INSERT INTO tasks (id, ticket_id, text, completed, created_at)
-        VALUES (?, ?, ?, 0, ?)
-    `).run(id, ticket_id, normalizedText, createdAt);
+    const now = new Date().toISOString();
+    const taskType = task_type || (ticket_id ? 'support' : null);
+    const basePriority = Number.isFinite(Number(priority_base))
+        ? Number(priority_base)
+        : getDefaultPriorityBase(taskType);
+    const taskId = `taskdef-${randomUUID()}`;
+    const taskInstanceId = `taskinst-${randomUUID()}`;
+    const computedState = state || (Number(blocked) ? 'blocked' : 'open');
 
-    res.status(201).json({
-        id,
-        ticket_id,
-        text: normalizedText,
-        completed: false,
-        created_at: createdAt,
-        completed_at: null
+    db.prepare(`
+        INSERT INTO tasks_new (
+            id, title, description, status, priority_base, task_type, due_mode,
+            default_duration_min, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        taskId,
+        normalizedText,
+        null,
+        'active',
+        basePriority,
+        taskType,
+        'floating',
+        null,
+        now,
+        now
+    );
+
+    db.prepare(`
+        INSERT INTO task_instances (
+            id, task_id, state, due_at, start_at, completed_at, generated_from,
+            generation_key, priority_override, rank, sla_target_at, blocked
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        taskInstanceId,
+        taskId,
+        computedState,
+        due_at,
+        null,
+        null,
+        ticket_id ? 'ticket' : 'manual',
+        null,
+        priority_override,
+        rank,
+        sla_target_at,
+        Number(blocked) ? 1 : 0
+    );
+
+    const originType = source_type || (ticket_id ? 'ticket' : 'manual');
+    const originId = source_id || (ticket_id ? ticket_id : 'manual');
+    const originEvent = source_event || 'created';
+    const originIdValue = `origin-${taskInstanceId}`;
+    db.prepare(`
+        INSERT INTO task_origins (
+            id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        originIdValue,
+        'instance',
+        taskId,
+        taskInstanceId,
+        originType,
+        originId,
+        originEvent,
+        now
+    );
+
+    upsertEntityLink({
+        fromType: 'task_instance',
+        fromId: taskInstanceId,
+        toType: originType,
+        toId: originId,
+        role: 'source',
+        metaJson: JSON.stringify({ origin_event: originEvent })
     });
+
+    const [created] = listTaskInstances('WHERE ti.id = ?', [taskInstanceId]);
+    res.status(201).json(created);
 });
 
 app.put('/api/tasks/:id', (req, res) => {
     const { id } = req.params;
-    const existing = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+    if (!tableExists('task_instances') || !tableExists('tasks_new')) {
+        const existing = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+        if (!existing) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        const { text = existing.text, completed = existing.completed } = req.body || {};
+        const normalizedText = normalizeName(text);
+        if (!normalizedText) {
+            return res.status(400).json({ error: 'Task text is required' });
+        }
+        const completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
+        db.prepare('UPDATE tasks SET text = ?, completed = ?, completed_at = ? WHERE id = ?')
+            .run(normalizedText, completed ? 1 : 0, completedAt, id);
+        return res.json({
+            id,
+            ticket_id: existing.ticket_id,
+            text: normalizedText,
+            completed: !!completed,
+            created_at: existing.created_at,
+            completed_at: completedAt
+        });
+    }
+    const existing = db.prepare(`
+        SELECT ti.*, t.title, t.task_type, t.priority_base
+        FROM task_instances ti
+        JOIN tasks_new t ON t.id = ti.task_id
+        WHERE ti.id = ?
+    `).get(id);
     if (!existing) {
         return res.status(404).json({ error: 'Task not found' });
     }
 
-    const { text = existing.text, completed = existing.completed } = req.body || {};
+    const {
+        text = existing.title,
+        completed = existing.state === 'done',
+        priority_override = existing.priority_override,
+        due_at = existing.due_at,
+        sla_target_at = existing.sla_target_at,
+        rank = existing.rank,
+        blocked = existing.blocked
+    } = req.body || {};
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
         return res.status(400).json({ error: 'Task text is required' });
     }
 
     const completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
-    db.prepare('UPDATE tasks SET text = ?, completed = ?, completed_at = ? WHERE id = ?')
-        .run(normalizedText, completed ? 1 : 0, completedAt, id);
+    const nextState = completed ? 'done' : (Number(blocked) ? 'blocked' : 'open');
 
-    res.json({
-        id,
-        ticket_id: existing.ticket_id,
-        text: normalizedText,
-        completed: !!completed,
-        created_at: existing.created_at,
-        completed_at: completedAt
-    });
+    db.prepare(`
+        UPDATE tasks_new SET title = ?, updated_at = ?
+        WHERE id = ?
+    `).run(normalizedText, new Date().toISOString(), existing.task_id);
+
+    db.prepare(`
+        UPDATE task_instances SET
+            state = ?,
+            due_at = ?,
+            sla_target_at = ?,
+            priority_override = ?,
+            rank = ?,
+            blocked = ?,
+            completed_at = ?
+        WHERE id = ?
+    `).run(
+        nextState,
+        due_at,
+        sla_target_at,
+        priority_override,
+        rank,
+        Number(blocked) ? 1 : 0,
+        completedAt,
+        id
+    );
+
+    const [updated] = listTaskInstances('WHERE ti.id = ?', [id]);
+    res.json(updated);
 });
 
 app.delete('/api/tasks/:id', (req, res) => {
     const { id } = req.params;
-    const result = db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
-    if (result.changes === 0) {
+    if (!tableExists('task_instances') || !tableExists('tasks_new')) {
+        const result = db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+        if (!result.changes) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        return res.json({ success: true });
+    }
+    const ok = deleteTaskInstance(id);
+    if (!ok) {
         return res.status(404).json({ error: 'Task not found' });
+    }
+    res.json({ success: true });
+});
+
+// --- Entity Links ---
+
+app.get('/api/links', (req, res) => {
+    const {
+        from_type,
+        from_id,
+        to_type,
+        to_id,
+        role
+    } = req.query || {};
+    const filters = [];
+    const params = [];
+    if (from_type) {
+        filters.push('from_type = ?');
+        params.push(from_type);
+    }
+    if (from_id) {
+        filters.push('from_id = ?');
+        params.push(from_id);
+    }
+    if (to_type) {
+        filters.push('to_type = ?');
+        params.push(to_type);
+    }
+    if (to_id) {
+        filters.push('to_id = ?');
+        params.push(to_id);
+    }
+    if (role) {
+        filters.push('role = ?');
+        params.push(role);
+    }
+    const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const rows = db.prepare(`
+        SELECT id, from_type, from_id, to_type, to_id, role, created_at, meta_json
+        FROM entity_links
+        ${whereClause}
+        ORDER BY created_at DESC
+    `).all(...params);
+    res.json(rows);
+});
+
+app.post('/api/links', (req, res) => {
+    const {
+        id,
+        from_type,
+        from_id,
+        to_type,
+        to_id,
+        role = null,
+        meta = null
+    } = req.body || {};
+    if (!from_type || !from_id || !to_type || !to_id) {
+        return res.status(400).json({ error: 'from_type, from_id, to_type, and to_id are required' });
+    }
+    const createdAt = new Date().toISOString();
+    const metaJson = meta ? JSON.stringify(meta) : null;
+    const linkId = upsertEntityLink({
+        id,
+        fromType: from_type,
+        fromId: from_id,
+        toType: to_type,
+        toId: to_id,
+        role,
+        createdAt,
+        metaJson
+    });
+    res.status(201).json({
+        id: linkId,
+        from_type,
+        from_id,
+        to_type,
+        to_id,
+        role,
+        created_at: createdAt,
+        meta_json: metaJson
+    });
+});
+
+app.delete('/api/links/:id', (req, res) => {
+    const { id } = req.params;
+    const result = db.prepare('DELETE FROM entity_links WHERE id = ?').run(id);
+    if (!result.changes) {
+        return res.status(404).json({ error: 'Link not found' });
     }
     res.json({ success: true });
 });

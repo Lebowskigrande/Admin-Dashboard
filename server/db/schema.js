@@ -148,3 +148,52 @@ export const assignments = sqliteTable('assignments', {
     roleKey: text('role_key').notNull(),
     personId: text('person_id').notNull()
 });
+
+export const tasksNew = sqliteTable('tasks_new', {
+    id: text('id').primaryKey(),
+    title: text('title').notNull(),
+    description: text('description'),
+    status: text('status').notNull().default('active'),
+    priorityBase: integer('priority_base').notNull().default(50),
+    taskType: text('task_type'),
+    dueMode: text('due_mode').notNull().default('floating'),
+    defaultDurationMin: integer('default_duration_min'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull()
+});
+
+export const taskInstances = sqliteTable('task_instances', {
+    id: text('id').primaryKey(),
+    taskId: text('task_id').notNull(),
+    state: text('state').notNull().default('open'),
+    dueAt: text('due_at'),
+    startAt: text('start_at'),
+    completedAt: text('completed_at'),
+    generatedFrom: text('generated_from'),
+    generationKey: text('generation_key'),
+    priorityOverride: integer('priority_override'),
+    rank: integer('rank'),
+    slaTargetAt: text('sla_target_at'),
+    blocked: integer('blocked').notNull().default(0)
+});
+
+export const entityLinks = sqliteTable('entity_links', {
+    id: text('id').primaryKey(),
+    fromType: text('from_type').notNull(),
+    fromId: text('from_id').notNull(),
+    toType: text('to_type').notNull(),
+    toId: text('to_id').notNull(),
+    role: text('role'),
+    createdAt: text('created_at').notNull(),
+    metaJson: text('meta_json')
+});
+
+export const taskPriorityPolicy = sqliteTable('task_priority_policy', {
+    id: text('id').primaryKey(),
+    taskType: text('task_type').unique(),
+    defaultPriorityBase: integer('default_priority_base'),
+    overdueBoost: integer('overdue_boost'),
+    dueTodayBoost: integer('due_today_boost'),
+    dueSoonBoost: integer('due_soon_boost'),
+    noDueBoost: integer('no_due_boost')
+});

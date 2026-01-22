@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Card from '../components/Card';
 import { format, isSameDay, addDays, startOfDay } from 'date-fns';
-import AtAGlance from '../components/AtAGlance';
 import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
 import { MAP_AREAS } from '../data/areas';
@@ -301,13 +300,59 @@ const Dashboard = () => {
         })
     ), [events, today]);
 
-    const openTickets = useMemo(() => (
-        tickets.filter((ticket) => ticket.status !== 'closed')
-    ), [tickets]);
-
-    const currentTasks = useMemo(() => (
-        tasks.filter((task) => !task.completed).slice(0, 8)
+    const taskList = useMemo(() => (
+        tasks.filter((task) => !task.completed)
     ), [tasks]);
+
+    const [selectedTaskId, setSelectedTaskId] = useState('');
+
+    useEffect(() => {
+        if (taskList.length && !selectedTaskId) {
+            setSelectedTaskId(taskList[0].id);
+        }
+    }, [taskList, selectedTaskId]);
+
+    const selectedTask = useMemo(() => (
+        taskList.find((task) => task.id === selectedTaskId) || null
+    ), [taskList, selectedTaskId]);
+
+    const originTasks = useMemo(() => {
+        if (!selectedTask?.origin_type || !selectedTask?.origin_id) return [];
+        return taskList.filter((task) => (
+            task.origin_type === selectedTask.origin_type && task.origin_id === selectedTask.origin_id
+        ));
+    }, [taskList, selectedTask]);
+
+    const selectedTicket = useMemo(() => {
+        if (selectedTask?.origin_type !== 'ticket') return null;
+        return tickets.find((ticket) => ticket.id === selectedTask.origin_id) || null;
+    }, [tickets, selectedTask]);
+
+    const formatPriorityLabel = useCallback((task) => {
+        const tier = task?.priority_tier || 'Normal';
+        return tier;
+    }, []);
+
+    const getPriorityClass = useCallback((task) => {
+        const tier = (task?.priority_tier || '').toLowerCase();
+        if (tier === 'critical') return 'priority-critical';
+        if (tier === 'high') return 'priority-high';
+        if (tier === 'low') return 'priority-low';
+        if (tier === 'someday') return 'priority-someday';
+        return 'priority-normal';
+    }, []);
+
+    const formatOriginLabel = useCallback((task) => {
+        if (!task?.origin_type) return 'Task Origin';
+        if (task.origin_type === 'sunday') return 'Sunday Planner';
+        if (task.origin_type === 'vestry') return 'Vestry';
+        if (task.origin_type === 'communications') {
+            if (task.origin_id === 'bulletins') return 'Bulletins Checklist';
+            if (task.origin_id === 'weekly-email') return 'Weekly Email Checklist';
+            return 'Communications';
+        }
+        return task.origin_type;
+    }, []);
 
     const getTicketStatusClass = useCallback((status) => {
         const normalized = (status || '').toLowerCase().replace(/\s+/g, '_');
@@ -488,73 +533,37 @@ const Dashboard = () => {
                     </Card>
                     <Card className="dashboard-card">
                     <div className="dashboard-card-header badge-corner">
-                        <h2>Open Tickets</h2>
-                        <span className="count-badge" aria-label={`${openTickets.length} open tickets`}>
-                            {openTickets.length}
-                        </span>
-                    </div>
-                    {ticketsLoading ? (
-                        <p className="loading-text">Loading tickets...</p>
-                    ) : openTickets.length === 0 ? (
-                        <p className="no-events">No open tickets.</p>
-                    ) : (
-                        <div className="dashboard-ticket-list">
-                            {openTickets.map((ticket) => {
-                                const areaId = (ticket.areas || [])[0];
-                                const areaLabel = areaById[areaId]?.name || areaId || 'General';
-                                return (
-                                    <button
-                                        key={ticket.id}
-                                        type="button"
-                                        className="ticket-row"
-                                        onClick={() => navigate(`/buildings?ticket=${ticket.id}`)}
-                                    >
-                                        <div className="ticket-row-header">
-                                            <div className="ticket-row-main">
-                                                <h4>{ticket.title}</h4>
-                                                <span className="ticket-area-chip pill pill-neutral">{areaLabel}</span>
-                                            </div>
-                                            <span className={`ticket-status pill ${getTicketStatusClass(ticket.status)}`}>
-                                                {ticket.status.replace('_', ' ')}
-                                            </span>
-                                        </div>
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    )}
-                </Card>
-
-                    <Card className="dashboard-card">
-                    <div className="dashboard-card-header badge-corner">
-                        <h2>Current Tasks</h2>
-                        <span className="count-badge" aria-label={`${currentTasks.length} current tasks`}>
-                            {currentTasks.length}
+                        <h2>Task List</h2>
+                        <span className="count-badge" aria-label={`${taskList.length} tasks`}>
+                            {taskList.length}
                         </span>
                     </div>
                     {tasksLoading ? (
                         <p className="loading-text">Loading tasks...</p>
-                    ) : currentTasks.length === 0 ? (
+                    ) : taskList.length === 0 ? (
                         <p className="no-events">No active tasks.</p>
                     ) : (
                         <div className="dashboard-ticket-list dashboard-task-list">
-                            {currentTasks.map((task) => (
+                            {taskList.map((task) => (
                                 <button
                                     key={task.id}
                                     type="button"
-                                    className="ticket-row"
-                                    onClick={() => {
-                                        if (task.ticket_id) {
-                                            navigate(`/buildings?ticket=${task.ticket_id}#ticket-tasks`);
-                                        }
-                                    }}
-                                    disabled={!task.ticket_id}
+                                    className={`ticket-row task-row ${task.id === selectedTaskId ? 'active' : ''}`}
+                                    onClick={() => setSelectedTaskId(task.id)}
                                 >
                                     <div className="task-row-main">
-                                        <h4>{formatTaskText(task.text)}</h4>
-                                        {task.ticket_title && (
-                                            <span className="ticket-area-chip pill pill-neutral">{task.ticket_title}</span>
-                                        )}
+                                        <div className="task-row-title">
+                                            <span className={`priority-dot ${getPriorityClass(task)}`} aria-hidden="true" />
+                                            <h4>{formatTaskText(task.text)}</h4>
+                                        </div>
+                                        <div className="task-row-meta">
+                                            <span className={`priority-pill ${getPriorityClass(task)}`}>
+                                                {formatPriorityLabel(task)}
+                                            </span>
+                                            {task.ticket_title && (
+                                                <span className="ticket-area-chip pill pill-neutral">{task.ticket_title}</span>
+                                            )}
+                                        </div>
                                     </div>
                                 </button>
                             ))}
@@ -564,30 +573,129 @@ const Dashboard = () => {
                 </div>
 
                 <div className="dashboard-column">
-                    <div className="dashboard-right-card">
-                        <AtAGlance />
-                    </div>
-                    <Card className="dashboard-card">
-                    <div className="dashboard-card-header">
-                        <h2>Schedule This Week</h2>
-                    </div>
-                    <div className="week-grid">
-                        {weekSchedule.map((day) => (
-                            <div key={day.date.toISOString()} className="week-day">
-                                <div className="week-date">{format(day.date, 'EEE MMM d')}</div>
-                                {day.items.length === 0 ? (
-                                    <div className="week-empty">No events</div>
-                                ) : (
-                                    day.items.map((event) => (
-                                        <div key={event.id} className="week-event">
-                                            <span className="week-time">{event.time || 'All day'}</span>
-                                            <span className="week-title">{event.title}</span>
+                    <Card className="dashboard-card task-detail-card">
+                        <div className="dashboard-card-header">
+                            <h2>Task Details</h2>
+                        </div>
+                        {!selectedTask ? (
+                            <p className="no-events">Select a task to see details.</p>
+                        ) : (
+                            <div className="task-detail-body">
+                                <div className="task-detail-header">
+                                    <div>
+                                        <div className="task-detail-title">{selectedTask.text}</div>
+                                        <div className="task-detail-meta">
+                                            <span className={`priority-pill ${getPriorityClass(selectedTask)}`}>
+                                                {formatPriorityLabel(selectedTask)}
+                                            </span>
+                                            {selectedTask.due_at && (
+                                                <span className="muted">Due {format(new Date(selectedTask.due_at), 'MMM d')}</span>
+                                            )}
                                         </div>
-                                    ))
+                                    </div>
+                                </div>
+                                {selectedTask.origin_type === 'ticket' && selectedTicket ? (
+                                    <div className="task-origin-panel">
+                                        <div className="task-origin-header">
+                                            <h3>{selectedTicket.title}</h3>
+                                            <span className={`ticket-status pill ${getTicketStatusClass(selectedTicket.status)}`}>
+                                                {selectedTicket.status.replace('_', ' ')}
+                                            </span>
+                                        </div>
+                                        <p className="text-muted">{selectedTicket.description || 'No ticket description.'}</p>
+                                        <div className="ticket-area-chips">
+                                            {(selectedTicket.areas || []).map((areaId) => (
+                                                <span key={areaId} className="ticket-area-chip pill pill-neutral">
+                                                    {areaById[areaId]?.name || areaId}
+                                                </span>
+                                            ))}
+                                        </div>
+                                        <button
+                                            className="btn-secondary"
+                                            type="button"
+                                            onClick={() => navigate(`/buildings?ticket=${selectedTicket.id}`)}
+                                        >
+                                            Open Ticket
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="task-origin-panel">
+                                        <div className="task-origin-header">
+                                            <h3>{formatOriginLabel(selectedTask)}</h3>
+                                            {selectedTask.origin_id && (
+                                                <span className="muted">{selectedTask.origin_id}</span>
+                                            )}
+                                        </div>
+                                        {selectedTask.origin_type === 'sunday' && (
+                                            <button
+                                                className="btn-secondary"
+                                                type="button"
+                                                onClick={() => navigate(`/sunday?date=${selectedTask.origin_id}`)}
+                                            >
+                                                Open Sunday Planner
+                                            </button>
+                                        )}
+                                        {selectedTask.origin_type === 'vestry' && (
+                                            <button
+                                                className="btn-secondary"
+                                                type="button"
+                                                onClick={() => navigate('/vestry')}
+                                            >
+                                                Open Vestry
+                                            </button>
+                                        )}
+                                        {selectedTask.origin_type === 'communications' && (
+                                            <button
+                                                className="btn-secondary"
+                                                type="button"
+                                                onClick={() => navigate('/communications')}
+                                            >
+                                                Open Communications
+                                            </button>
+                                        )}
+                                    </div>
                                 )}
+                                <div className="task-origin-list">
+                                    <div className="task-origin-title">Tasks in this origin</div>
+                                    {originTasks.length === 0 ? (
+                                        <p className="text-muted">No additional tasks found.</p>
+                                    ) : (
+                                        <ul className="simple-list">
+                                            {originTasks.map((task) => (
+                                                <li key={task.id} className="simple-item">
+                                                    <span className="simple-title">{formatTaskText(task.text)}</span>
+                                                    <span className={`priority-pill ${getPriorityClass(task)}`}>
+                                                        {formatPriorityLabel(task)}
+                                                    </span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
                             </div>
-                        ))}
-                    </div>
+                        )}
+                    </Card>
+                    <Card className="dashboard-card">
+                        <div className="dashboard-card-header">
+                            <h2>Schedule This Week</h2>
+                        </div>
+                        <div className="week-grid">
+                            {weekSchedule.map((day) => (
+                                <div key={day.date.toISOString()} className="week-day">
+                                    <div className="week-date">{format(day.date, 'EEE MMM d')}</div>
+                                    {day.items.length === 0 ? (
+                                        <div className="week-empty">No events</div>
+                                    ) : (
+                                        day.items.map((event) => (
+                                            <div key={event.id} className="week-event">
+                                                <span className="week-time">{event.time || 'All day'}</span>
+                                                <span className="week-title">{event.title}</span>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            ))}
+                        </div>
                     </Card>
                 </div>
             </div>
