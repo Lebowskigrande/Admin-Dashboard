@@ -130,14 +130,18 @@ export const migrateLegacyData = () => {
         `);
     };
 
-    ensureAssignmentsSchema();
-
     const hasTable = (name) => {
         const row = sqlite.prepare(`
             SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?
         `).get(name);
         return !!row;
     };
+
+    if (!hasTable('events') || !hasTable('event_occurrences')) {
+        return;
+    }
+
+    ensureAssignmentsSchema();
 
     if (hasTable('buildings')) {
         const buildings = sqlite.prepare('SELECT * FROM buildings').all();

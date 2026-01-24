@@ -47,8 +47,13 @@ const getCategoryIdMap = () => {
 };
 
 export const seedNormalized = () => {
-    const categoryCount = sqlite.prepare('SELECT count(*) as count FROM event_categories').get().count;
-    if (categoryCount === 0) {
+    const hasTable = (name) => sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+    `).get(name);
+
+    if (hasTable('event_categories')) {
+        const categoryCount = sqlite.prepare('SELECT count(*) as count FROM event_categories').get().count;
+        if (categoryCount === 0) {
         const insert = sqlite.prepare(`
             INSERT INTO event_categories (name, slug, color, description)
             VALUES (?, ?, ?, ?)
@@ -56,48 +61,53 @@ export const seedNormalized = () => {
         DEFAULT_EVENT_CATEGORIES.forEach((category) => {
             insert.run(category.name, category.slug, category.color, category.description);
         });
+        }
     }
 
-    const typeCount = sqlite.prepare('SELECT count(*) as count FROM event_types').get().count;
-    if (typeCount === 0) {
-        const categoryMap = getCategoryIdMap();
+    if (hasTable('event_types') && hasTable('event_categories')) {
+        const typeCount = sqlite.prepare('SELECT count(*) as count FROM event_types').get().count;
+        if (typeCount === 0) {
+            const categoryMap = getCategoryIdMap();
+            const insert = sqlite.prepare(`
+                INSERT INTO event_types (name, slug, category_id, requires_contract, requires_staffing, requires_setup)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `);
+            DEFAULT_EVENT_TYPES.forEach((type) => {
+                insert.run(
+                    type.name,
+                    type.slug,
+                    categoryMap.get(type.categorySlug) || null,
+                    type.requiresContract || 0,
+                    type.requiresStaffing || 0,
+                    type.requiresSetup || 0
+                );
+            });
+        }
+    }
+
+    if (hasTable('buildings')) {
         const insert = sqlite.prepare(`
-            INSERT INTO event_types (name, slug, category_id, requires_contract, requires_staffing, requires_setup)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO buildings (
+                id, name, category, capacity, size_sqft, rental_rate_hour, rental_rate_day, parking_spaces, event_types, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                category = excluded.category,
+                notes = excluded.notes
         `);
-        DEFAULT_EVENT_TYPES.forEach((type) => {
+        DEFAULT_BUILDINGS.forEach((building) => {
             insert.run(
-                type.name,
-                type.slug,
-                categoryMap.get(type.categorySlug) || null,
-                type.requiresContract || 0,
-                type.requiresStaffing || 0,
-                type.requiresSetup || 0
+                building.id,
+                building.name,
+                building.category,
+                0,
+                0,
+                0,
+                0,
+                0,
+                JSON.stringify([]),
+                building.notes || ''
             );
         });
     }
-
-    const insert = sqlite.prepare(`
-        INSERT INTO buildings (
-            id, name, category, capacity, size_sqft, rental_rate_hour, rental_rate_day, parking_spaces, event_types, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name,
-            category = excluded.category,
-            notes = excluded.notes
-    `);
-    DEFAULT_BUILDINGS.forEach((building) => {
-        insert.run(
-            building.id,
-            building.name,
-            building.category,
-            0,
-            0,
-            0,
-            0,
-            0,
-            JSON.stringify([]),
-            building.notes || ''
-        );
-    });
 };

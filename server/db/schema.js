@@ -174,7 +174,13 @@ export const taskInstances = sqliteTable('task_instances', {
     priorityOverride: integer('priority_override'),
     rank: integer('rank'),
     slaTargetAt: text('sla_target_at'),
-    blocked: integer('blocked').notNull().default(0)
+    blocked: integer('blocked').notNull().default(0),
+    archivedAt: text('archived_at'),
+    archiveAfterDue: integer('archive_after_due').notNull().default(1),
+    keepUntil: text('keep_until'),
+    listKey: text('list_key'),
+    listTitle: text('list_title'),
+    listMode: text('list_mode').default('sequential')
 });
 
 export const entityLinks = sqliteTable('entity_links', {
@@ -196,4 +202,21 @@ export const taskPriorityPolicy = sqliteTable('task_priority_policy', {
     dueTodayBoost: integer('due_today_boost'),
     dueSoonBoost: integer('due_soon_boost'),
     noDueBoost: integer('no_due_boost')
+});
+
+export const recurringTaskTemplates = sqliteTable('recurring_task_templates', {
+    id: text('id').primaryKey(),
+    originType: text('origin_type').notNull(),
+    originId: text('origin_id'),
+    listKey: text('list_key'),
+    listTitle: text('list_title'),
+    listMode: text('list_mode').default('sequential'),
+    stepKey: text('step_key').notNull(),
+    title: text('title').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    dueOffsetDays: integer('due_offset_days'),
+    priorityBase: integer('priority_base').notNull().default(50),
+    active: integer('active').notNull().default(1),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull()
 });

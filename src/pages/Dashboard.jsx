@@ -4,7 +4,6 @@ import Card from '../components/Card';
 import { format, isSameDay, addDays, startOfDay } from 'date-fns';
 import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
-import { MAP_AREAS } from '../data/areas';
 import './Dashboard.css';
 
 const WEATHER_CENTER = {
@@ -183,36 +182,13 @@ const WeatherIcon = ({ kind, size = 20 }) => {
 const Dashboard = () => {
     const navigate = useNavigate();
     const { events } = useEvents();
-    const [tickets, setTickets] = useState([]);
     const [tasks, setTasks] = useState([]);
-    const [ticketsLoading, setTicketsLoading] = useState(true);
     const [tasksLoading, setTasksLoading] = useState(true);
     const [weatherState, setWeatherState] = useState({ loading: true, data: null, error: null });
 
     const today = useMemo(() => startOfDay(new Date()), []);
-    const areaById = useMemo(() => (
-        MAP_AREAS.reduce((acc, area) => {
-            acc[area.id] = area;
-            return acc;
-        }, {})
-    ), []);
-
     useEffect(() => {
         let active = true;
-        const loadTickets = async () => {
-            setTicketsLoading(true);
-            try {
-                const response = await fetch(`${API_URL}/tickets`);
-                if (!response.ok) throw new Error('Failed to load tickets');
-                const data = await response.json();
-                if (active) setTickets(Array.isArray(data) ? data : []);
-            } catch (error) {
-                console.error('Failed to load tickets:', error);
-                if (active) setTickets([]);
-            } finally {
-                if (active) setTicketsLoading(false);
-            }
-        };
         const loadTasks = async () => {
             setTasksLoading(true);
             try {
@@ -227,7 +203,6 @@ const Dashboard = () => {
                 if (active) setTasksLoading(false);
             }
         };
-        loadTickets();
         loadTasks();
         return () => {
             active = false;
@@ -323,11 +298,6 @@ const Dashboard = () => {
         ));
     }, [taskList, selectedTask]);
 
-    const selectedTicket = useMemo(() => {
-        if (selectedTask?.origin_type !== 'ticket') return null;
-        return tickets.find((ticket) => ticket.id === selectedTask.origin_id) || null;
-    }, [tickets, selectedTask]);
-
     const formatPriorityLabel = useCallback((task) => {
         const tier = task?.priority_tier || 'Normal';
         return tier;
@@ -346,20 +316,10 @@ const Dashboard = () => {
         if (!task?.origin_type) return 'Task Origin';
         if (task.origin_type === 'sunday') return 'Sunday Planner';
         if (task.origin_type === 'vestry') return 'Vestry';
-        if (task.origin_type === 'communications') {
-            if (task.origin_id === 'bulletins') return 'Bulletins Checklist';
-            if (task.origin_id === 'weekly-email') return 'Weekly Email Checklist';
-            return 'Communications';
-        }
+        if (task.origin_type === 'event') return 'Event';
+        if (task.origin_type === 'project') return 'Project';
+        if (task.origin_type === 'operations') return 'Operations';
         return task.origin_type;
-    }, []);
-
-    const getTicketStatusClass = useCallback((status) => {
-        const normalized = (status || '').toLowerCase().replace(/\s+/g, '_');
-        if (normalized === 'reviewed') return 'status-reviewed';
-        if (normalized === 'in_process') return 'status-in_process';
-        if (normalized === 'closed') return 'status-closed';
-        return 'status-new';
     }, []);
 
     const formatTaskText = useCallback((text) => {
@@ -560,8 +520,8 @@ const Dashboard = () => {
                                             <span className={`priority-pill ${getPriorityClass(task)}`}>
                                                 {formatPriorityLabel(task)}
                                             </span>
-                                            {task.ticket_title && (
-                                                <span className="ticket-area-chip pill pill-neutral">{task.ticket_title}</span>
+                                            {task.list_title && (
+                                                <span className="ticket-area-chip pill pill-neutral">{task.list_title}</span>
                                             )}
                                         </div>
                                     </div>
@@ -594,67 +554,44 @@ const Dashboard = () => {
                                         </div>
                                     </div>
                                 </div>
-                                {selectedTask.origin_type === 'ticket' && selectedTicket ? (
-                                    <div className="task-origin-panel">
-                                        <div className="task-origin-header">
-                                            <h3>{selectedTicket.title}</h3>
-                                            <span className={`ticket-status pill ${getTicketStatusClass(selectedTicket.status)}`}>
-                                                {selectedTicket.status.replace('_', ' ')}
-                                            </span>
-                                        </div>
-                                        <p className="text-muted">{selectedTicket.description || 'No ticket description.'}</p>
-                                        <div className="ticket-area-chips">
-                                            {(selectedTicket.areas || []).map((areaId) => (
-                                                <span key={areaId} className="ticket-area-chip pill pill-neutral">
-                                                    {areaById[areaId]?.name || areaId}
-                                                </span>
-                                            ))}
-                                        </div>
+                                <div className="task-origin-panel">
+                                    <div className="task-origin-header">
+                                        <h3>{formatOriginLabel(selectedTask)}</h3>
+                                        {selectedTask.origin_id && (
+                                            <span className="muted">{selectedTask.origin_id}</span>
+                                        )}
+                                    </div>
+                                    {selectedTask.list_title && (
+                                        <div className="muted">List: {selectedTask.list_title}</div>
+                                    )}
+                                    {selectedTask.origin_type === 'sunday' && (
                                         <button
                                             className="btn-secondary"
                                             type="button"
-                                            onClick={() => navigate(`/buildings?ticket=${selectedTicket.id}`)}
+                                            onClick={() => navigate(`/sunday?date=${selectedTask.origin_id}`)}
                                         >
-                                            Open Ticket
+                                            Open Sunday Planner
                                         </button>
-                                    </div>
-                                ) : (
-                                    <div className="task-origin-panel">
-                                        <div className="task-origin-header">
-                                            <h3>{formatOriginLabel(selectedTask)}</h3>
-                                            {selectedTask.origin_id && (
-                                                <span className="muted">{selectedTask.origin_id}</span>
-                                            )}
-                                        </div>
-                                        {selectedTask.origin_type === 'sunday' && (
-                                            <button
-                                                className="btn-secondary"
-                                                type="button"
-                                                onClick={() => navigate(`/sunday?date=${selectedTask.origin_id}`)}
-                                            >
-                                                Open Sunday Planner
-                                            </button>
-                                        )}
-                                        {selectedTask.origin_type === 'vestry' && (
-                                            <button
-                                                className="btn-secondary"
-                                                type="button"
-                                                onClick={() => navigate('/vestry')}
-                                            >
-                                                Open Vestry
-                                            </button>
-                                        )}
-                                        {selectedTask.origin_type === 'communications' && (
-                                            <button
-                                                className="btn-secondary"
-                                                type="button"
-                                                onClick={() => navigate('/communications')}
-                                            >
-                                                Open Communications
-                                            </button>
-                                        )}
-                                    </div>
-                                )}
+                                    )}
+                                    {selectedTask.origin_type === 'vestry' && (
+                                        <button
+                                            className="btn-secondary"
+                                            type="button"
+                                            onClick={() => navigate('/vestry')}
+                                        >
+                                            Open Vestry
+                                        </button>
+                                    )}
+                                    {selectedTask.origin_type === 'event' && (
+                                        <button
+                                            className="btn-secondary"
+                                            type="button"
+                                            onClick={() => navigate('/calendar')}
+                                        >
+                                            Open Calendar
+                                        </button>
+                                    )}
+                                </div>
                                 <div className="task-origin-list">
                                     <div className="task-origin-title">Tasks in this origin</div>
                                     {originTasks.length === 0 ? (

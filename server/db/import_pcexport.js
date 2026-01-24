@@ -35,7 +35,18 @@ const sheet = workbook.Sheets[sheetName];
 const rows = xlsx.utils.sheet_to_json(sheet, { defval: '' });
 
 const db = new Database(join(__dirname, '..', 'church.db'));
-const ensureColumns = () => {
+const hasTable = (name) => !!db.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+`).get(name);
+
+const usePerson = hasTable('person');
+const usePeople = !usePerson && hasTable('people');
+
+if (!usePerson && !usePeople) {
+    throw new Error('No person/people table found in church.db');
+}
+
+if (usePeople) {
     const columns = db.prepare('PRAGMA table_info(people)').all().map((col) => col.name);
     const columnSet = new Set(columns);
     const addColumn = (name) => {
@@ -51,10 +62,11 @@ const ensureColumns = () => {
     addColumn('city');
     addColumn('state');
     addColumn('postal_code');
-};
+}
 
-ensureColumns();
-const peopleRows = db.prepare('SELECT * FROM people').all();
+const peopleRows = usePerson
+    ? db.prepare('SELECT * FROM person').all()
+    : db.prepare('SELECT * FROM people').all();
 const peopleByName = new Map();
 const peopleByLastName = new Map();
 
@@ -74,18 +86,32 @@ let matched = 0;
 let updated = 0;
 let skipped = 0;
 
-const updateStmt = db.prepare(`
-    UPDATE people SET
-        email = ?,
-        phone_primary = ?,
-        phone_alternate = ?,
-        address_line1 = ?,
-        address_line2 = ?,
-        city = ?,
-        state = ?,
-        postal_code = ?
-    WHERE id = ?
-`);
+const updateStmt = usePerson
+    ? db.prepare(`
+        UPDATE person SET
+            email_primary = ?,
+            phone_primary = ?,
+            phone_secondary = ?,
+            address1 = ?,
+            address2 = ?,
+            city = ?,
+            state = ?,
+            zip = ?,
+            updated_at = datetime('now')
+        WHERE person_id = ?
+    `)
+    : db.prepare(`
+        UPDATE people SET
+            email = ?,
+            phone_primary = ?,
+            phone_alternate = ?,
+            address_line1 = ?,
+            address_line2 = ?,
+            city = ?,
+            state = ?,
+            postal_code = ?
+        WHERE id = ?
+    `);
 
 rows.forEach((row) => {
     const rawName = toValue(row.first_last || '');
@@ -120,50 +146,72 @@ rows.forEach((row) => {
     matched += 1;
 
     const incoming = {
-        email: toValue(row.e_mail),
+        email: toValue(row.e_mail_a || row.e_mail_b),
         phonePrimary: toValue(row.phone1),
-        phoneAlternate: toValue(row.phone3),
-        addressLine1: toValue(row.address),
-        addressLine2: toValue(row.address2),
+        phoneSecondary: toValue(row.phone2),
+        address1: toValue(row.address),
+        address2: toValue(row.address2),
         city: toValue(row.city),
         state: toValue(row.state),
-        postalCode: toValue(row.zip)
+        zip: toValue(row.zip)
     };
 
-    const next = {
-        email: person.email || incoming.email || '',
-        phonePrimary: person.phone_primary || incoming.phonePrimary || '',
-        phoneAlternate: person.phone_alternate || incoming.phoneAlternate || '',
-        addressLine1: person.address_line1 || incoming.addressLine1 || '',
-        addressLine2: person.address_line2 || incoming.addressLine2 || '',
-        city: person.city || incoming.city || '',
-        state: person.state || incoming.state || '',
-        postalCode: person.postal_code || incoming.postalCode || ''
-    };
+    const next = usePerson
+        ? {
+            email: person.email_primary || incoming.email || '',
+            phonePrimary: person.phone_primary || incoming.phonePrimary || '',
+            phoneSecondary: person.phone_secondary || incoming.phoneSecondary || '',
+            address1: person.address1 || incoming.address1 || '',
+            address2: person.address2 || incoming.address2 || '',
+            city: person.city || incoming.city || '',
+            state: person.state || incoming.state || '',
+            zip: person.zip || incoming.zip || ''
+        }
+        : {
+            email: person.email || incoming.email || '',
+            phonePrimary: person.phone_primary || incoming.phonePrimary || '',
+            phoneSecondary: person.phone_alternate || incoming.phoneSecondary || '',
+            address1: person.address_line1 || incoming.address1 || '',
+            address2: person.address_line2 || incoming.address2 || '',
+            city: person.city || incoming.city || '',
+            state: person.state || incoming.state || '',
+            zip: person.postal_code || incoming.zip || ''
+        };
 
-    const changed = Object.entries({
-        email: next.email,
-        phone_primary: next.phonePrimary,
-        phone_alternate: next.phoneAlternate,
-        address_line1: next.addressLine1,
-        address_line2: next.addressLine2,
-        city: next.city,
-        state: next.state,
-        postal_code: next.postalCode
-    }).some(([key, value]) => (person[key] || '') !== (value || ''));
+    const changed = usePerson
+        ? Object.entries({
+            email_primary: next.email,
+            phone_primary: next.phonePrimary,
+            phone_secondary: next.phoneSecondary,
+            address1: next.address1,
+            address2: next.address2,
+            city: next.city,
+            state: next.state,
+            zip: next.zip
+        }).some(([key, value]) => (person[key] || '') !== (value || ''))
+        : Object.entries({
+            email: next.email,
+            phone_primary: next.phonePrimary,
+            phone_alternate: next.phoneSecondary,
+            address_line1: next.address1,
+            address_line2: next.address2,
+            city: next.city,
+            state: next.state,
+            postal_code: next.zip
+        }).some(([key, value]) => (person[key] || '') !== (value || ''));
 
     if (!changed) return;
 
     updateStmt.run(
         next.email,
         next.phonePrimary,
-        next.phoneAlternate,
-        next.addressLine1,
-        next.addressLine2,
+        next.phoneSecondary,
+        next.address1,
+        next.address2,
         next.city,
         next.state,
-        next.postalCode,
-        person.id
+        next.zip,
+        usePerson ? person.person_id : person.id
     );
     updated += 1;
 });

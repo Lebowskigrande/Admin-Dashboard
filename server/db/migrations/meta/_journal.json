@@ -42,6 +42,60 @@
       "when": 1768300003000,
       "tag": "0006_hgk_supply_items",
       "breakpoints": false
+    },
+    {
+      "idx": 7,
+      "when": 1769055600000,
+      "tag": "0007_task_engine",
+      "breakpoints": false
+    },
+    {
+      "idx": 8,
+      "when": 1769055601000,
+      "tag": "0008_polymorphic_links_priority",
+      "breakpoints": false
+    },
+    {
+      "idx": 9,
+      "when": 1769055602000,
+      "tag": "0009_recurring_task_templates",
+      "breakpoints": false
+    },
+    {
+      "idx": 10,
+      "when": 1769055603000,
+      "tag": "0010_sunday_task_origin",
+      "breakpoints": false
+    },
+    {
+      "idx": 11,
+      "when": 1769055604000,
+      "tag": "0011_task_origin_templates_reset",
+      "breakpoints": false
+    },
+    {
+      "idx": 12,
+      "when": 1769055605000,
+      "tag": "0012_task_archiving",
+      "breakpoints": false
+    },
+    {
+      "idx": 13,
+      "when": 1769055606000,
+      "tag": "0013_task_list_fields",
+      "breakpoints": false
+    },
+    {
+      "idx": 14,
+      "when": 1769055607000,
+      "tag": "0014_task_list_templates_reset",
+      "breakpoints": false
+    },
+    {
+      "idx": 15,
+      "when": 1769055608000,
+      "tag": "0015_archive_existing_tasks",
+      "breakpoints": false
     }
   ]
 }

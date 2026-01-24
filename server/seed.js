@@ -14,6 +14,10 @@ const __dirname = path.dirname(__filename);
 const liturgicalPath = path.join(__dirname, '../src/data/liturgical_calendar_2026.json');
 const schedulePath = path.join(__dirname, '../src/data/service_schedule.json');
 const peopleWorkbookPath = path.join(__dirname, '../dashboard people data.xlsx');
+const powerchurchWorkbookPaths = [
+    path.join(__dirname, '../2026.01.23 PCEXPORTDATA.xlsx'),
+    path.join(__dirname, '../PCEXPORTDATA.xlsx')
+];
 
 const ROLE_MAP = {
     'Acolyte': 'acolyte',
@@ -71,6 +75,8 @@ const buildDisplayName = (firstName, lastName) => {
     return normalizeText(`${first} ${last}`);
 };
 
+const findExistingWorkbook = (paths) => paths.find((p) => fs.existsSync(p));
+
 const loadPeopleFromWorkbook = () => {
     if (!fs.existsSync(peopleWorkbookPath)) return [];
     const workbook = XLSX.readFile(peopleWorkbookPath);
@@ -104,6 +110,39 @@ const loadPeopleFromWorkbook = () => {
         .filter(Boolean);
 };
 
+const loadPeopleFromPowerChurchExport = () => {
+    const workbookPath = findExistingWorkbook(powerchurchWorkbookPaths);
+    if (!workbookPath) return [];
+    const workbook = XLSX.readFile(workbookPath);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+
+    return rows
+        .map((row) => {
+            const firstName = normalizeText(row.firstname_b);
+            const lastName = normalizeText(row.lastname_b);
+            const displayName = buildDisplayName(firstName, lastName);
+            if (!displayName) return null;
+
+            return {
+                displayName,
+                firstName,
+                lastName,
+                emailPrimary: normalizeText(row.e_mail_a || row.e_mail_b),
+                emailSecondary: normalizeText(row.e_mail_b),
+                phonePrimary: normalizeText(row.phone1),
+                phoneSecondary: normalizeText(row.phone2),
+                address1: normalizeText(row.address),
+                address2: normalizeText(row.address2),
+                city: normalizeText(row.city),
+                state: normalizeText(row.state),
+                zip: normalizeText(row.zip),
+                envNo: normalizeText(row.env_no)
+            };
+        })
+        .filter(Boolean);
+};
+
 const buildTeamAssignments = (people) => {
     const teamAssignments = {
         lem: new Map(),
@@ -132,23 +171,25 @@ export const seedDatabase = () => {
         `).get(name);
         return !!row;
     };
-    const liturgicalCount = db.prepare('SELECT count(*) as count FROM liturgical_days').get().count;
+    if (hasTable('liturgical_days')) {
+        const liturgicalCount = db.prepare('SELECT count(*) as count FROM liturgical_days').get().count;
 
-    if (liturgicalCount === 0) {
-        console.log('Seeding liturgical data...');
-        const liturgicalData = JSON.parse(fs.readFileSync(liturgicalPath, 'utf8'));
+        if (liturgicalCount === 0) {
+            console.log('Seeding liturgical data...');
+            const liturgicalData = JSON.parse(fs.readFileSync(liturgicalPath, 'utf8'));
 
-        const insert = db.prepare(`
-            INSERT INTO liturgical_days (date, feast, color, readings)
-            VALUES (@date, @feast, @color, @readings)
-        `);
+            const insert = db.prepare(`
+                INSERT INTO liturgical_days (date, feast, color, readings)
+                VALUES (@date, @feast, @color, @readings)
+            `);
 
-        const insertMany = db.transaction((days) => {
-            for (const day of days) insert.run(day);
-        });
+            const insertMany = db.transaction((days) => {
+                for (const day of days) insert.run(day);
+            });
 
-        insertMany(liturgicalData);
-        console.log(`Inserted ${liturgicalData.length} liturgical days.`);
+            insertMany(liturgicalData);
+            console.log(`Inserted ${liturgicalData.length} liturgical days.`);
+        }
     }
 
     const scheduleCount = hasTable('schedule_roles')
@@ -249,40 +290,163 @@ export const seedDatabase = () => {
         }
     }
 
-    const peopleCount = db.prepare('SELECT count(*) as count FROM people').get().count;
+    if (hasTable('person')) {
+        const personCount = db.prepare('SELECT count(*) as count FROM person').get().count;
 
-    if (peopleCount === 0) {
-        console.log('Seeding people data...');
-        const workbookPeople = loadPeopleFromWorkbook();
-        const sourcePeople = workbookPeople.length ? workbookPeople : PEOPLE;
-        const insert = db.prepare(`
-            INSERT INTO people (id, display_name, email, category, roles, tags, teams)
-            VALUES (@id, @displayName, @email, @category, @roles, @tags, @teams)
-        `);
+        if (personCount === 0) {
+            console.log('Seeding person data...');
+            const powerchurchPeople = loadPeopleFromPowerChurchExport();
+            const workbookPeople = loadPeopleFromWorkbook();
+            const sourcePeople = powerchurchPeople.length
+                ? powerchurchPeople
+                : workbookPeople.length
+                    ? workbookPeople
+                    : PEOPLE;
 
-        const insertMany = db.transaction((rows) => {
-            for (const person of rows) {
-                insert.run({
-                    id: person.id || person.displayName?.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-                    displayName: person.displayName,
-                    email: person.email || '',
-                    category: person.category || '',
-                    roles: JSON.stringify(person.roles || []),
-                    tags: JSON.stringify(person.tags || []),
-                    teams: JSON.stringify(person.teams || {})
-                });
-            }
-        });
+            const insertPerson = db.prepare(`
+                INSERT INTO person (
+                    display_name,
+                    first_name,
+                    last_name,
+                    email_primary,
+                    email_secondary,
+                    phone_primary,
+                    phone_secondary,
+                    address1,
+                    address2,
+                    city,
+                    state,
+                    zip,
+                    is_active,
+                    notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `);
 
-        insertMany(sourcePeople);
-        console.log(`Inserted ${sourcePeople.length} people.`);
+            const hasPowerchurchRaw = hasTable('person_powerchurch_raw');
+            const hasExternalId = hasTable('person_external_id');
+            const insertRaw = hasPowerchurchRaw
+                ? db.prepare(`
+                    INSERT INTO person_powerchurch_raw (
+                        person_id,
+                        env_no,
+                        firstname_b,
+                        lastname_b,
+                        address,
+                        address2,
+                        city,
+                        state,
+                        zip,
+                        phone1,
+                        phone2,
+                        e_mail_a,
+                        e_mail_b
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `)
+                : null;
+            const insertExternal = hasExternalId
+                ? db.prepare(`
+                    INSERT INTO person_external_id (person_id, system, external_key)
+                    VALUES (?, ?, ?)
+                `)
+                : null;
+
+            const insertMany = db.transaction((rows) => {
+                for (const person of rows) {
+                    const displayName = person.displayName || person.display_name;
+                    if (!displayName) continue;
+                    const firstName = person.firstName || person.first_name || '';
+                    const lastName = person.lastName || person.last_name || '';
+                    const emailPrimary = person.emailPrimary || person.email || person.email_primary || '';
+                    const emailSecondary = person.emailSecondary || person.email_secondary || '';
+                    const phonePrimary = person.phonePrimary || person.phone_primary || '';
+                    const phoneSecondary = person.phoneSecondary || person.phone_secondary || '';
+                    const address1 = person.address1 || person.addressLine1 || person.address_line1 || '';
+                    const address2 = person.address2 || person.addressLine2 || person.address_line2 || '';
+                    const city = person.city || '';
+                    const state = person.state || '';
+                    const zip = person.zip || person.postalCode || person.postal_code || '';
+
+                    const info = insertPerson.run(
+                        displayName,
+                        firstName,
+                        lastName,
+                        emailPrimary,
+                        emailSecondary,
+                        phonePrimary,
+                        phoneSecondary,
+                        address1,
+                        address2,
+                        city,
+                        state,
+                        zip,
+                        1,
+                        ''
+                    );
+
+                    const personId = info.lastInsertRowid;
+                    if (insertRaw && person.envNo) {
+                        insertRaw.run(
+                            personId,
+                            person.envNo,
+                            person.firstName || '',
+                            person.lastName || '',
+                            address1,
+                            address2,
+                            city,
+                            state,
+                            zip,
+                            phonePrimary,
+                            phoneSecondary,
+                            emailPrimary,
+                            emailSecondary
+                        );
+                    }
+                    if (insertExternal && person.envNo) {
+                        insertExternal.run(personId, 'powerchurch', person.envNo);
+                    }
+                }
+            });
+
+            insertMany(sourcePeople);
+            console.log(`Inserted ${sourcePeople.length} people.`);
+        }
+    } else if (hasTable('people')) {
+        const peopleCount = db.prepare('SELECT count(*) as count FROM people').get().count;
+
+        if (peopleCount === 0) {
+            console.log('Seeding people data...');
+            const workbookPeople = loadPeopleFromWorkbook();
+            const sourcePeople = workbookPeople.length ? workbookPeople : PEOPLE;
+            const insert = db.prepare(`
+                INSERT INTO people (id, display_name, email, category, roles, tags, teams)
+                VALUES (@id, @displayName, @email, @category, @roles, @tags, @teams)
+            `);
+
+            const insertMany = db.transaction((rows) => {
+                for (const person of rows) {
+                    insert.run({
+                        id: person.id || person.displayName?.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+                        displayName: person.displayName,
+                        email: person.email || '',
+                        category: person.category || '',
+                        roles: JSON.stringify(person.roles || []),
+                        tags: JSON.stringify(person.tags || []),
+                        teams: JSON.stringify(person.teams || {})
+                    });
+                }
+            });
+
+            insertMany(sourcePeople);
+            console.log(`Inserted ${sourcePeople.length} people.`);
+        }
     }
 
-    const buildingCount = db.prepare('SELECT count(*) as count FROM buildings').get().count;
+    if (hasTable('buildings')) {
+        const buildingCount = db.prepare('SELECT count(*) as count FROM buildings').get().count;
 
-    if (buildingCount === 0) {
-        console.log('Seeding building data...');
-        const buildings = [
+        if (buildingCount === 0) {
+            console.log('Seeding building data...');
+            const buildings = [
             {
                 id: 'sanctuary',
                 name: 'Church',
@@ -381,24 +545,25 @@ export const seedDatabase = () => {
             }
         ];
 
-        const insert = db.prepare(`
-            INSERT INTO buildings (
-                id, name, category, capacity, size_sqft, rental_rate_hour, rental_rate_day, parking_spaces, event_types, notes
-            ) VALUES (
-                @id, @name, @category, @capacity, @size_sqft, @rental_rate_hour, @rental_rate_day, @parking_spaces, @event_types, @notes
-            )
-        `);
+            const insert = db.prepare(`
+                INSERT INTO buildings (
+                    id, name, category, capacity, size_sqft, rental_rate_hour, rental_rate_day, parking_spaces, event_types, notes
+                ) VALUES (
+                    @id, @name, @category, @capacity, @size_sqft, @rental_rate_hour, @rental_rate_day, @parking_spaces, @event_types, @notes
+                )
+            `);
 
-        const insertMany = db.transaction((rows) => {
-            for (const building of rows) {
-                insert.run({
-                    ...building,
-                    event_types: JSON.stringify(building.event_types || [])
-                });
-            }
-        });
+            const insertMany = db.transaction((rows) => {
+                for (const building of rows) {
+                    insert.run({
+                        ...building,
+                        event_types: JSON.stringify(building.event_types || [])
+                    });
+                }
+            });
 
-        insertMany(buildings);
-        console.log(`Inserted ${buildings.length} buildings.`);
+            insertMany(buildings);
+            console.log(`Inserted ${buildings.length} buildings.`);
+        }
     }
 };

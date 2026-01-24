@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun, FaChurch } from 'react-icons/fa';
+import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun, FaChurch, FaProjectDiagram } from 'react-icons/fa';
 import logo from '../assets/logo.png';
 import './Sidebar.css';
 
@@ -14,6 +14,7 @@ const Sidebar = () => {
         { path: '/buildings', label: 'Buildings & Grounds', icon: <FaBuilding /> },
         { path: '/people', label: 'People', icon: <FaUsers /> },
         { path: '/todo', label: 'To-Do List', icon: <FaList /> },
+        { path: '/task-origins', label: 'Task Origins', icon: <FaProjectDiagram /> },
         { path: '/settings', label: 'Settings', icon: <FaCog /> },
     ];
 

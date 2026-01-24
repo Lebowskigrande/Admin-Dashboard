@@ -7,6 +7,9 @@ const DEFAULT_LOCATION_BY_TIME = {
 };
 
 const DEFAULT_ORGANIST_ID = 'rob-hovencamp';
+const hasTable = (name) => !!sqlite.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+`).get(name);
 
 const getWeeklyServiceTypeId = () => {
     const row = sqlite.prepare('SELECT id FROM event_types WHERE slug = ?').get('weekly-service');
@@ -41,6 +44,7 @@ const getWeekOfMonth = (dateStr) => {
 };
 
 const ensureSundayServiceEvent = () => {
+    if (!hasTable('events')) return null;
     const existing = sqlite.prepare('SELECT id FROM events WHERE id = ?').get('sunday-service');
     if (existing) return existing.id;
     const now = new Date().toISOString();
@@ -61,6 +65,7 @@ const ensureSundayServiceEvent = () => {
 };
 
 const ensurePerson = (id, displayName) => {
+    if (!hasTable('people')) return;
     const existing = sqlite.prepare('SELECT id FROM people WHERE id = ?').get(id);
     if (existing) return;
     sqlite.prepare(`
@@ -70,6 +75,7 @@ const ensurePerson = (id, displayName) => {
 };
 
 const hasAssignment = (occurrenceId, roleKey) => {
+    if (!hasTable('assignments')) return false;
     const row = sqlite.prepare(`
         SELECT 1 FROM assignments WHERE occurrence_id = ? AND role_key = ? LIMIT 1
     `).get(occurrenceId, roleKey);
@@ -77,6 +83,7 @@ const hasAssignment = (occurrenceId, roleKey) => {
 };
 
 const insertAssignment = (occurrenceId, roleKey, personId) => {
+    if (!hasTable('assignments')) return;
     sqlite.prepare(`
         INSERT INTO assignments (id, occurrence_id, role_key, person_id)
         VALUES (?, ?, ?, ?)
@@ -84,6 +91,7 @@ const insertAssignment = (occurrenceId, roleKey, personId) => {
 };
 
 const getTeamAssignmentsForDate = (dateStr) => {
+    if (!hasTable('people')) return {};
     const teamNumber = getWeekOfMonth(dateStr);
     if (teamNumber > 4) return {};
     const rows = sqlite.prepare('SELECT id, roles, teams FROM people').all();
@@ -124,6 +132,7 @@ export const applyDefaultSundayAssignments = (occurrenceId, date, time, { forceO
 };
 
 const createOccurrence = (eventId, date, time, rite) => {
+    if (!hasTable('event_occurrences')) return null;
     const occurrenceId = `occ-${randomUUID()}`;
     sqlite.prepare(`
         INSERT INTO event_occurrences (
@@ -144,7 +153,11 @@ const createOccurrence = (eventId, date, time, rite) => {
 };
 
 export const ensureDefaultSundayServices = () => {
+    if (!hasTable('liturgical_days') || !hasTable('event_occurrences')) {
+        return;
+    }
     const eventId = ensureSundayServiceEvent();
+    if (!eventId) return;
     const sundayDates = sqlite.prepare(`
         SELECT date
         FROM liturgical_days

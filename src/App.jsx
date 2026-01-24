@@ -6,6 +6,7 @@ import LiturgicalSchedule from './pages/LiturgicalSchedule';
 import Bulletins from './pages/Bulletins';
 import Finance from './pages/Finance';
 import Todo from './pages/Todo';
+import TaskAdmin from './pages/TaskAdmin';
 import Buildings from './pages/Buildings';
 import People from './pages/People';
 import Settings from './pages/Settings';
@@ -29,6 +30,7 @@ function App() {
             <Route path="people" element={<People />} />
             <Route path="bulletins" element={<Bulletins />} />
             <Route path="todo" element={<Todo />} />
+            <Route path="task-origins" element={<TaskAdmin />} />
             <Route path="settings" element={<Settings />} />
             <Route path="communications" element={<Communications />} />
             <Route path="vestry" element={<Vestry />} />

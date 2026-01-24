@@ -710,99 +710,19 @@ function seedTaskEngine() {
         });
     });
 
-    // Seed vestry checklist tasks for current month.
-    if (tableExists('vestry_checklist')) {
-        const now = new Date();
-        const month = now.getMonth() + 1;
-        const year = now.getFullYear();
-        const monthKey = `${year}-${String(month).padStart(2, '0')}`;
-        const checklist = db.prepare(`
-            SELECT id, task, phase
-            FROM vestry_checklist
-            WHERE month = ?
-            ORDER BY sort_order, id
-        `).all(month);
-        checklist.forEach((item) => {
-            createTaskInstance({
-                title: item.task,
-                taskType: 'vestry',
-                priorityBase: getDefaultPriorityBase('vestry'),
-                dueAt: null,
-                originType: 'vestry',
-                originId: monthKey,
-                originEvent: item.phase || 'checklist',
-                generationKey: `vestry:${monthKey}:${item.id}`
-            });
-        });
-    }
-
-    // Seed Sunday planner tasks for upcoming Sundays.
-    if (tableExists('liturgical_days')) {
-        const upcomingSundays = db.prepare(`
-            SELECT date
-            FROM liturgical_days
-            WHERE date >= date('now') AND strftime('%w', date) = '0'
-            ORDER BY date
-            LIMIT 4
-        `).all().map((row) => row.date);
-        const sundayTasks = [
-            { key: 'livestream_setup', title: 'Livestream setup' },
-            { key: 'bulletin_uploaded', title: 'Bulletin uploaded' },
-            { key: 'email_created', title: 'Email created' },
-            { key: 'email_scheduled', title: 'Email scheduled' },
-            { key: 'email_sent', title: 'Email sent' }
-        ];
-        upcomingSundays.forEach((dateKey) => {
-            sundayTasks.forEach((task) => {
-                createTaskInstance({
-                    title: task.title,
-                    taskType: 'bulletin',
-                    priorityBase: getDefaultPriorityBase('bulletin'),
-                    dueAt: dateKey,
-                    originType: 'sunday',
-                    originId: dateKey,
-                    originEvent: 'planner',
-                    generationKey: `sunday:${dateKey}:${task.key}`
-                });
-            });
-        });
-    }
-
-    // Seed communications checklist tasks (bulletins + weekly email).
-    const commsTasks = [
-        { originId: 'bulletins', taskType: 'bulletin', title: 'Collect scripture readings' },
-        { originId: 'bulletins', taskType: 'bulletin', title: 'Select hymns with Music Director' },
-        { originId: 'bulletins', taskType: 'bulletin', title: 'Draft 8am Service' },
-        { originId: 'bulletins', taskType: 'bulletin', title: 'Draft 10am Service' },
-        { originId: 'bulletins', taskType: 'bulletin', title: 'Print Inserts' },
-        { originId: 'bulletins', taskType: 'bulletin', title: 'Print & fold Bulletins' },
-        { originId: 'bulletins', taskType: 'bulletin', title: 'Stuff inserts' },
-        { originId: 'bulletins', taskType: 'bulletin', title: 'Place in Narthex' },
-        { originId: 'weekly-email', taskType: 'bulletin', title: 'Collect announcements' },
-        { originId: 'weekly-email', taskType: 'bulletin', title: "Write Rector's corner" },
-        { originId: 'weekly-email', taskType: 'bulletin', title: 'Update calendar section' },
-        { originId: 'weekly-email', taskType: 'bulletin', title: 'Proofread' },
-        { originId: 'weekly-email', taskType: 'bulletin', title: 'Schedule/Send via Constant Contact' }
-    ];
-    commsTasks.forEach((task) => {
-        createTaskInstance({
-            title: task.title,
-            taskType: task.taskType,
-            priorityBase: getDefaultPriorityBase('bulletin'),
-            originType: 'communications',
-            originId: task.originId,
-            originEvent: 'checklist',
-            generationKey: `communications:${task.originId}:${task.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
-        });
-    });
+    seedSundayTasksFromTemplates();
+    seedVestryTasksFromTemplates();
+    seedOperationsTasksFromTemplates();
 }
 
 const DEFAULT_TASK_PRIORITY_BY_TYPE = {
     support: 60,
-    bulletin: 70,
+    sunday: 70,
     inventory: 50,
     cleanup: 30,
-    vestry: 60
+    vestry: 60,
+    event: 55,
+    operations: 55
 };
 
 const getPriorityPolicy = (taskType) => {
@@ -823,6 +743,44 @@ const getDefaultPriorityBase = (taskType) => {
         return DEFAULT_TASK_PRIORITY_BY_TYPE[taskType];
     }
     return 50;
+};
+
+const normalizeDateKey = (value) => {
+    if (!value) return null;
+    const text = String(value);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+    const parsed = new Date(text);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toISOString().slice(0, 10);
+};
+
+const isAfterDate = (left, right) => {
+    const leftKey = normalizeDateKey(left);
+    const rightKey = normalizeDateKey(right);
+    if (!leftKey || !rightKey) return false;
+    return leftKey > rightKey;
+};
+
+const applyTaskArchiving = () => {
+    if (!tableExists('task_instances')) return;
+    if (!tableHasColumn('task_instances', 'archived_at')) return;
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const rows = db.prepare(`
+        SELECT id, due_at, completed_at, archive_after_due, keep_until
+        FROM task_instances
+        WHERE archived_at IS NULL
+    `).all();
+    const markArchived = db.prepare('UPDATE task_instances SET archived_at = ? WHERE id = ?');
+    rows.forEach((row) => {
+        if (!row.archive_after_due) return;
+        const dueKey = normalizeDateKey(row.due_at);
+        if (!dueKey) return;
+        const keepUntil = normalizeDateKey(row.keep_until);
+        const threshold = keepUntil || dueKey;
+        if (threshold <= todayKey) {
+            markArchived.run(new Date().toISOString(), row.id);
+        }
+    });
 };
 
 const toEntityLinkId = (fromType, fromId, toType, toId, role) => {
@@ -863,6 +821,171 @@ const tableExists = (name) => {
     `).get(name);
 };
 
+const tableHasColumn = (tableName, columnName) => {
+    if (!tableExists(tableName)) return false;
+    const columns = sqlite.prepare(`PRAGMA table_info(${tableName})`).all().map((col) => col.name);
+    return columns.includes(columnName);
+};
+
+const listRecurringTemplates = (originType, originId = null) => {
+    if (!tableExists('recurring_task_templates')) return [];
+    const rows = db.prepare(`
+        SELECT *
+        FROM recurring_task_templates
+        WHERE origin_type = ?
+          AND (origin_id IS NULL OR origin_id = ?)
+          AND active = 1
+        ORDER BY sort_order ASC, title ASC
+    `).all(originType, originId);
+    return rows;
+};
+
+const addDaysIso = (dateKey, offsetDays) => {
+    const base = new Date(`${dateKey}T00:00:00`);
+    const next = new Date(base.getTime() + offsetDays * 86400000);
+    return next.toISOString().slice(0, 10);
+};
+
+const getLastDayOfMonthKey = (year, monthIndex) => {
+    const lastDay = new Date(year, monthIndex + 1, 0);
+    return lastDay.toISOString().slice(0, 10);
+};
+
+const seedSundayTasksFromTemplates = () => {
+    if (!tableExists('recurring_task_templates') || !tableExists('liturgical_days')) return;
+    const templates = listRecurringTemplates('sunday', null);
+    if (!templates.length) return;
+    const upcomingSundays = db.prepare(`
+        SELECT date
+        FROM liturgical_days
+        WHERE date >= date('now') AND strftime('%w', date) = '0'
+        ORDER BY date
+        LIMIT 6
+    `).all().map((row) => row.date);
+    upcomingSundays.forEach((dateKey) => {
+        templates.forEach((template) => {
+            const dueOffset = Number.isFinite(Number(template.due_offset_days))
+                ? Number(template.due_offset_days)
+                : null;
+            const dueAt = dueOffset != null
+                ? addDaysIso(dateKey, dueOffset)
+                : dateKey;
+            createTaskInstance({
+                title: template.title,
+                taskType: 'sunday',
+                priorityBase: Number.isFinite(Number(template.priority_base))
+                    ? Number(template.priority_base)
+                    : getDefaultPriorityBase('sunday'),
+                dueAt,
+                originType: 'sunday',
+                originId: dateKey,
+                originEvent: template.step_key,
+                generationKey: `sunday:${dateKey}:${template.list_key || 'list'}:${template.step_key}`,
+                listKey: template.list_key || null,
+                listTitle: template.list_title || null,
+                listMode: template.list_mode || 'sequential'
+            });
+        });
+    });
+};
+
+const seedVestryTasksFromTemplates = () => {
+    if (!tableExists('recurring_task_templates')) return;
+    const templates = listRecurringTemplates('vestry', null);
+    if (!templates.length) return;
+    const now = new Date();
+    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    templates.forEach((template) => {
+        const dueOffset = Number.isFinite(Number(template.due_offset_days))
+            ? Number(template.due_offset_days)
+            : null;
+        const dueAt = dueOffset != null
+            ? addDaysIso(`${monthKey}-01`, dueOffset)
+            : getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
+        createTaskInstance({
+            title: template.title,
+            taskType: 'vestry',
+            priorityBase: Number.isFinite(Number(template.priority_base))
+                ? Number(template.priority_base)
+                : getDefaultPriorityBase('vestry'),
+            dueAt,
+            originType: 'vestry',
+            originId: monthKey,
+            originEvent: template.step_key,
+            generationKey: `vestry:${monthKey}:${template.list_key || 'list'}:${template.step_key}`,
+            listKey: template.list_key || null,
+            listTitle: template.list_title || null,
+            listMode: template.list_mode || 'sequential'
+        });
+    });
+};
+
+const seedOperationsTasksFromTemplates = () => {
+    if (!tableExists('recurring_task_templates')) return;
+    const weeklyTemplates = listRecurringTemplates('operations', 'weekly');
+    const timesheetTemplates = listRecurringTemplates('operations', 'timesheets');
+    const now = new Date();
+    const day = now.getDay();
+    const mondayOffset = (day + 6) % 7;
+    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
+    const weekKey = monday.toISOString().slice(0, 10);
+    weeklyTemplates.forEach((template) => {
+        const dueOffset = Number.isFinite(Number(template.due_offset_days))
+            ? Number(template.due_offset_days)
+            : null;
+        const baseKey = weekKey;
+        const dueAt = dueOffset != null
+            ? addDaysIso(baseKey, dueOffset)
+            : addDaysIso(baseKey, 6);
+        createTaskInstance({
+            title: template.title,
+            taskType: 'operations',
+            priorityBase: Number.isFinite(Number(template.priority_base))
+                ? Number(template.priority_base)
+                : getDefaultPriorityBase('operations'),
+            dueAt,
+            originType: 'operations',
+            originId: `weekly-${weekKey}`,
+            originEvent: template.step_key,
+            generationKey: `operations:weekly-${weekKey}:${template.list_key || 'list'}:${template.step_key}`,
+            listKey: template.list_key || null,
+            listTitle: template.list_title || null,
+            listMode: template.list_mode || 'sequential'
+        });
+    });
+
+    const dayOfMonth = now.getDate();
+    const half = dayOfMonth <= 15 ? 'a' : 'b';
+    const timesheetKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${half}`;
+    timesheetTemplates.forEach((template) => {
+        const dueOffset = Number.isFinite(Number(template.due_offset_days))
+            ? Number(template.due_offset_days)
+            : null;
+        const monthStartKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        const halfDue = half === 'a'
+            ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-15`
+            : getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
+        const dueAt = dueOffset != null
+            ? addDaysIso(monthStartKey, dueOffset)
+            : halfDue;
+        createTaskInstance({
+            title: template.title,
+            taskType: 'operations',
+            priorityBase: Number.isFinite(Number(template.priority_base))
+                ? Number(template.priority_base)
+                : getDefaultPriorityBase('operations'),
+            dueAt,
+            originType: 'operations',
+            originId: `timesheets-${timesheetKey}`,
+            originEvent: template.step_key,
+            generationKey: `operations:timesheets-${timesheetKey}:${template.list_key || 'list'}:${template.step_key}`,
+            listKey: template.list_key || null,
+            listTitle: template.list_title || null,
+            listMode: template.list_mode || 'sequential'
+        });
+    });
+};
+
 const createTaskInstance = (payload) => {
     const {
         title,
@@ -873,15 +996,70 @@ const createTaskInstance = (payload) => {
         originType,
         originId,
         originEvent = 'seed',
-        generationKey
+        generationKey,
+        listKey = null,
+        listTitle = null,
+        listMode = 'sequential'
     } = payload || {};
     if (!title || !originType || !originId || !generationKey) return null;
-    if (db.prepare('SELECT 1 FROM task_instances WHERE generation_key = ?').get(generationKey)) {
+    if (tableHasColumn('task_instances', 'generation_key')
+        && db.prepare('SELECT 1 FROM task_instances WHERE generation_key = ?').get(generationKey)) {
         return null;
     }
     const now = new Date().toISOString();
     const taskId = `taskdef-${randomUUID()}`;
     const taskInstanceId = `taskinst-${randomUUID()}`;
+
+    if (!tableExists('tasks_new') && tableExists('tasks')) {
+        db.prepare(`
+            INSERT INTO tasks (
+                id, title, description, status, priority_base, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            taskId,
+            title,
+            null,
+            'active',
+            priorityBase,
+            now,
+            now
+        );
+
+        db.prepare(`
+            INSERT INTO task_instances (
+                id, task_id, state, priority_override, rank, due_at,
+                started_at, completed_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            taskInstanceId,
+            taskId,
+            'open',
+            null,
+            null,
+            dueAt,
+            null,
+            null,
+            now,
+            now
+        );
+
+        db.prepare(`
+            INSERT INTO task_origins (
+                id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            `origin-${taskInstanceId}`,
+            'instance',
+            taskId,
+            taskInstanceId,
+            originType,
+            originId,
+            originEvent,
+            now
+        );
+
+        return taskInstanceId;
+    }
 
     db.prepare(`
         INSERT INTO tasks_new (
@@ -904,8 +1082,9 @@ const createTaskInstance = (payload) => {
     db.prepare(`
         INSERT INTO task_instances (
             id, task_id, state, due_at, start_at, completed_at, generated_from,
-            generation_key, priority_override, rank, sla_target_at, blocked
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            generation_key, priority_override, rank, sla_target_at, blocked,
+            list_key, list_title, list_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         taskInstanceId,
         taskId,
@@ -918,7 +1097,10 @@ const createTaskInstance = (payload) => {
         null,
         null,
         slaTargetAt,
-        0
+        0,
+        listKey,
+        listTitle,
+        listMode || 'sequential'
     );
 
     const existingOrigin = db.prepare(`
@@ -971,6 +1153,7 @@ const formatTaskInstanceRow = (row) => {
     const completed = row.instance_state === 'done' || row.completed_at != null;
     const rawState = row.instance_state || 'open';
     const normalizedState = row.blocked && rawState !== 'done' ? 'blocked' : rawState;
+    const listMode = row.list_mode || (row.list_type === 'parallel' ? 'parallel' : 'sequential');
     return {
         id: row.task_instance_id,
         task_id: row.task_id,
@@ -988,7 +1171,14 @@ const formatTaskInstanceRow = (row) => {
         priority_override: row.priority_override != null ? Number(row.priority_override) : null,
         priority_effective: effectivePriority,
         priority_tier: tier,
+        step_order: row.step_order != null ? Number(row.step_order) : null,
         rank: row.rank != null ? Number(row.rank) : null,
+        archived_at: row.archived_at || null,
+        archive_after_due: row.archive_after_due != null ? Number(row.archive_after_due) : 1,
+        keep_until: row.keep_until || null,
+        list_key: row.list_key || row.list_id || null,
+        list_title: row.list_title || null,
+        list_mode: listMode,
         task_type: row.task_type || null,
         origin_type: row.origin_type || null,
         origin_id: row.origin_id || null,
@@ -1450,6 +1640,34 @@ const buildDocumentStatus = async (filePath) => {
 
 
 const buildPeopleIndex = () => {
+    if (tableExists('person')) {
+        const rows = db.prepare('SELECT person_id, display_name FROM person').all();
+        const byId = new Map();
+        const byName = new Map();
+        const byNameNormalized = new Map();
+        const byFirstName = new Map();
+        rows.forEach((row) => {
+            if (row.person_id != null) byId.set(String(row.person_id), String(row.person_id));
+            if (row.display_name) {
+                byName.set(row.display_name.toLowerCase(), String(row.person_id));
+                const normalized = normalizePersonName(row.display_name);
+                if (normalized) byNameNormalized.set(normalized, String(row.person_id));
+                const first = normalized.split(' ')[0];
+                if (first) {
+                    const existing = byFirstName.get(first);
+                    if (existing) {
+                        byFirstName.set(first, null);
+                    } else {
+                        byFirstName.set(first, String(row.person_id));
+                    }
+                }
+            }
+        });
+        return { byId, byName, byNameNormalized, byFirstName };
+    }
+    if (!tableExists('people')) {
+        return { byId: new Map(), byName: new Map(), byNameNormalized: new Map(), byFirstName: new Map() };
+    }
     const rows = db.prepare('SELECT id, display_name FROM people').all();
     const byId = new Map();
     const byName = new Map();
@@ -1501,7 +1719,7 @@ const normalizeScheduleValue = (value, peopleIndex) => {
 
 
 const ensureUniqueId = (baseId, table) => {
-    const allowedTables = new Set(['people', 'buildings', 'tickets', 'tasks']);
+    const allowedTables = new Set(['people', 'person', 'buildings', 'building', 'tickets', 'tasks', 'projects', 'vendor']);
     if (!allowedTables.has(table)) {
         throw new Error('Invalid table for ID generation');
     }
@@ -2541,8 +2759,32 @@ app.get('/api/event-types', (req, res) => {
 // --- People Management ---
 
 app.get('/api/people', (req, res) => {
+    if (tableExists('person')) {
+        const rows = db.prepare('SELECT * FROM person ORDER BY display_name').all();
+        const people = rows.map((row) => ({
+            id: String(row.person_id),
+            displayName: row.display_name,
+            email: row.email_primary || '',
+            emailSecondary: row.email_secondary || '',
+            phonePrimary: row.phone_primary || '',
+            phoneAlternate: row.phone_secondary || '',
+            addressLine1: row.address1 || '',
+            addressLine2: row.address2 || '',
+            city: row.city || '',
+            state: row.state || '',
+            postalCode: row.zip || '',
+            category: 'volunteer',
+            roles: [],
+            tags: [],
+            teams: {}
+        }));
+        return res.json(people);
+    }
+    if (!tableExists('people')) {
+        return res.json([]);
+    }
     const rows = db.prepare('SELECT * FROM people ORDER BY display_name').all();
-    const people = rows.map(row => ({
+    const people = rows.map((row) => ({
         id: row.id,
         displayName: row.display_name,
         email: row.email || '',
@@ -2558,13 +2800,14 @@ app.get('/api/people', (req, res) => {
         tags: parseJsonField(row.tags),
         teams: coerceJsonObject(row.teams)
     }));
-    res.json(people);
+    return res.json(people);
 });
 
 app.post('/api/people', (req, res) => {
     const {
         displayName,
         email = '',
+        emailSecondary = '',
         phonePrimary = '',
         phoneAlternate = '',
         addressLine1 = '',
@@ -2583,9 +2826,39 @@ app.post('/api/people', (req, res) => {
         return res.status(400).json({ error: 'Display name is required' });
     }
 
+    if (tableExists('person')) {
+        const [firstName, ...rest] = normalizedName.split(' ');
+        const lastName = rest.length ? rest.join(' ') : '';
+        const result = db.prepare(`
+            INSERT INTO person (
+                display_name, first_name, last_name, email_primary, email_secondary,
+                phone_primary, phone_secondary, address1, address2, city, state, zip, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+        `).run(
+            normalizedName,
+            firstName || null,
+            lastName || null,
+            email,
+            emailSecondary || null,
+            phonePrimary,
+            phoneAlternate,
+            addressLine1,
+            addressLine2,
+            city,
+            state,
+            postalCode
+        );
+        return res.status(201).json({
+            id: String(result.lastInsertRowid),
+            displayName: normalizedName,
+            email,
+            phonePrimary,
+            phoneAlternate
+        });
+    }
+
     const baseId = slugifyName(normalizedName) || `person-${Date.now()}`;
     const id = ensureUniqueId(baseId, 'people');
-
     const normalizedRoles = normalizePersonRoles(roles);
     const normalizedTags = normalizeTags(tags);
 
@@ -2613,7 +2886,7 @@ app.post('/api/people', (req, res) => {
         JSON.stringify(coerceJsonObject(teams))
     );
 
-    res.status(201).json({
+    return res.status(201).json({
         id,
         displayName: normalizedName,
         email,
@@ -2645,6 +2918,53 @@ app.put('/api/people/:id', (req, res) => {
     const normalizedName = normalizeName(displayName);
     if (!normalizedName) {
         return res.status(400).json({ error: 'Display name is required' });
+    }
+
+    if (tableExists('person')) {
+        const existing = db.prepare('SELECT person_id FROM person WHERE person_id = ?').get(id);
+        if (!existing) {
+            return res.status(404).json({ error: 'Person not found' });
+        }
+        const [firstName, ...rest] = normalizedName.split(' ');
+        const lastName = rest.length ? rest.join(' ') : '';
+        db.prepare(`
+            UPDATE person SET
+                display_name = ?,
+                first_name = ?,
+                last_name = ?,
+                email_primary = ?,
+                email_secondary = ?,
+                phone_primary = ?,
+                phone_secondary = ?,
+                address1 = ?,
+                address2 = ?,
+                city = ?,
+                state = ?,
+                zip = ?,
+                updated_at = datetime('now')
+            WHERE person_id = ?
+        `).run(
+            normalizedName,
+            firstName || null,
+            lastName || null,
+            email,
+            emailSecondary || null,
+            phonePrimary,
+            phoneAlternate,
+            addressLine1,
+            addressLine2,
+            city,
+            state,
+            postalCode,
+            id
+        );
+        return res.json({
+            id,
+            displayName: normalizedName,
+            email,
+            phonePrimary,
+            phoneAlternate
+        });
     }
 
     const existing = db.prepare('SELECT id FROM people WHERE id = ?').get(id);
@@ -2688,7 +3008,7 @@ app.put('/api/people/:id', (req, res) => {
         id
     );
 
-    res.json({
+    return res.json({
         id,
         displayName: normalizedName,
         email,
@@ -2701,11 +3021,18 @@ app.put('/api/people/:id', (req, res) => {
 
 app.delete('/api/people/:id', (req, res) => {
     const { id } = req.params;
+    if (tableExists('person')) {
+        const result = db.prepare('DELETE FROM person WHERE person_id = ?').run(id);
+        if (result.changes === 0) {
+            return res.status(404).json({ error: 'Person not found' });
+        }
+        return res.json({ success: true });
+    }
     const result = db.prepare('DELETE FROM people WHERE id = ?').run(id);
     if (result.changes === 0) {
         return res.status(404).json({ error: 'Person not found' });
     }
-    res.json({ success: true });
+    return res.json({ success: true });
 });
 
 // --- Buildings & Grounds ---
@@ -2920,69 +3247,158 @@ const setTicketAreas = (ticketId, areaIds = []) => {
     });
 };
 
-const listTaskInstances = (whereClause, params = []) => {
-    if (!tableExists('task_instances') || !tableExists('tasks_new')) {
-        const legacyRows = db.prepare(`
-            SELECT tasks.*, tickets.title AS ticket_title
-            FROM tasks
-            LEFT JOIN tickets ON tasks.ticket_id = tickets.id
-            ORDER BY tasks.created_at DESC
-        `).all();
-        return legacyRows.map((row) => ({
-            id: row.id,
-            task_id: row.id,
-            text: row.text,
-            description: '',
-            completed: !!row.completed,
-            created_at: row.created_at,
-            completed_at: row.completed_at || null,
-            due_at: null,
-            sla_target_at: null,
-            start_at: null,
-            state: row.completed ? 'done' : 'open',
-            blocked: false,
-            priority_base: 50,
-            priority_override: null,
-            priority_effective: 50,
-            priority_tier: getPriorityTier(50),
-            rank: null,
-            task_type: null,
-            origin_type: row.ticket_id ? 'ticket' : 'manual',
-            origin_id: row.ticket_id || 'manual',
-            origin_event: 'legacy',
-            ticket_id: row.ticket_id || null,
-            ticket_title: row.ticket_title || ''
-        }));
+const listTaskInstances = (whereClause = '', params = []) => {
+    if (tableExists('tasks_new') && tableExists('task_instances')) {
+        applyTaskArchiving();
+        const hasTemplates = tableExists('recurring_task_templates');
+        const rows = db.prepare(`
+            SELECT
+                ti.id AS task_instance_id,
+                t.id AS task_id,
+                t.title,
+                t.description,
+                t.status AS task_status,
+                ti.state AS instance_state,
+                ti.due_at,
+                ti.start_at,
+                ti.completed_at,
+                ti.priority_override,
+                t.priority_base,
+                t.task_type,
+                ti.rank,
+                ti.sla_target_at,
+                ti.blocked,
+                ti.archived_at,
+                ti.archive_after_due,
+                ti.keep_until,
+                ti.list_key,
+                ti.list_title,
+                ti.list_mode,
+                src.origin_type,
+                src.origin_id,
+                src.origin_event,
+                ${hasTemplates ? 'rt.sort_order AS step_order,' : 'NULL AS step_order,'}
+                t.created_at AS task_created_at,
+                tickets.title AS ticket_title
+            FROM task_instances ti
+            JOIN tasks_new t ON t.id = ti.task_id
+            LEFT JOIN view_task_source src ON src.task_instance_id = ti.id
+            ${hasTemplates ? `
+            LEFT JOIN recurring_task_templates rt
+                ON rt.origin_type = src.origin_type
+                AND rt.step_key = src.origin_event
+                AND (rt.origin_id IS NULL OR rt.origin_id = src.origin_id)
+            ` : ''}
+            LEFT JOIN tickets ON src.origin_type = 'ticket' AND src.origin_id = tickets.id
+            ${whereClause}
+        `).all(...params);
+        return rows.map(formatTaskInstanceRow);
     }
-    const rows = db.prepare(`
-        SELECT
-            ti.id AS task_instance_id,
-            t.id AS task_id,
-            t.title,
-            t.description,
-            t.status AS task_status,
-            ti.state AS instance_state,
-            ti.due_at,
-            ti.start_at,
-            ti.completed_at,
-            ti.priority_override,
-            t.priority_base,
-            t.task_type,
-            ti.rank,
-            ti.sla_target_at,
-            ti.blocked,
-            src.origin_type,
-            src.origin_id,
-            src.origin_event,
-            t.created_at AS task_created_at,
-            tickets.title AS ticket_title
-        FROM task_instances ti
-        JOIN tasks_new t ON t.id = ti.task_id
-        LEFT JOIN view_task_source src ON src.task_instance_id = ti.id
-        LEFT JOIN tickets ON src.origin_type = 'ticket' AND src.origin_id = tickets.id
-        ${whereClause}
-    `).all(...params);
-    return rows.map(formatTaskInstanceRow);
+
+    if (tableExists('task_instances') && tableExists('tasks')) {
+        const resolvedWhere = whereClause.replace(/src\./g, 'o.');
+        const rows = db.prepare(`
+            SELECT
+                ti.id AS task_instance_id,
+                t.id AS task_id,
+                COALESCE(ti.title_override, t.title) AS title,
+                COALESCE(ti.description_override, t.description) AS description,
+                t.status AS task_status,
+                ti.state AS instance_state,
+                ti.due_at,
+                ti.started_at AS start_at,
+                ti.completed_at,
+                ti.priority_override,
+                t.priority_base,
+                ti.rank,
+                ti.created_at AS task_created_at,
+                o.origin_type,
+                o.origin_id,
+                o.origin_event,
+                tli.position AS step_order,
+                tl.id AS list_id,
+                tl.title AS list_title,
+                tl.list_type AS list_type
+            FROM task_instances ti
+            JOIN tasks t ON t.id = ti.task_id
+            LEFT JOIN task_list_items tli ON tli.task_instance_id = ti.id
+            LEFT JOIN task_lists tl ON tl.id = tli.task_list_id
+            LEFT JOIN task_origins o ON o.scope = 'instance' AND o.task_instance_id = ti.id
+            ${resolvedWhere}
+        `).all(...params);
+        return rows.map(formatTaskInstanceRow);
+    }
+
+    return [];
+};
+
+const buildOriginRollups = (tasks) => {
+    const grouped = tasks.reduce((acc, task) => {
+        if (task.archived_at) return acc;
+        const originType = task.origin_type || 'manual';
+        const originId = task.origin_id || 'manual';
+        const key = `${originType}:${originId}`;
+        if (!acc[key]) {
+            acc[key] = {
+                key,
+                origin_type: originType,
+                origin_id: originId,
+                tasks: []
+            };
+        }
+        acc[key].tasks.push(task);
+        return acc;
+    }, {});
+
+    const rollups = Object.values(grouped).map((group) => {
+        const total = group.tasks.length;
+        const openTasks = group.tasks.filter((task) => !task.completed);
+        const completedCount = total - openTasks.length;
+        let nextTask = null;
+        if (openTasks.length) {
+            const hasSequence = openTasks.some((task) => task.rank != null || task.step_order != null);
+            let sorted;
+            if (hasSequence) {
+                sorted = [...openTasks].sort((a, b) => {
+                    const rankA = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
+                    const rankB = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
+                    if (rankA !== rankB) return rankA - rankB;
+                    const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : a.step_order;
+                    const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : b.step_order;
+                    if (orderA !== orderB) return orderA - orderB;
+                    const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
+                    const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+                    if (dueA !== dueB) return dueA - dueB;
+                    return b.priority_effective - a.priority_effective;
+                });
+                const chainMax = Math.max(...openTasks.map((task) => task.priority_effective ?? 0));
+                nextTask = {
+                    ...sorted[0],
+                    priority_effective: chainMax,
+                    priority_tier: getPriorityTier(chainMax)
+                };
+            } else {
+                sorted = sortTasksByPriority(openTasks);
+                nextTask = sorted[0];
+            }
+        }
+        return {
+            key: group.key,
+            origin_type: group.origin_type,
+            origin_id: group.origin_id,
+            total_count: total,
+            open_count: openTasks.length,
+            completed_count: completedCount,
+            next_task: nextTask
+        };
+    });
+
+    const withNext = rollups.filter((row) => row.next_task);
+    const withoutNext = rollups.filter((row) => !row.next_task);
+    const sortedWithNext = sortTasksByPriority(withNext.map((row) => row.next_task)).map((task) => (
+        withNext.find((row) => row.next_task?.id === task.id)
+    )).filter(Boolean);
+    return [...sortedWithNext, ...withoutNext];
 };
 
 const deleteTaskInstance = (taskInstanceId) => {
@@ -3029,6 +3445,9 @@ const buildTicketResponse = (ticketRow) => {
 };
 
 app.get('/api/tickets', (req, res) => {
+    if (!tableExists('tickets')) {
+        return res.json([]);
+    }
     const rows = db.prepare('SELECT * FROM tickets ORDER BY created_at DESC').all();
     const tickets = rows.map(buildTicketResponse);
     res.json(tickets);
@@ -3036,6 +3455,9 @@ app.get('/api/tickets', (req, res) => {
 
 app.get('/api/tickets/:id', (req, res) => {
     const { id } = req.params;
+    if (!tableExists('tickets')) {
+        return res.status(404).json({ error: 'Ticket not found' });
+    }
     const row = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
     if (!row) {
         return res.status(404).json({ error: 'Ticket not found' });
@@ -3156,17 +3578,215 @@ app.delete('/api/tickets/:id', (req, res) => {
 });
 
 app.get('/api/tasks', (req, res) => {
+    const includeArchived = String(req.query.include_archived || '').trim() === '1';
     const originType = String(req.query.origin_type || '').trim();
     const originId = String(req.query.origin_id || '').trim();
+    const rollup = String(req.query.rollup || '').trim() === '1';
     const whereClause = originType && originId
         ? `WHERE src.origin_type = ? AND src.origin_id = ?`
         : '';
     const rows = listTaskInstances(whereClause, originType && originId ? [originType, originId] : []);
-    const tasks = sortTasksByPriority(rows);
-    res.json(tasks);
+    const tasks = sortTasksByPriority(rows.filter((task) => (
+        includeArchived || !task.archived_at
+    )));
+    if (!rollup) {
+        return res.json(tasks);
+    }
+    const grouped = tasks.reduce((acc, task) => {
+        if (task.completed) return acc;
+        const originType = task.origin_type || 'manual';
+        const originId = task.origin_id || 'manual';
+        const key = `${originType}:${originId}`;
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(task);
+        return acc;
+    }, {});
+    const rollupTasks = Object.values(grouped).map((group) => {
+        const incomplete = group.filter((task) => !task.completed);
+        if (!incomplete.length) return null;
+        const listGroups = incomplete.reduce((acc, task) => {
+            const listKey = task.list_key || 'default';
+            if (!acc[listKey]) acc[listKey] = [];
+            acc[listKey].push(task);
+            return acc;
+        }, {});
+        const listNextTasks = Object.values(listGroups).map((listTasks) => {
+            if (!listTasks.length) return null;
+            const listMode = listTasks[0]?.list_mode || 'sequential';
+            const hasSequence = listMode === 'sequential'
+                || listTasks.some((task) => task.rank != null || task.step_order != null);
+            let sorted;
+            if (hasSequence) {
+                sorted = [...listTasks].sort((a, b) => {
+                    const rankA = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
+                    const rankB = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
+                    if (rankA !== rankB) return rankA - rankB;
+                    const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : a.step_order;
+                    const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : b.step_order;
+                    if (orderA !== orderB) return orderA - orderB;
+                    const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
+                    const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+                    if (dueA !== dueB) return dueA - dueB;
+                    return b.priority_effective - a.priority_effective;
+                });
+                const chainMax = Math.max(...listTasks.map((task) => task.priority_effective ?? 0));
+                return {
+                    ...sorted[0],
+                    priority_effective: chainMax,
+                    priority_tier: getPriorityTier(chainMax)
+                };
+            }
+            sorted = sortTasksByPriority(listTasks);
+            return sorted[0];
+        }).filter(Boolean);
+        if (!listNextTasks.length) return null;
+        const sortedOrigin = sortTasksByPriority(listNextTasks);
+        return sortedOrigin[0];
+    }).filter(Boolean);
+    let sortedRollup = sortTasksByPriority(rollupTasks);
+    const sundayCandidates = sortedRollup.filter(
+        (task) => task.origin_type === 'sunday' && task.origin_id
+    );
+    if (sundayCandidates.length) {
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const sundayIds = sundayCandidates
+            .map((task) => task.origin_id)
+            .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+            .sort();
+        const nextSundayId = sundayIds.find((value) => value >= todayKey) || sundayIds[0];
+        if (nextSundayId) {
+            sortedRollup = sortedRollup.filter((task) => (
+                task.origin_type !== 'sunday' || task.origin_id === nextSundayId
+            ));
+        }
+    }
+    return res.json(sortedRollup);
+});
+
+app.get('/api/task-origins', (req, res) => {
+    const tasks = listTaskInstances('');
+    const rollups = buildOriginRollups(tasks).map((origin) => ({
+        ...origin,
+        label: origin.next_task?.text || `${origin.origin_type}:${origin.origin_id}`
+    }));
+    res.json(rollups);
+});
+
+app.delete('/api/task-origins', (req, res) => {
+    const originType = String(req.query.origin_type || '').trim();
+    const originId = String(req.query.origin_id || '').trim();
+    if (!originType || !originId) {
+        return res.status(400).json({ error: 'origin_type and origin_id are required' });
+    }
+    const tasks = listTaskInstances(
+        `WHERE src.origin_type = ? AND src.origin_id = ?`,
+        [originType, originId]
+    );
+    tasks.forEach((task) => {
+        deleteTaskInstance(task.id);
+    });
+    res.json({ success: true });
+});
+
+app.post('/api/task-origins/assign', (req, res) => {
+    const {
+        from_origin_type,
+        from_origin_id,
+        to_origin_type,
+        to_origin_id,
+        label
+    } = req.body || {};
+    if (!from_origin_type || !from_origin_id || !to_origin_type || !to_origin_id) {
+        return res.status(400).json({ error: 'from_origin_type, from_origin_id, to_origin_type, and to_origin_id are required' });
+    }
+    const title = label || `Origin: ${from_origin_type} ${from_origin_id}`;
+    const generationKey = `origin-link:${from_origin_type}:${from_origin_id}:to:${to_origin_type}:${to_origin_id}`;
+    const taskInstanceId = createTaskInstance({
+        title,
+        taskType: 'origin-link',
+        priorityBase: 50,
+        dueAt: null,
+        originType: to_origin_type,
+        originId: to_origin_id,
+        originEvent: 'origin-link',
+        generationKey
+    });
+    if (!taskInstanceId) {
+        return res.status(200).json({ success: true, task_instance_id: null });
+    }
+    upsertEntityLink({
+        fromType: 'task_instance',
+        fromId: taskInstanceId,
+        toType: from_origin_type,
+        toId: from_origin_id,
+        role: 'origin_link',
+        metaJson: JSON.stringify({ label: title })
+    });
+    res.json({ success: true, task_instance_id: taskInstanceId });
 });
 
 app.post('/api/tasks', (req, res) => {
+    if (tableExists('tasks') && tableExists('task_instances') && !tableExists('tasks_new')) {
+        const {
+            text,
+            source_type = 'manual',
+            source_id = 'manual',
+            source_event = 'created',
+            priority_base = null,
+            priority_override = null,
+            due_at = null,
+            rank = null,
+            state = null
+        } = req.body || {};
+        const normalizedText = normalizeName(text);
+        if (!normalizedText) {
+            return res.status(400).json({ error: 'Task text is required' });
+        }
+        const now = new Date().toISOString();
+        const taskId = `task-${randomUUID()}`;
+        const taskInstanceId = `taskinst-${randomUUID()}`;
+        const basePriority = Number.isFinite(Number(priority_base)) ? Number(priority_base) : 50;
+        const instanceState = state || 'open';
+
+        db.prepare(`
+            INSERT INTO tasks (id, title, description, status, priority_base, created_at, updated_at)
+            VALUES (?, ?, NULL, 'active', ?, ?, ?)
+        `).run(taskId, normalizedText, basePriority, now, now);
+
+        db.prepare(`
+            INSERT INTO task_instances (
+                id, task_id, state, priority_override, rank, due_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            taskInstanceId,
+            taskId,
+            instanceState,
+            priority_override,
+            rank,
+            due_at,
+            now,
+            now
+        );
+
+        db.prepare(`
+            INSERT INTO task_origins (
+                id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            `origin-${taskInstanceId}`,
+            'instance',
+            taskId,
+            taskInstanceId,
+            source_type || 'manual',
+            source_id || 'manual',
+            source_event || 'created',
+            now
+        );
+
+        const [created] = listTaskInstances('WHERE ti.id = ?', [taskInstanceId]);
+        return res.status(201).json(created);
+    }
+
     if (!tableExists('task_instances') || !tableExists('tasks_new')) {
         const { text, ticket_id = null } = req.body || {};
         const normalizedText = normalizeName(text);
@@ -3207,7 +3827,10 @@ app.post('/api/tasks', (req, res) => {
         sla_target_at = null,
         rank = null,
         state = null,
-        blocked = 0
+        blocked = 0,
+        list_key = null,
+        list_title = null,
+        list_mode = 'sequential'
     } = req.body || {};
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
@@ -3251,8 +3874,9 @@ app.post('/api/tasks', (req, res) => {
     db.prepare(`
         INSERT INTO task_instances (
             id, task_id, state, due_at, start_at, completed_at, generated_from,
-            generation_key, priority_override, rank, sla_target_at, blocked
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            generation_key, priority_override, rank, sla_target_at, blocked,
+            list_key, list_title, list_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         taskInstanceId,
         taskId,
@@ -3265,7 +3889,10 @@ app.post('/api/tasks', (req, res) => {
         priority_override,
         rank,
         sla_target_at,
-        Number(blocked) ? 1 : 0
+        Number(blocked) ? 1 : 0,
+        list_key,
+        list_title || list_key,
+        list_mode || 'sequential'
     );
 
     const originType = source_type || (ticket_id ? 'ticket' : 'manual');
@@ -3302,6 +3929,56 @@ app.post('/api/tasks', (req, res) => {
 
 app.put('/api/tasks/:id', (req, res) => {
     const { id } = req.params;
+    if (tableExists('tasks') && tableExists('task_instances') && !tableExists('tasks_new')) {
+        const existing = db.prepare(`
+            SELECT ti.*, t.title, t.priority_base
+            FROM task_instances ti
+            JOIN tasks t ON t.id = ti.task_id
+            WHERE ti.id = ?
+        `).get(id);
+        if (!existing) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        const {
+            text = existing.title,
+            completed = existing.state === 'done',
+            priority_override = existing.priority_override,
+            due_at = existing.due_at,
+            rank = existing.rank
+        } = req.body || {};
+        const normalizedText = normalizeName(text);
+        if (!normalizedText) {
+            return res.status(400).json({ error: 'Task text is required' });
+        }
+        const completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
+        const nextState = completed ? 'done' : 'open';
+
+        db.prepare('UPDATE tasks SET title = ?, updated_at = ? WHERE id = ?')
+            .run(normalizedText, new Date().toISOString(), existing.task_id);
+
+        db.prepare(`
+            UPDATE task_instances SET
+                state = ?,
+                due_at = ?,
+                priority_override = ?,
+                rank = ?,
+                completed_at = ?,
+                updated_at = ?
+            WHERE id = ?
+        `).run(
+            nextState,
+            due_at,
+            priority_override,
+            rank,
+            completedAt,
+            new Date().toISOString(),
+            id
+        );
+
+        const [updated] = listTaskInstances('WHERE ti.id = ?', [id]);
+        return res.json(updated);
+    }
+
     if (!tableExists('task_instances') || !tableExists('tasks_new')) {
         const existing = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
         if (!existing) {
@@ -3341,7 +4018,9 @@ app.put('/api/tasks/:id', (req, res) => {
         due_at = existing.due_at,
         sla_target_at = existing.sla_target_at,
         rank = existing.rank,
-        blocked = existing.blocked
+        blocked = existing.blocked,
+        archive_after_due = existing.archive_after_due ?? 1,
+        keep_until = existing.keep_until || null
     } = req.body || {};
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
@@ -3364,7 +4043,9 @@ app.put('/api/tasks/:id', (req, res) => {
             priority_override = ?,
             rank = ?,
             blocked = ?,
-            completed_at = ?
+            completed_at = ?,
+            archive_after_due = ?,
+            keep_until = ?
         WHERE id = ?
     `).run(
         nextState,
@@ -3374,6 +4055,8 @@ app.put('/api/tasks/:id', (req, res) => {
         rank,
         Number(blocked) ? 1 : 0,
         completedAt,
+        Number(archive_after_due) ? 1 : 0,
+        keep_until,
         id
     );
 
@@ -3383,6 +4066,21 @@ app.put('/api/tasks/:id', (req, res) => {
 
 app.delete('/api/tasks/:id', (req, res) => {
     const { id } = req.params;
+    if (tableExists('tasks') && tableExists('task_instances') && !tableExists('tasks_new')) {
+        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(id);
+        if (!row) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        db.prepare('DELETE FROM task_list_items WHERE task_instance_id = ?').run(id);
+        db.prepare('DELETE FROM task_instances WHERE id = ?').run(id);
+        db.prepare('DELETE FROM task_origins WHERE task_instance_id = ?').run(id);
+        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
+        if (!remaining) {
+            db.prepare('DELETE FROM tasks WHERE id = ?').run(row.task_id);
+        }
+        return res.json({ success: true });
+    }
+
     if (!tableExists('task_instances') || !tableExists('tasks_new')) {
         const result = db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
         if (!result.changes) {
@@ -3485,11 +4183,156 @@ app.delete('/api/links/:id', (req, res) => {
     res.json({ success: true });
 });
 
+// --- Recurring Task Templates ---
+
+app.get('/api/recurring-templates', (req, res) => {
+    const originType = String(req.query.origin_type || '').trim();
+    if (!originType) {
+        return res.status(400).json({ error: 'origin_type is required' });
+    }
+    if (!tableExists('recurring_task_templates')) {
+        return res.json([]);
+    }
+    const originId = req.query.origin_id ? String(req.query.origin_id) : null;
+    const rows = db.prepare(`
+        SELECT *
+        FROM recurring_task_templates
+        WHERE origin_type = ?
+          AND (origin_id IS NULL OR origin_id = ?)
+        ORDER BY sort_order ASC, title ASC
+    `).all(originType, originId);
+    res.json(rows);
+});
+
+app.post('/api/recurring-templates', (req, res) => {
+    if (!tableExists('recurring_task_templates')) {
+        return res.status(400).json({ error: 'Recurring templates table not initialized' });
+    }
+    const {
+        origin_type,
+        origin_id = null,
+        list_key = null,
+        list_title = null,
+        list_mode = 'sequential',
+        step_key,
+        title,
+        sort_order = 0,
+        due_offset_days = null,
+        priority_base = 50,
+        active = 1
+    } = req.body || {};
+    if (!origin_type || !list_key || !step_key || !title) {
+        return res.status(400).json({ error: 'origin_type, list_key, step_key, and title are required' });
+    }
+    const now = new Date().toISOString();
+    const id = `tmpl-${randomUUID()}`;
+    db.prepare(`
+        INSERT INTO recurring_task_templates (
+            id, origin_type, origin_id, list_key, list_title, list_mode,
+            step_key, title, sort_order, due_offset_days,
+            priority_base, active, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        id,
+        origin_type,
+        origin_id,
+        list_key,
+        list_title || list_key,
+        list_mode || 'sequential',
+        step_key,
+        title,
+        Number(sort_order) || 0,
+        due_offset_days != null ? Number(due_offset_days) : null,
+        Number(priority_base) || 50,
+        active ? 1 : 0,
+        now,
+        now
+    );
+    res.status(201).json({ id });
+});
+
+app.put('/api/recurring-templates/:id', (req, res) => {
+    if (!tableExists('recurring_task_templates')) {
+        return res.status(400).json({ error: 'Recurring templates table not initialized' });
+    }
+    const { id } = req.params;
+    const existing = db.prepare('SELECT * FROM recurring_task_templates WHERE id = ?').get(id);
+    if (!existing) {
+        return res.status(404).json({ error: 'Template not found' });
+    }
+    const {
+        title = existing.title,
+        sort_order = existing.sort_order,
+        due_offset_days = existing.due_offset_days,
+        priority_base = existing.priority_base,
+        active = existing.active,
+        step_key = existing.step_key,
+        list_key = existing.list_key,
+        list_title = existing.list_title,
+        list_mode = existing.list_mode || 'sequential'
+    } = req.body || {};
+    db.prepare(`
+        UPDATE recurring_task_templates SET
+            title = ?,
+            step_key = ?,
+            list_key = ?,
+            list_title = ?,
+            list_mode = ?,
+            sort_order = ?,
+            due_offset_days = ?,
+            priority_base = ?,
+            active = ?,
+            updated_at = ?
+        WHERE id = ?
+    `).run(
+        title,
+        step_key,
+        list_key,
+        list_title || list_key,
+        list_mode || 'sequential',
+        Number(sort_order) || 0,
+        due_offset_days != null ? Number(due_offset_days) : null,
+        Number(priority_base) || 50,
+        active ? 1 : 0,
+        new Date().toISOString(),
+        id
+    );
+    res.json({ success: true });
+});
+
+app.delete('/api/recurring-templates/:id', (req, res) => {
+    if (!tableExists('recurring_task_templates')) {
+        return res.status(400).json({ error: 'Recurring templates table not initialized' });
+    }
+    const { id } = req.params;
+    const result = db.prepare('DELETE FROM recurring_task_templates WHERE id = ?').run(id);
+    if (!result.changes) {
+        return res.status(404).json({ error: 'Template not found' });
+    }
+    res.json({ success: true });
+});
+
+app.post('/api/recurring-templates/seed', (req, res) => {
+    const originType = String(req.query.origin_type || req.body?.origin_type || '').trim();
+    if (originType && !['sunday', 'vestry', 'operations'].includes(originType)) {
+        return res.status(400).json({ error: 'Only sunday, vestry, and operations seeding is supported right now.' });
+    }
+    if (!originType || originType === 'sunday') seedSundayTasksFromTemplates();
+    if (!originType || originType === 'vestry') seedVestryTasksFromTemplates();
+    if (!originType || originType === 'operations') seedOperationsTasksFromTemplates();
+    res.json({ success: true });
+});
+
 // Get all events (merged)
 app.get('/api/events', async (req, res) => {
     try {
+        if (!tableExists('events') || !tableExists('event_occurrences')) {
+            return res.json([]);
+        }
         // 1. Get liturgical events
-        const days = db.prepare('SELECT * FROM liturgical_days ORDER BY date').all();
+        const days = tableExists('liturgical_days')
+            ? db.prepare('SELECT * FROM liturgical_days ORDER BY date').all()
+            : [];
         const liturgicalEvents = days.map(day => {
             // Map liturgical color name to hex if possible or use default
             const colorMap = {
@@ -4367,6 +5210,11 @@ const getQuarterMonthLabels = (meetingDate) => {
 };
 
 const findVestryClerkName = () => {
+    if (tableExists('person')) {
+        const rows = db.prepare('SELECT display_name FROM person ORDER BY display_name').all();
+        const match = rows.find((row) => normalizeToken(row.display_name || '') === 'vestry clerk');
+        return match?.display_name || 'Anne Sirimane';
+    }
     const rows = db.prepare('SELECT display_name, roles, tags FROM people ORDER BY display_name').all();
     const matches = rows.find((row) => {
         const roleTokens = normalizePersonRoles(row.roles).map((role) => normalizeToken(role));

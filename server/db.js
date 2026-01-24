@@ -60,6 +60,10 @@ const seedVestryChecklist = () => {
 seedVestryChecklist();
 
 const ensurePeopleColumns = () => {
+    const table = sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'people'
+    `).get();
+    if (!table) return;
     const columns = sqlite.prepare('PRAGMA table_info(people)').all().map((col) => col.name);
     const columnSet = new Set(columns);
     const addColumn = (name) => {
