@@ -3037,7 +3037,65 @@ app.delete('/api/people/:id', (req, res) => {
 
 // --- Buildings & Grounds ---
 
+const buildBuildingMapId = (name = '') => {
+    const normalized = slugifyName(name);
+    const aliases = {
+        'church': 'sanctuary',
+        'sanctuary': 'sanctuary',
+        'chapel': 'chapel',
+        'fellows-hall': 'parish-hall',
+        'parish-hall': 'parish-hall',
+        'office-school': 'office',
+        'office': 'office',
+        'north-parking': 'parking-north',
+        'south-parking': 'parking-south',
+        'north-lot': 'parking-north',
+        'south-lot': 'parking-south',
+        'playground': 'playground',
+        'close': 'close'
+    };
+    return aliases[normalized] || normalized;
+};
+
 app.get('/api/buildings', (req, res) => {
+    if (tableExists('building')) {
+        const rows = db.prepare('SELECT building_id, name, notes FROM building ORDER BY name').all();
+        const roomRows = tableExists('room')
+            ? db.prepare('SELECT room_id, building_id, name, floor, capacity, rental_rate FROM room ORDER BY name').all()
+            : [];
+        const roomsByBuilding = roomRows.reduce((acc, room) => {
+            const key = String(room.building_id);
+            if (!acc[key]) acc[key] = [];
+            acc[key].push({
+                id: String(room.room_id),
+                building_id: String(room.building_id),
+                name: room.name,
+                floor: room.floor ?? null,
+                capacity: room.capacity ?? null,
+                rental_rate: room.rental_rate ?? null,
+                notes: null
+            });
+            return acc;
+        }, {});
+        const buildings = rows.map((row) => ({
+            id: String(row.building_id),
+            building_id: row.building_id,
+            map_id: buildBuildingMapId(row.name || ''),
+            name: row.name,
+            category: '',
+            capacity: 0,
+            size_sqft: 0,
+            rental_rate_hour: 0,
+            rental_rate_day: 0,
+            rental_rate: 0,
+            parking_spaces: 0,
+            event_types: [],
+            notes: row.notes || '',
+            rooms: roomsByBuilding[String(row.building_id)] || []
+        }));
+        return res.json(buildings);
+    }
+
     const rows = db.prepare('SELECT * FROM buildings ORDER BY name').all();
     const buildings = rows.map(row => {
         const roomRows = db.prepare(`
@@ -3073,6 +3131,31 @@ app.get('/api/buildings', (req, res) => {
 });
 
 app.get('/api/vendors', async (req, res) => {
+    if (tableExists('vendor')) {
+        const rows = db.prepare(`
+            SELECT vendor_id, name, service_category, contact, phone, email, notes, contract
+            FROM vendor
+            ORDER BY service_category, name
+        `).all();
+        const contractsDir = join(DROPBOX_ROOT, 'Contracts');
+        const vendors = await Promise.all(rows.map(async (row) => {
+            const contract = await resolveContractFile(contractsDir, row.name, row.contract);
+            return {
+                id: String(row.vendor_id),
+                service: row.service_category || '',
+                vendor: row.name,
+                contact: row.contact || '',
+                phone: row.phone || '',
+                email: row.email || '',
+                notes: row.notes || '',
+                contract: row.contract || '',
+                contract_path: contract.path,
+                contract_exists: contract.exists
+            };
+        }));
+        return res.json(vendors);
+    }
+
     const rows = db.prepare(`
         SELECT id, service, vendor, contact, phone, email, notes, contract
         FROM preferred_vendors
@@ -3106,6 +3189,28 @@ app.post('/api/buildings', (req, res) => {
     const normalizedName = normalizeName(name);
     if (!normalizedName) {
         return res.status(400).json({ error: 'Name is required' });
+    }
+
+    if (tableExists('building')) {
+        const info = db.prepare(`
+            INSERT INTO building (name, notes)
+            VALUES (?, ?)
+        `).run(normalizedName, notes || '');
+        return res.status(201).json({
+            id: String(info.lastInsertRowid),
+            building_id: info.lastInsertRowid,
+            map_id: buildBuildingMapId(normalizedName),
+            name: normalizedName,
+            category: '',
+            capacity: 0,
+            size_sqft: 0,
+            rental_rate_hour: 0,
+            rental_rate_day: 0,
+            parking_spaces: 0,
+            event_types: [],
+            notes: notes || '',
+            rooms: []
+        });
     }
 
     const baseId = slugifyName(normalizedName) || `building-${Date.now()}`;
@@ -3144,6 +3249,34 @@ app.post('/api/buildings', (req, res) => {
 
 app.put('/api/buildings/:id', (req, res) => {
     const { id } = req.params;
+    if (tableExists('building')) {
+        const existing = db.prepare('SELECT building_id FROM building WHERE building_id = ?').get(id);
+        if (!existing) {
+            return res.status(404).json({ error: 'Building not found' });
+        }
+        const { name, notes = '' } = req.body || {};
+        const normalizedName = normalizeName(name);
+        if (!normalizedName) {
+            return res.status(400).json({ error: 'Name is required' });
+        }
+        db.prepare('UPDATE building SET name = ?, notes = ? WHERE building_id = ?')
+            .run(normalizedName, notes || '', id);
+        return res.json({
+            id: String(id),
+            building_id: Number(id),
+            map_id: buildBuildingMapId(normalizedName),
+            name: normalizedName,
+            category: '',
+            capacity: 0,
+            size_sqft: 0,
+            rental_rate_hour: 0,
+            rental_rate_day: 0,
+            parking_spaces: 0,
+            event_types: [],
+            notes: notes || '',
+            rooms: []
+        });
+    }
     const {
         name,
         category = 'All Purpose',
@@ -3207,6 +3340,13 @@ app.put('/api/buildings/:id', (req, res) => {
 
 app.delete('/api/buildings/:id', (req, res) => {
     const { id } = req.params;
+    if (tableExists('building')) {
+        const result = db.prepare('DELETE FROM building WHERE building_id = ?').run(id);
+        if (result.changes === 0) {
+            return res.status(404).json({ error: 'Building not found' });
+        }
+        return res.json({ success: true });
+    }
     const result = db.prepare('DELETE FROM buildings WHERE id = ?').run(id);
     if (result.changes === 0) {
         return res.status(404).json({ error: 'Building not found' });

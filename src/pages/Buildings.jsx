@@ -49,17 +49,80 @@ const Buildings = () => {
         }).format(numeric);
     };
 
-    // Needs Data
-    const [needs, setNeeds] = useState([
-        { id: 1, text: 'Repaint Parish Hall', priority: 'High' },
-        { id: 2, text: 'Replace carpet in Vestry', priority: 'Medium' },
-    ]);
+    // Needs Data (backed by task engine)
+    const [needs, setNeeds] = useState([]);
+    const [needsLoading, setNeedsLoading] = useState(true);
+    const [needsError, setNeedsError] = useState('');
     const [newNeed, setNewNeed] = useState('');
 
     // Vendors Data
     const [vendors, setVendors] = useState([]);
     const [vendorsLoading, setVendorsLoading] = useState(true);
     const [vendorsError, setVendorsError] = useState('');
+
+    const loadNeeds = async () => {
+        setNeedsLoading(true);
+        setNeedsError('');
+        try {
+            const params = new URLSearchParams({
+                origin_type: 'operations',
+                origin_id: 'long-term-needs'
+            });
+            const response = await fetch(`${API_URL}/tasks?${params.toString()}`);
+            if (!response.ok) throw new Error('Failed to load needs');
+            const data = await response.json();
+            setNeeds(Array.isArray(data) ? data : []);
+        } catch (error) {
+            console.error('Failed to load long term needs:', error);
+            setNeeds([]);
+            setNeedsError('Unable to load long term needs.');
+        } finally {
+            setNeedsLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        loadNeeds();
+    }, []);
+
+    const addNeed = async () => {
+        const trimmed = newNeed.trim();
+        if (!trimmed) return;
+        try {
+            const response = await fetch(`${API_URL}/tasks`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: trimmed,
+                    source_type: 'operations',
+                    source_id: 'long-term-needs',
+                    list_title: 'Long Term Needs'
+                })
+            });
+            if (!response.ok) throw new Error('Failed to create need');
+            setNewNeed('');
+            await loadNeeds();
+        } catch (error) {
+            console.error('Failed to add long term need:', error);
+            setNeedsError('Unable to add long term need.');
+        }
+    };
+
+    const toggleNeed = async (task) => {
+        if (!task) return;
+        try {
+            const response = await fetch(`${API_URL}/tasks/${task.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: task.text, completed: !task.completed })
+            });
+            if (!response.ok) throw new Error('Failed to update task');
+            await loadNeeds();
+        } catch (error) {
+            console.error('Failed to update long term need:', error);
+            setNeedsError('Unable to update long term need.');
+        }
+    };
 
     const renderNeeds = () => (
         <Card>
@@ -73,25 +136,33 @@ const Buildings = () => {
                         onChange={e => setNewNeed(e.target.value)}
                         onKeyDown={e => {
                             if (e.key === 'Enter' && newNeed) {
-                                setNeeds([...needs, { id: Date.now(), text: newNeed, priority: 'Medium' }]);
-                                setNewNeed('');
+                                addNeed();
                             }
                         }}
                     />
-                    <button className="btn-primary" onClick={() => {
-                        if (newNeed) {
-                            setNeeds([...needs, { id: Date.now(), text: newNeed, priority: 'Medium' }]);
-                            setNewNeed('');
-                        }
-                    }}>Add</button>
+                    <button className="btn-primary" onClick={addNeed}>Add</button>
                 </div>
-                <ul>
-                    {needs.map(n => (
-                        <li key={n.id} style={{ padding: '10px', borderBottom: '1px solid #eee' }}>
-                            {n.text} <span style={{ fontSize: '0.8rem', color: '#888' }}>({n.priority})</span>
-                        </li>
-                    ))}
-                </ul>
+                {needsError && <p className="empty-state">{needsError}</p>}
+                {needsLoading ? (
+                    <p className="empty-state">Loading long term needs...</p>
+                ) : needs.length === 0 ? (
+                    <p className="empty-state">No long term needs yet.</p>
+                ) : (
+                    <ul>
+                        {needs.map((task) => (
+                            <li key={task.id} style={{ padding: '10px', borderBottom: '1px solid #eee' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={task.completed}
+                                        onChange={() => toggleNeed(task)}
+                                    />
+                                    <span>{task.text}</span>
+                                </label>
+                            </li>
+                        ))}
+                    </ul>
+                )}
             </div>
         </Card>
     );
@@ -880,14 +951,30 @@ const Buildings = () => {
         </Card>
     );
 
-    const buildingsById = useMemo(() => {
-        return new Map(buildings.map((building) => [building.id, building]));
+    const slugify = (value = '') => value
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+    const buildingsById = useMemo(() => (
+        new Map(buildings.map((building) => [building.id, building]))
+    ), [buildings]);
+
+    const buildingsByMapId = useMemo(() => {
+        const map = new Map();
+        buildings.forEach((building) => {
+            const mapId = building.map_id || slugify(building.name || '');
+            if (mapId) map.set(mapId, building);
+        });
+        return map;
     }, [buildings]);
 
     const mapAreas = useMemo(() => {
         return MAP_AREAS.map((area) => {
             if (area.type !== 'building') return area;
-            const building = buildingsById.get(area.id);
+            const building = buildingsByMapId.get(area.id) || buildingsById.get(area.id);
             if (!building) return area;
             return {
                 ...area,
@@ -896,7 +983,7 @@ const Buildings = () => {
                 description: building.notes || area.description
             };
         });
-    }, [buildingsById]);
+    }, [buildingsByMapId, buildingsById]);
 
     const activeDetails = useMemo(() => {
         const current = hoveredArea || activeArea || null;
@@ -906,7 +993,7 @@ const Buildings = () => {
     }, [hoveredArea, activeArea, mapAreas]);
 
     const activeBuilding = activeDetails?.type === 'building'
-        ? buildingsById.get(activeDetails.id)
+        ? (buildingsByMapId.get(activeDetails.id) || buildingsById.get(activeDetails.id))
         : null;
     useLayoutEffect(() => {
         if (!roomsListRef.current) {

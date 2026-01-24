@@ -184,15 +184,17 @@ const Dashboard = () => {
     const { events } = useEvents();
     const [tasks, setTasks] = useState([]);
     const [tasksLoading, setTasksLoading] = useState(true);
+    const [detailTasks, setDetailTasks] = useState([]);
+    const [detailLoading, setDetailLoading] = useState(false);
     const [weatherState, setWeatherState] = useState({ loading: true, data: null, error: null });
 
     const today = useMemo(() => startOfDay(new Date()), []);
     useEffect(() => {
         let active = true;
-        const loadTasks = async () => {
-            setTasksLoading(true);
-            try {
-                const response = await fetch(`${API_URL}/tasks`);
+            const loadTasks = async () => {
+                setTasksLoading(true);
+                try {
+                const response = await fetch(`${API_URL}/tasks?rollup=1`);
                 if (!response.ok) throw new Error('Failed to load tasks');
                 const data = await response.json();
                 if (active) setTasks(Array.isArray(data) ? data : []);
@@ -291,12 +293,31 @@ const Dashboard = () => {
         taskList.find((task) => task.id === selectedTaskId) || null
     ), [taskList, selectedTaskId]);
 
-    const originTasks = useMemo(() => {
-        if (!selectedTask?.origin_type || !selectedTask?.origin_id) return [];
-        return taskList.filter((task) => (
-            task.origin_type === selectedTask.origin_type && task.origin_id === selectedTask.origin_id
-        ));
-    }, [taskList, selectedTask]);
+    useEffect(() => {
+        const loadDetails = async () => {
+            if (!selectedTask?.origin_type || !selectedTask?.origin_id) {
+                setDetailTasks([]);
+                return;
+            }
+            setDetailLoading(true);
+            try {
+                const params = new URLSearchParams({
+                    origin_type: selectedTask.origin_type,
+                    origin_id: selectedTask.origin_id
+                });
+                const response = await fetch(`${API_URL}/tasks?${params.toString()}`);
+                if (!response.ok) throw new Error('Failed to load origin tasks');
+                const data = await response.json();
+                setDetailTasks(Array.isArray(data) ? data : []);
+            } catch (error) {
+                console.error('Failed to load origin tasks:', error);
+                setDetailTasks([]);
+            } finally {
+                setDetailLoading(false);
+            }
+        };
+        loadDetails();
+    }, [selectedTask]);
 
     const formatPriorityLabel = useCallback((task) => {
         const tier = task?.priority_tier || 'Normal';
@@ -313,13 +334,16 @@ const Dashboard = () => {
     }, []);
 
     const formatOriginLabel = useCallback((task) => {
-        if (!task?.origin_type) return 'Task Origin';
-        if (task.origin_type === 'sunday') return 'Sunday Planner';
-        if (task.origin_type === 'vestry') return 'Vestry';
-        if (task.origin_type === 'event') return 'Event';
-        if (task.origin_type === 'project') return 'Project';
-        if (task.origin_type === 'operations') return 'Operations';
-        return task.origin_type;
+        const rawType = task?.origin_type;
+        if (!rawType) return 'Task Origin';
+        const type = rawType.toLowerCase();
+        if (type.includes('sunday')) return 'Sunday Planner';
+        if (type.includes('vestry')) return 'Vestry';
+        if (type.includes('event')) return 'Event';
+        if (type.includes('project')) return 'Project';
+        if (type.includes('general')) return 'General Operations';
+        if (type.includes('operation')) return 'Operations';
+        return rawType;
     }, []);
 
     const formatTaskText = useCallback((text) => {
@@ -594,11 +618,13 @@ const Dashboard = () => {
                                 </div>
                                 <div className="task-origin-list">
                                     <div className="task-origin-title">Tasks in this origin</div>
-                                    {originTasks.length === 0 ? (
+                                    {detailLoading ? (
+                                        <p className="text-muted">Loading origin tasks...</p>
+                                    ) : detailTasks.length === 0 ? (
                                         <p className="text-muted">No additional tasks found.</p>
                                     ) : (
                                         <ul className="simple-list">
-                                            {originTasks.map((task) => (
+                                            {detailTasks.map((task) => (
                                                 <li key={task.id} className="simple-item">
                                                     <span className="simple-title">{formatTaskText(task.text)}</span>
                                                     <span className={`priority-pill ${getPriorityClass(task)}`}>

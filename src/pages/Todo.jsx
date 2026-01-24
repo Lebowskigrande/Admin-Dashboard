@@ -4,7 +4,6 @@ import { format } from 'date-fns';
 import { FaPlus, FaCheck } from 'react-icons/fa';
 import Card from '../components/Card';
 import { API_URL } from '../services/apiConfig';
-import { MAP_AREAS } from '../data/areas';
 import './Todo.css';
 
 const isDateString = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '');
@@ -17,16 +16,8 @@ const Todo = () => {
     const [tasksLoading, setTasksLoading] = useState(true);
     const [detailLoading, setDetailLoading] = useState(false);
     const [error, setError] = useState('');
-    const [tickets, setTickets] = useState([]);
     const [newTask, setNewTask] = useState('');
     const [projectName, setProjectName] = useState('Operations');
-
-    const areaById = useMemo(() => (
-        MAP_AREAS.reduce((acc, area) => {
-            acc[area.id] = area;
-            return acc;
-        }, {})
-    ), []);
 
     const loadRollupTasks = useCallback(async () => {
         setTasksLoading(true);
@@ -68,18 +59,6 @@ const Todo = () => {
         }
     }, []);
 
-    const loadTickets = useCallback(async () => {
-        try {
-            const response = await fetch(`${API_URL}/tickets`);
-            if (!response.ok) throw new Error('Failed to load tickets');
-            const data = await response.json();
-            setTickets(Array.isArray(data) ? data : []);
-        } catch (err) {
-            console.error('Failed to load tickets:', err);
-            setTickets([]);
-        }
-    }, []);
-
     const reloadAll = useCallback(async (originType, originId) => {
         await loadRollupTasks();
         if (originType && originId) {
@@ -89,8 +68,7 @@ const Todo = () => {
 
     useEffect(() => {
         loadRollupTasks();
-        loadTickets();
-    }, [loadRollupTasks, loadTickets]);
+    }, [loadRollupTasks]);
 
     useEffect(() => {
         if (taskList.length === 0) {
@@ -115,11 +93,6 @@ const Todo = () => {
         loadDetailTasks(selectedTask.origin_type, selectedTask.origin_id);
     }, [loadDetailTasks, selectedTask]);
 
-    const selectedTicket = useMemo(() => {
-        if (selectedTask?.origin_type !== 'ticket') return null;
-        return tickets.find((ticket) => ticket.id === selectedTask.origin_id) || null;
-    }, [tickets, selectedTask]);
-
     const formatPriorityLabel = useCallback((task) => {
         const tier = task?.priority_tier || 'Normal';
         return tier;
@@ -135,13 +108,17 @@ const Todo = () => {
     }, []);
 
     const formatOriginLabel = useCallback((task) => {
-        if (!task?.origin_type) return 'Task Origin';
-        if (task.origin_type === 'sunday') return 'Sunday Planner';
-        if (task.origin_type === 'vestry') return 'Vestry';
-        if (task.origin_type === 'event') return 'Event';
-        if (task.origin_type === 'operations') return 'Operations';
-        if (task.origin_type === 'ticket') return 'Ticket';
-        return task.origin_type;
+        const rawType = task?.origin_type;
+        if (!rawType) return 'Task Origin';
+        const type = rawType.toLowerCase();
+        if (type.includes('sunday')) return 'Sunday Planner';
+        if (type.includes('vestry')) return 'Vestry';
+        if (type.includes('event')) return 'Event';
+        if (type.includes('operation')) return 'Operations';
+        if (type.includes('ticket')) return 'Ticket';
+        if (type.includes('project')) return 'Project';
+        if (type.includes('general')) return 'General Operations';
+        return rawType;
     }, []);
 
     const formatOriginSubtitle = useCallback((task) => {
@@ -150,14 +127,6 @@ const Todo = () => {
             return format(new Date(`${task.origin_id}T00:00:00`), 'MMM d, yyyy');
         }
         return task.origin_id;
-    }, []);
-
-    const getTicketStatusClass = useCallback((status) => {
-        const normalized = (status || '').toLowerCase().replace(/\s+/g, '_');
-        if (normalized === 'reviewed') return 'status-reviewed';
-        if (normalized === 'in_process') return 'status-in_process';
-        if (normalized === 'closed') return 'status-closed';
-        return 'status-new';
     }, []);
 
     const addTask = async (event) => {
@@ -316,67 +285,50 @@ const Todo = () => {
                                 </div>
                             </div>
 
-                            {selectedTask.origin_type === 'ticket' && selectedTicket ? (
-                                <div className="task-origin-panel">
-                                    <div className="task-origin-header">
-                                        <h3>{selectedTicket.title}</h3>
-                                        <span className={`ticket-status pill ${getTicketStatusClass(selectedTicket.status)}`}>
-                                            {selectedTicket.status.replace('_', ' ')}
-                                        </span>
-                                    </div>
-                                    <p className="text-muted">{selectedTicket.description || 'No ticket description.'}</p>
-                                    <div className="ticket-area-chips">
-                                        {(selectedTicket.areas || []).map((areaId) => (
-                                            <span key={areaId} className="ticket-area-chip pill pill-neutral">
-                                                {areaById[areaId]?.name || areaId}
-                                            </span>
-                                        ))}
-                                    </div>
+                            <div className="task-origin-panel">
+                                <div className="task-origin-header">
+                                    <h3>{formatOriginLabel(selectedTask)}</h3>
+                                    {formatOriginSubtitle(selectedTask) && (
+                                        <span className="muted">{formatOriginSubtitle(selectedTask)}</span>
+                                    )}
+                                </div>
+                                {selectedTask.origin_type === 'sunday' && (
                                     <button
                                         className="btn-secondary"
                                         type="button"
-                                        onClick={() => navigate(`/buildings?ticket=${selectedTicket.id}`)}
+                                        onClick={() => navigate(`/sunday?date=${selectedTask.origin_id}`)}
+                                    >
+                                        Open Sunday Planner
+                                    </button>
+                                )}
+                                {selectedTask.origin_type === 'vestry' && (
+                                    <button
+                                        className="btn-secondary"
+                                        type="button"
+                                        onClick={() => navigate('/vestry')}
+                                    >
+                                        Open Vestry
+                                    </button>
+                                )}
+                                {selectedTask.origin_type === 'event' && (
+                                    <button
+                                        className="btn-secondary"
+                                        type="button"
+                                        onClick={() => navigate('/calendar')}
+                                    >
+                                        Open Calendar
+                                    </button>
+                                )}
+                                {selectedTask.origin_type === 'ticket' && (
+                                    <button
+                                        className="btn-secondary"
+                                        type="button"
+                                        onClick={() => navigate(`/buildings?ticket=${selectedTask.origin_id}`)}
                                     >
                                         Open Ticket
                                     </button>
-                                </div>
-                            ) : (
-                                <div className="task-origin-panel">
-                                    <div className="task-origin-header">
-                                        <h3>{formatOriginLabel(selectedTask)}</h3>
-                                        {formatOriginSubtitle(selectedTask) && (
-                                            <span className="muted">{formatOriginSubtitle(selectedTask)}</span>
-                                        )}
-                                    </div>
-                                    {selectedTask.origin_type === 'sunday' && (
-                                        <button
-                                            className="btn-secondary"
-                                            type="button"
-                                            onClick={() => navigate(`/sunday?date=${selectedTask.origin_id}`)}
-                                        >
-                                            Open Sunday Planner
-                                        </button>
-                                    )}
-                                    {selectedTask.origin_type === 'vestry' && (
-                                        <button
-                                            className="btn-secondary"
-                                            type="button"
-                                            onClick={() => navigate('/vestry')}
-                                        >
-                                            Open Vestry
-                                        </button>
-                                    )}
-                                    {selectedTask.origin_type === 'event' && (
-                                        <button
-                                            className="btn-secondary"
-                                            type="button"
-                                            onClick={() => navigate('/calendar')}
-                                        >
-                                            Open Calendar
-                                        </button>
-                                    )}
-                                </div>
-                            )}
+                                )}
+                            </div>
 
                             <div className="task-origin-list">
                                 <div className="task-origin-title">Tasks in this origin</div>
