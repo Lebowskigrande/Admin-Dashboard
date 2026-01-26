@@ -17,6 +17,19 @@ const normalizeName = (value = '') => value
     .replace(/\s+/g, ' ')
     .trim();
 
+const normalizeDisplayName = (value = '') => toValue(value).replace(/\s+/g, ' ').trim();
+
+const buildDisplayName = (firstName, lastName) => {
+    const first = normalizeDisplayName(firstName);
+    const last = normalizeDisplayName(lastName);
+    return normalizeDisplayName(`${first} ${last}`);
+};
+
+const slugifyName = (value = '') => normalizeDisplayName(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
 const toValue = (value) => (value || '').toString().trim();
 
 const splitHouseholdNames = (value = '') => {
@@ -33,6 +46,8 @@ const workbook = xlsx.read(readFileSync(sourcePath), { type: 'buffer' });
 const sheetName = workbook.SheetNames[0];
 const sheet = workbook.Sheets[sheetName];
 const rows = xlsx.utils.sheet_to_json(sheet, { defval: '' });
+const sampleKeys = rows.length ? Object.keys(rows[0]) : [];
+const isPowerChurchExport = sampleKeys.includes('firstname_b') || sampleKeys.includes('lastname_b');
 
 const db = new Database(join(__dirname, '..', 'church.db'));
 const hasTable = (name) => !!db.prepare(`
@@ -113,18 +128,42 @@ const updateStmt = usePerson
         WHERE id = ?
     `);
 
+const insertPeopleStmt = usePeople
+    ? db.prepare(`
+        INSERT INTO people (
+            id, display_name, email, category, roles, tags, teams,
+            phone_primary, phone_alternate, address_line1, address_line2, city, state, postal_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    : null;
+
+const ensureUniquePeopleId = (baseId) => {
+    let candidate = baseId || `person-${Date.now()}`;
+    let counter = 2;
+    while (db.prepare('SELECT 1 FROM people WHERE id = ?').get(candidate)) {
+        candidate = `${baseId}-${counter}`;
+        counter += 1;
+    }
+    return candidate;
+};
+
 rows.forEach((row) => {
     const rawName = toValue(row.first_last || '');
     const rawLastName = toValue(row.lastname || '');
-    const normalizedName = normalizeName(rawName);
-    const normalizedLast = normalizeName(rawLastName);
+    const rawFirstName = toValue(row.firstname_b || row.first_name || '');
+    const rawLastNameAlt = toValue(row.lastname_b || row.last_name || '');
+    const displayName = isPowerChurchExport
+        ? buildDisplayName(rawFirstName, rawLastNameAlt)
+        : normalizeDisplayName(rawName);
+    const normalizedName = normalizeName(displayName || rawName);
+    const normalizedLast = normalizeName(rawLastName || rawLastNameAlt);
     if (!normalizedName && !normalizedLast) {
         skipped += 1;
         return;
     }
     let person = normalizedName ? peopleByName.get(normalizedName) : null;
-    if (!person && rawName) {
-        const parts = splitHouseholdNames(rawName);
+    if (!person && (rawName || displayName)) {
+        const parts = splitHouseholdNames(displayName || rawName);
         for (const part of parts) {
             const normalizedPart = normalizeName(part);
             if (normalizedPart && peopleByName.has(normalizedPart)) {
@@ -139,13 +178,9 @@ rows.forEach((row) => {
             person = candidates[0];
         }
     }
-    if (!person) {
-        skipped += 1;
-        return;
-    }
-    matched += 1;
 
     const incoming = {
+        displayName,
         email: toValue(row.e_mail_a || row.e_mail_b),
         phonePrimary: toValue(row.phone1),
         phoneSecondary: toValue(row.phone2),
@@ -153,8 +188,40 @@ rows.forEach((row) => {
         address2: toValue(row.address2),
         city: toValue(row.city),
         state: toValue(row.state),
-        zip: toValue(row.zip)
+        zip: toValue(row.zip),
+        envNo: toValue(row.env_no)
     };
+
+    if (!person && usePeople && incoming.displayName) {
+        const baseId = slugifyName(incoming.displayName);
+        const id = ensureUniquePeopleId(baseId);
+        insertPeopleStmt.run(
+            id,
+            incoming.displayName,
+            incoming.email || '',
+            'parishioner',
+            JSON.stringify([]),
+            JSON.stringify(incoming.envNo ? [`env-${incoming.envNo}`] : []),
+            JSON.stringify({}),
+            incoming.phonePrimary || '',
+            incoming.phoneSecondary || '',
+            incoming.address1 || '',
+            incoming.address2 || '',
+            incoming.city || '',
+            incoming.state || '',
+            incoming.zip || ''
+        );
+        const inserted = db.prepare('SELECT * FROM people WHERE id = ?').get(id);
+        if (inserted) {
+            person = inserted;
+        }
+    }
+
+    if (!person) {
+        skipped += 1;
+        return;
+    }
+    matched += 1;
 
     const next = usePerson
         ? {

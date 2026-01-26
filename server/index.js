@@ -1640,31 +1640,6 @@ const buildDocumentStatus = async (filePath) => {
 
 
 const buildPeopleIndex = () => {
-    if (tableExists('person')) {
-        const rows = db.prepare('SELECT person_id, display_name FROM person').all();
-        const byId = new Map();
-        const byName = new Map();
-        const byNameNormalized = new Map();
-        const byFirstName = new Map();
-        rows.forEach((row) => {
-            if (row.person_id != null) byId.set(String(row.person_id), String(row.person_id));
-            if (row.display_name) {
-                byName.set(row.display_name.toLowerCase(), String(row.person_id));
-                const normalized = normalizePersonName(row.display_name);
-                if (normalized) byNameNormalized.set(normalized, String(row.person_id));
-                const first = normalized.split(' ')[0];
-                if (first) {
-                    const existing = byFirstName.get(first);
-                    if (existing) {
-                        byFirstName.set(first, null);
-                    } else {
-                        byFirstName.set(first, String(row.person_id));
-                    }
-                }
-            }
-        });
-        return { byId, byName, byNameNormalized, byFirstName };
-    }
     if (!tableExists('people')) {
         return { byId: new Map(), byName: new Map(), byNameNormalized: new Map(), byFirstName: new Map() };
     }
@@ -2759,27 +2734,6 @@ app.get('/api/event-types', (req, res) => {
 // --- People Management ---
 
 app.get('/api/people', (req, res) => {
-    if (tableExists('person')) {
-        const rows = db.prepare('SELECT * FROM person ORDER BY display_name').all();
-        const people = rows.map((row) => ({
-            id: String(row.person_id),
-            displayName: row.display_name,
-            email: row.email_primary || '',
-            emailSecondary: row.email_secondary || '',
-            phonePrimary: row.phone_primary || '',
-            phoneAlternate: row.phone_secondary || '',
-            addressLine1: row.address1 || '',
-            addressLine2: row.address2 || '',
-            city: row.city || '',
-            state: row.state || '',
-            postalCode: row.zip || '',
-            category: 'volunteer',
-            roles: [],
-            tags: [],
-            teams: {}
-        }));
-        return res.json(people);
-    }
     if (!tableExists('people')) {
         return res.json([]);
     }
@@ -2807,7 +2761,6 @@ app.post('/api/people', (req, res) => {
     const {
         displayName,
         email = '',
-        emailSecondary = '',
         phonePrimary = '',
         phoneAlternate = '',
         addressLine1 = '',
@@ -2815,7 +2768,7 @@ app.post('/api/people', (req, res) => {
         city = '',
         state = '',
         postalCode = '',
-        category = 'volunteer',
+        category = 'parishioner',
         roles = [],
         tags = [],
         teams = {}
@@ -2824,37 +2777,6 @@ app.post('/api/people', (req, res) => {
     const normalizedName = normalizeName(displayName);
     if (!normalizedName) {
         return res.status(400).json({ error: 'Display name is required' });
-    }
-
-    if (tableExists('person')) {
-        const [firstName, ...rest] = normalizedName.split(' ');
-        const lastName = rest.length ? rest.join(' ') : '';
-        const result = db.prepare(`
-            INSERT INTO person (
-                display_name, first_name, last_name, email_primary, email_secondary,
-                phone_primary, phone_secondary, address1, address2, city, state, zip, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
-        `).run(
-            normalizedName,
-            firstName || null,
-            lastName || null,
-            email,
-            emailSecondary || null,
-            phonePrimary,
-            phoneAlternate,
-            addressLine1,
-            addressLine2,
-            city,
-            state,
-            postalCode
-        );
-        return res.status(201).json({
-            id: String(result.lastInsertRowid),
-            displayName: normalizedName,
-            email,
-            phonePrimary,
-            phoneAlternate
-        });
     }
 
     const baseId = slugifyName(normalizedName) || `person-${Date.now()}`;
@@ -2890,6 +2812,13 @@ app.post('/api/people', (req, res) => {
         id,
         displayName: normalizedName,
         email,
+        phonePrimary,
+        phoneAlternate,
+        addressLine1,
+        addressLine2,
+        city,
+        state,
+        postalCode,
         category,
         roles: normalizedRoles,
         tags: normalizedTags,
@@ -2909,7 +2838,7 @@ app.put('/api/people/:id', (req, res) => {
         city = '',
         state = '',
         postalCode = '',
-        category = 'volunteer',
+        category = 'parishioner',
         roles = [],
         tags = [],
         teams = {}
@@ -2918,53 +2847,6 @@ app.put('/api/people/:id', (req, res) => {
     const normalizedName = normalizeName(displayName);
     if (!normalizedName) {
         return res.status(400).json({ error: 'Display name is required' });
-    }
-
-    if (tableExists('person')) {
-        const existing = db.prepare('SELECT person_id FROM person WHERE person_id = ?').get(id);
-        if (!existing) {
-            return res.status(404).json({ error: 'Person not found' });
-        }
-        const [firstName, ...rest] = normalizedName.split(' ');
-        const lastName = rest.length ? rest.join(' ') : '';
-        db.prepare(`
-            UPDATE person SET
-                display_name = ?,
-                first_name = ?,
-                last_name = ?,
-                email_primary = ?,
-                email_secondary = ?,
-                phone_primary = ?,
-                phone_secondary = ?,
-                address1 = ?,
-                address2 = ?,
-                city = ?,
-                state = ?,
-                zip = ?,
-                updated_at = datetime('now')
-            WHERE person_id = ?
-        `).run(
-            normalizedName,
-            firstName || null,
-            lastName || null,
-            email,
-            emailSecondary || null,
-            phonePrimary,
-            phoneAlternate,
-            addressLine1,
-            addressLine2,
-            city,
-            state,
-            postalCode,
-            id
-        );
-        return res.json({
-            id,
-            displayName: normalizedName,
-            email,
-            phonePrimary,
-            phoneAlternate
-        });
     }
 
     const existing = db.prepare('SELECT id FROM people WHERE id = ?').get(id);
@@ -3012,6 +2894,13 @@ app.put('/api/people/:id', (req, res) => {
         id,
         displayName: normalizedName,
         email,
+        phonePrimary,
+        phoneAlternate,
+        addressLine1,
+        addressLine2,
+        city,
+        state,
+        postalCode,
         category,
         roles: normalizedRoles,
         tags: normalizedTags,
@@ -3021,13 +2910,6 @@ app.put('/api/people/:id', (req, res) => {
 
 app.delete('/api/people/:id', (req, res) => {
     const { id } = req.params;
-    if (tableExists('person')) {
-        const result = db.prepare('DELETE FROM person WHERE person_id = ?').run(id);
-        if (result.changes === 0) {
-            return res.status(404).json({ error: 'Person not found' });
-        }
-        return res.json({ success: true });
-    }
     const result = db.prepare('DELETE FROM people WHERE id = ?').run(id);
     if (result.changes === 0) {
         return res.status(404).json({ error: 'Person not found' });
@@ -3058,62 +2940,32 @@ const buildBuildingMapId = (name = '') => {
 };
 
 app.get('/api/buildings', (req, res) => {
-    if (tableExists('building')) {
-        const rows = db.prepare('SELECT building_id, name, notes FROM building ORDER BY name').all();
-        const roomRows = tableExists('room')
-            ? db.prepare('SELECT room_id, building_id, name, floor, capacity, rental_rate FROM room ORDER BY name').all()
-            : [];
-        const roomsByBuilding = roomRows.reduce((acc, room) => {
-            const key = String(room.building_id);
-            if (!acc[key]) acc[key] = [];
-            acc[key].push({
-                id: String(room.room_id),
-                building_id: String(room.building_id),
-                name: room.name,
-                floor: room.floor ?? null,
-                capacity: room.capacity ?? null,
-                rental_rate: room.rental_rate ?? null,
-                notes: null
-            });
-            return acc;
-        }, {});
-        const buildings = rows.map((row) => ({
-            id: String(row.building_id),
-            building_id: row.building_id,
-            map_id: buildBuildingMapId(row.name || ''),
-            name: row.name,
-            category: '',
-            capacity: 0,
-            size_sqft: 0,
-            rental_rate_hour: 0,
-            rental_rate_day: 0,
-            rental_rate: 0,
-            parking_spaces: 0,
-            event_types: [],
-            notes: row.notes || '',
-            rooms: roomsByBuilding[String(row.building_id)] || []
-        }));
-        return res.json(buildings);
+    if (!tableExists('buildings')) {
+        return res.json([]);
     }
-
+    const hasRooms = tableExists('rooms');
     const rows = db.prepare('SELECT * FROM buildings ORDER BY name').all();
     const buildings = rows.map(row => {
-        const roomRows = db.prepare(`
-            SELECT id, name, floor, capacity, rental_rate
-            FROM rooms
-            WHERE building_id = ?
-            ORDER BY name
-        `).all(row.id);
+        const roomRows = hasRooms
+            ? db.prepare(`
+                SELECT id, name, floor, capacity, rental_rate, notes
+                FROM rooms
+                WHERE building_id = ?
+                ORDER BY name
+            `).all(row.id)
+            : [];
         const rooms = roomRows.map((room) => ({
             id: room.id,
             name: room.name,
             floor: room.floor,
             capacity: room.capacity,
-            rental_rate: room.rental_rate
+            rental_rate: room.rental_rate,
+            notes: room.notes || ''
         }));
         const rentalRate = row.rental_rate_day ?? row.rental_rate_hour;
         return {
             id: row.id,
+            map_id: buildBuildingMapId(row.name || ''),
             name: row.name,
             category: row.category,
             capacity: row.capacity,
@@ -3131,31 +2983,9 @@ app.get('/api/buildings', (req, res) => {
 });
 
 app.get('/api/vendors', async (req, res) => {
-    if (tableExists('vendor')) {
-        const rows = db.prepare(`
-            SELECT vendor_id, name, service_category, contact, phone, email, notes, contract
-            FROM vendor
-            ORDER BY service_category, name
-        `).all();
-        const contractsDir = join(DROPBOX_ROOT, 'Contracts');
-        const vendors = await Promise.all(rows.map(async (row) => {
-            const contract = await resolveContractFile(contractsDir, row.name, row.contract);
-            return {
-                id: String(row.vendor_id),
-                service: row.service_category || '',
-                vendor: row.name,
-                contact: row.contact || '',
-                phone: row.phone || '',
-                email: row.email || '',
-                notes: row.notes || '',
-                contract: row.contract || '',
-                contract_path: contract.path,
-                contract_exists: contract.exists
-            };
-        }));
-        return res.json(vendors);
+    if (!tableExists('preferred_vendors')) {
+        return res.json([]);
     }
-
     const rows = db.prepare(`
         SELECT id, service, vendor, contact, phone, email, notes, contract
         FROM preferred_vendors
@@ -3191,28 +3021,6 @@ app.post('/api/buildings', (req, res) => {
         return res.status(400).json({ error: 'Name is required' });
     }
 
-    if (tableExists('building')) {
-        const info = db.prepare(`
-            INSERT INTO building (name, notes)
-            VALUES (?, ?)
-        `).run(normalizedName, notes || '');
-        return res.status(201).json({
-            id: String(info.lastInsertRowid),
-            building_id: info.lastInsertRowid,
-            map_id: buildBuildingMapId(normalizedName),
-            name: normalizedName,
-            category: '',
-            capacity: 0,
-            size_sqft: 0,
-            rental_rate_hour: 0,
-            rental_rate_day: 0,
-            parking_spaces: 0,
-            event_types: [],
-            notes: notes || '',
-            rooms: []
-        });
-    }
-
     const baseId = slugifyName(normalizedName) || `building-${Date.now()}`;
     const id = ensureUniqueId(baseId, 'buildings');
 
@@ -3235,6 +3043,7 @@ app.post('/api/buildings', (req, res) => {
 
     res.status(201).json({
         id,
+        map_id: buildBuildingMapId(normalizedName),
         name: normalizedName,
         category,
         capacity,
@@ -3249,34 +3058,6 @@ app.post('/api/buildings', (req, res) => {
 
 app.put('/api/buildings/:id', (req, res) => {
     const { id } = req.params;
-    if (tableExists('building')) {
-        const existing = db.prepare('SELECT building_id FROM building WHERE building_id = ?').get(id);
-        if (!existing) {
-            return res.status(404).json({ error: 'Building not found' });
-        }
-        const { name, notes = '' } = req.body || {};
-        const normalizedName = normalizeName(name);
-        if (!normalizedName) {
-            return res.status(400).json({ error: 'Name is required' });
-        }
-        db.prepare('UPDATE building SET name = ?, notes = ? WHERE building_id = ?')
-            .run(normalizedName, notes || '', id);
-        return res.json({
-            id: String(id),
-            building_id: Number(id),
-            map_id: buildBuildingMapId(normalizedName),
-            name: normalizedName,
-            category: '',
-            capacity: 0,
-            size_sqft: 0,
-            rental_rate_hour: 0,
-            rental_rate_day: 0,
-            parking_spaces: 0,
-            event_types: [],
-            notes: notes || '',
-            rooms: []
-        });
-    }
     const {
         name,
         category = 'All Purpose',
@@ -3326,6 +3107,7 @@ app.put('/api/buildings/:id', (req, res) => {
 
     res.json({
         id,
+        map_id: buildBuildingMapId(normalizedName),
         name: normalizedName,
         category,
         capacity,
@@ -3340,13 +3122,6 @@ app.put('/api/buildings/:id', (req, res) => {
 
 app.delete('/api/buildings/:id', (req, res) => {
     const { id } = req.params;
-    if (tableExists('building')) {
-        const result = db.prepare('DELETE FROM building WHERE building_id = ?').run(id);
-        if (result.changes === 0) {
-            return res.status(404).json({ error: 'Building not found' });
-        }
-        return res.json({ success: true });
-    }
     const result = db.prepare('DELETE FROM buildings WHERE id = ?').run(id);
     if (result.changes === 0) {
         return res.status(404).json({ error: 'Building not found' });
@@ -5350,10 +5125,8 @@ const getQuarterMonthLabels = (meetingDate) => {
 };
 
 const findVestryClerkName = () => {
-    if (tableExists('person')) {
-        const rows = db.prepare('SELECT display_name FROM person ORDER BY display_name').all();
-        const match = rows.find((row) => normalizeToken(row.display_name || '') === 'vestry clerk');
-        return match?.display_name || 'Anne Sirimane';
+    if (!tableExists('people')) {
+        return 'Anne Sirimane';
     }
     const rows = db.prepare('SELECT display_name, roles, tags FROM people ORDER BY display_name').all();
     const matches = rows.find((row) => {

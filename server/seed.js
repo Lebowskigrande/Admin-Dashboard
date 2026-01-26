@@ -42,8 +42,9 @@ const normalizeCategory = (value) => {
     const normalized = normalizeText(value).toLowerCase();
     if (normalized.startsWith('clergy')) return 'clergy';
     if (normalized.startsWith('staff')) return 'staff';
-    if (normalized.startsWith('volunteer')) return 'volunteer';
-    return 'volunteer';
+    if (normalized.startsWith('volunteer')) return 'parishioner';
+    if (normalized.startsWith('parishioner')) return 'parishioner';
+    return 'parishioner';
 };
 
 const parseRoles = (value) => {
@@ -415,11 +416,22 @@ export const seedDatabase = () => {
 
         if (peopleCount === 0) {
             console.log('Seeding people data...');
+            const powerchurchPeople = loadPeopleFromPowerChurchExport();
             const workbookPeople = loadPeopleFromWorkbook();
-            const sourcePeople = workbookPeople.length ? workbookPeople : PEOPLE;
+            const sourcePeople = powerchurchPeople.length
+                ? powerchurchPeople
+                : workbookPeople.length
+                    ? workbookPeople
+                    : PEOPLE;
             const insert = db.prepare(`
-                INSERT INTO people (id, display_name, email, category, roles, tags, teams)
-                VALUES (@id, @displayName, @email, @category, @roles, @tags, @teams)
+                INSERT INTO people (
+                    id, display_name, email, category, roles, tags, teams,
+                    phone_primary, phone_alternate, address_line1, address_line2, city, state, postal_code
+                )
+                VALUES (
+                    @id, @displayName, @email, @category, @roles, @tags, @teams,
+                    @phonePrimary, @phoneSecondary, @address1, @address2, @city, @state, @zip
+                )
             `);
 
             const insertMany = db.transaction((rows) => {
@@ -427,11 +439,18 @@ export const seedDatabase = () => {
                     insert.run({
                         id: person.id || person.displayName?.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
                         displayName: person.displayName,
-                        email: person.email || '',
+                        email: person.emailPrimary || person.email || '',
                         category: person.category || '',
                         roles: JSON.stringify(person.roles || []),
                         tags: JSON.stringify(person.tags || []),
-                        teams: JSON.stringify(person.teams || {})
+                        teams: JSON.stringify(person.teams || {}),
+                        phonePrimary: person.phonePrimary || '',
+                        phoneSecondary: person.phoneSecondary || '',
+                        address1: person.address1 || person.addressLine1 || '',
+                        address2: person.address2 || person.addressLine2 || '',
+                        city: person.city || '',
+                        state: person.state || '',
+                        zip: person.zip || person.postalCode || ''
                     });
                 }
             });

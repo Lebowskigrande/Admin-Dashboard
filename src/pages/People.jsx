@@ -5,7 +5,7 @@ import './People.css';
 const CATEGORY_LABELS = {
     clergy: 'Clergy',
     staff: 'Staff',
-    volunteer: 'Volunteer'
+    parishioner: 'Parishioner'
 };
 
 const ROLE_OPTIONS = [
@@ -26,8 +26,38 @@ const ROLE_OPTIONS = [
     { value: 'childcare', label: 'Childcare' }
 ];
 
+const getLastName = (name = '') => {
+    const raw = String(name || '').trim();
+    if (!raw) return '';
+    if (raw.includes(',')) {
+        const [last] = raw.split(',');
+        return last.trim();
+    }
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    return tokens.length ? tokens[tokens.length - 1] : '';
+};
+
+const getFirstName = (name = '') => {
+    const raw = String(name || '').trim();
+    if (!raw) return '';
+    if (raw.includes(',')) {
+        const [, rest] = raw.split(',');
+        return (rest || '').trim();
+    }
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    return tokens.length ? tokens[0] : '';
+};
+
 const sortPeople = (list) => {
-    return [...list].sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
+    return [...list].sort((a, b) => {
+        const lastA = getLastName(a.displayName).toLowerCase();
+        const lastB = getLastName(b.displayName).toLowerCase();
+        if (lastA !== lastB) return lastA.localeCompare(lastB);
+        const firstA = getFirstName(a.displayName).toLowerCase();
+        const firstB = getFirstName(b.displayName).toLowerCase();
+        if (firstA !== firstB) return firstA.localeCompare(firstB);
+        return (a.displayName || '').localeCompare(b.displayName || '');
+    });
 };
 
 const parseCommaList = (value) => {
@@ -53,6 +83,21 @@ const roleLabel = (roleKey) => {
     return ROLE_OPTIONS.find((role) => role.value === roleKey)?.label || roleKey;
 };
 
+const normalizePhoneDigits = (value) => String(value || '').replace(/\D/g, '');
+
+const formatPhone = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const digits = normalizePhoneDigits(raw);
+    if (digits.length === 10) {
+        return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+    }
+    if (digits.length === 11 && digits.startsWith('1')) {
+        return `1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+    }
+    return raw;
+};
+
 const buildTeamRoleKeys = (roles, teams) => {
     const roleSet = new Set(roles || []);
     Object.keys(teams || {}).forEach((roleKey) => roleSet.add(roleKey));
@@ -62,7 +107,14 @@ const buildTeamRoleKeys = (roles, teams) => {
 const defaultPersonForm = () => ({
     displayName: '',
     email: '',
-    category: 'volunteer',
+    phonePrimary: '',
+    phoneAlternate: '',
+    addressLine1: '',
+    addressLine2: '',
+    city: '',
+    state: '',
+    postalCode: '',
+    category: 'parishioner',
     roles: [],
     tagsText: '',
     teams: {}
@@ -159,7 +211,7 @@ const People = () => {
     }, [selectedPerson, selectedId, panelMode]);
 
     const categories = useMemo(() => {
-        const values = new Set(['clergy', 'staff', 'volunteer']);
+        const values = new Set(['clergy', 'staff', 'parishioner']);
         people.forEach((person) => {
             if (person.category) values.add(person.category);
         });
@@ -239,7 +291,14 @@ const People = () => {
         setEditForm({
             displayName: person.displayName || '',
             email: person.email || '',
-            category: person.category || 'volunteer',
+            phonePrimary: person.phonePrimary || '',
+            phoneAlternate: person.phoneAlternate || '',
+            addressLine1: person.addressLine1 || '',
+            addressLine2: person.addressLine2 || '',
+            city: person.city || '',
+            state: person.state || '',
+            postalCode: person.postalCode || '',
+            category: person.category || 'parishioner',
             roles: Array.isArray(person.roles) ? [...person.roles] : [],
             tagsText: (person.tags || []).join(', '),
             teams: { ...(person.teams || {}) }
@@ -278,6 +337,13 @@ const People = () => {
         const payload = {
             displayName: editForm.displayName,
             email: editForm.email,
+            phonePrimary: editForm.phonePrimary,
+            phoneAlternate: editForm.phoneAlternate,
+            addressLine1: editForm.addressLine1,
+            addressLine2: editForm.addressLine2,
+            city: editForm.city,
+            state: editForm.state,
+            postalCode: editForm.postalCode,
             category: editForm.category,
             roles: editForm.roles || [],
             tags: parseCommaList(editForm.tagsText),
@@ -303,6 +369,13 @@ const People = () => {
         const payload = {
             displayName: createForm.displayName,
             email: createForm.email,
+            phonePrimary: createForm.phonePrimary,
+            phoneAlternate: createForm.phoneAlternate,
+            addressLine1: createForm.addressLine1,
+            addressLine2: createForm.addressLine2,
+            city: createForm.city,
+            state: createForm.state,
+            postalCode: createForm.postalCode,
             category: createForm.category,
             roles: createForm.roles || [],
             tags: parseCommaList(createForm.tagsText),
@@ -343,55 +416,56 @@ const People = () => {
         }
     };
 
-    const renderTagChips = (tagsList) => {
-        if (!tagsList || tagsList.length === 0) {
-            return <span className="panel-meta">No tags yet.</span>;
-        }
-        return (
-            <div className="tag-row">
-                {tagsList.map((tag) => (
+const renderTagChips = (tagsList) => {
+    if (!tagsList || tagsList.length === 0) {
+        return null;
+    }
+    return (
+        <div className="tag-row">
+            {tagsList.map((tag) => {
+                const normalized = tag.toLowerCase();
+                const isVestry = normalized === 'vestry';
+                const isVestryMember = normalized === 'vestry member';
+                const isVolunteer = normalized === 'volunteer';
+                return (
                     <span
-                        className={`tag-chip ${tag.toLowerCase() === 'vestry' ? 'tag-chip--vestry' : ''}`}
+                        className={`tag-chip ${isVestry ? 'tag-chip--vestry' : ''} ${isVestryMember ? 'tag-chip--vestry-member' : ''} ${isVolunteer ? 'tag-chip--volunteer' : ''}`}
                         key={tag}
                     >
                         {tag}
                     </span>
-                ))}
-            </div>
-        );
-    };
+                );
+            })}
+        </div>
+    );
+};
 
-    const renderRoleChips = (rolesList) => {
-        if (!rolesList || rolesList.length === 0) {
-            return <span className="panel-meta">No roles assigned.</span>;
-        }
-        return (
-            <div className="role-chip-row">
-                {rolesList.map((role) => (
+const renderRoleChips = (rolesList, teams = {}) => {
+    if (!rolesList || rolesList.length === 0) {
+        return null;
+    }
+    return (
+        <div className="role-chip-row">
+            {rolesList.map((role) => {
+                const rotations = Array.isArray(teams?.[role]) ? teams[role] : [];
+                return (
                     <span className="role-chip" key={role}>
                         {roleLabel(role)}
+                        {rotations.map((rotation, index) => (
+                            <span
+                                className="role-chip-rotation"
+                                key={`${role}-${rotation}`}
+                                style={{ '--rotation-index': index }}
+                            >
+                                {rotation}
+                            </span>
+                        ))}
                     </span>
-                ))}
-            </div>
-        );
-    };
-
-    const renderTeamList = (teamsObj) => {
-        const roleKeys = buildTeamRoleKeys([], teamsObj);
-        if (roleKeys.length === 0) {
-            return <span className="panel-meta">No team assignments.</span>;
-        }
-        return (
-            <div className="team-grid">
-                {roleKeys.map((roleKey) => (
-                    <div className="team-chip" key={roleKey}>
-                        <span>{roleLabel(roleKey)}</span>
-                        <strong>{formatTeams(teamsObj?.[roleKey]) || '-'}</strong>
-                    </div>
-                ))}
-            </div>
-        );
-    };
+                );
+            })}
+        </div>
+    );
+};
 
     const renderDetailPanel = () => {
         if (panelMode === 'create') {
@@ -419,6 +493,68 @@ const People = () => {
                                     id="create-email"
                                     value={createForm.email}
                                     onChange={(event) => setCreateForm((prev) => ({ ...prev, email: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label htmlFor="create-phone-primary">Primary phone</label>
+                                <input
+                                    id="create-phone-primary"
+                                    value={createForm.phonePrimary}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, phonePrimary: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="create-phone-alt">Alternate phone</label>
+                                <input
+                                    id="create-phone-alt"
+                                    value={createForm.phoneAlternate}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, phoneAlternate: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label htmlFor="create-address1">Address line 1</label>
+                                <input
+                                    id="create-address1"
+                                    value={createForm.addressLine1}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, addressLine1: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="create-address2">Address line 2</label>
+                                <input
+                                    id="create-address2"
+                                    value={createForm.addressLine2}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, addressLine2: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label htmlFor="create-city">City</label>
+                                <input
+                                    id="create-city"
+                                    value={createForm.city}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, city: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="create-state">State</label>
+                                <input
+                                    id="create-state"
+                                    value={createForm.state}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, state: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="create-postal">Postal code</label>
+                                <input
+                                    id="create-postal"
+                                    value={createForm.postalCode}
+                                    onChange={(event) => setCreateForm((prev) => ({ ...prev, postalCode: event.target.value }))}
                                 />
                             </div>
                         </div>
@@ -532,6 +668,68 @@ const People = () => {
                         </div>
                         <div className="form-row">
                             <div className="form-group">
+                                <label htmlFor="edit-phone-primary">Primary phone</label>
+                                <input
+                                    id="edit-phone-primary"
+                                    value={editForm.phonePrimary}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, phonePrimary: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="edit-phone-alt">Alternate phone</label>
+                                <input
+                                    id="edit-phone-alt"
+                                    value={editForm.phoneAlternate}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, phoneAlternate: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label htmlFor="edit-address1">Address line 1</label>
+                                <input
+                                    id="edit-address1"
+                                    value={editForm.addressLine1}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, addressLine1: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="edit-address2">Address line 2</label>
+                                <input
+                                    id="edit-address2"
+                                    value={editForm.addressLine2}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, addressLine2: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label htmlFor="edit-city">City</label>
+                                <input
+                                    id="edit-city"
+                                    value={editForm.city}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, city: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="edit-state">State</label>
+                                <input
+                                    id="edit-state"
+                                    value={editForm.state}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, state: event.target.value }))}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label htmlFor="edit-postal">Postal code</label>
+                                <input
+                                    id="edit-postal"
+                                    value={editForm.postalCode}
+                                    onChange={(event) => setEditForm((prev) => ({ ...prev, postalCode: event.target.value }))}
+                                />
+                            </div>
+                        </div>
+                        <div className="form-row">
+                            <div className="form-group">
                                 <label htmlFor="edit-category">Category</label>
                                 <select
                                     id="edit-category"
@@ -602,37 +800,89 @@ const People = () => {
         return (
             <div className="people-panel people-detail-panel">
                 <div className="panel-title--row">
-                    <div>
+                    <div className="panel-title-row">
                         <h2 className="panel-title">{selectedPerson.displayName}</h2>
-                        <div className="panel-meta">{selectedPerson.email || 'No email on file'}</div>
+                        {(() => {
+                            const envelopeTag = (selectedPerson.tags || []).find((tag) => /^env-\d+/i.test(tag));
+                            if (!envelopeTag) return null;
+                            const label = envelopeTag.replace(/^env-/i, '');
+                            return <span className="env-chip">{label}</span>;
+                        })()}
                     </div>
                     <div className="panel-actions">
                         <button className="btn-ghost" type="button" onClick={() => beginEdit(selectedPerson)}>
                             Edit
                         </button>
-                        <button className="btn-ghost" type="button" onClick={() => handleDelete(selectedPerson)}>
-                            Delete
-                        </button>
                     </div>
                 </div>
-                <div className="detail-section">
-                    <span className="detail-label">Category</span>
-                    <span className={`category-chip category-${selectedPerson.category || 'volunteer'}`}>
-                        {CATEGORY_LABELS[selectedPerson.category] || selectedPerson.category || 'volunteer'}
-                    </span>
-                </div>
-                <div className="detail-section">
-                    <span className="detail-label">Roles</span>
-                    {renderRoleChips(selectedPerson.roles)}
-                </div>
-                <div className="detail-section">
-                    <span className="detail-label">Tags</span>
-                    {renderTagChips(selectedPerson.tags)}
-                </div>
-                <div className="detail-section">
-                    <span className="detail-label">Teams</span>
-                    {renderTeamList(selectedPerson.teams || {})}
-                </div>
+                {(selectedPerson.category || selectedPerson.email || selectedPerson.phonePrimary || selectedPerson.phoneAlternate) ? (
+                    <div className="detail-section detail-section--inline">
+                        {selectedPerson.category ? (
+                            <span className={`category-chip category-${selectedPerson.category}`}>
+                                {CATEGORY_LABELS[selectedPerson.category] || selectedPerson.category}
+                            </span>
+                        ) : null}
+                        {selectedPerson.email ? (
+                            <a className="panel-meta panel-link" href={`mailto:${selectedPerson.email}`}>
+                                {selectedPerson.email}
+                            </a>
+                        ) : null}
+                        {(() => {
+                            const phoneParts = [selectedPerson.phonePrimary, selectedPerson.phoneAlternate].filter(Boolean);
+                            if (!phoneParts.length) return null;
+                            return (
+                                <span className="panel-meta">
+                                    {phoneParts.map((phone, index) => {
+                                        const digits = normalizePhoneDigits(phone);
+                                        const display = formatPhone(phone);
+                                        return (
+                                            <span key={`${phone}-${index}`}>
+                                                <a className="panel-link" href={`tel:${digits || phone}`}>
+                                                    {display}
+                                                </a>
+                                                {index < phoneParts.length - 1 ? ' | ' : ''}
+                                            </span>
+                                        );
+                                    })}
+                                </span>
+                            );
+                        })()}
+                    </div>
+                ) : null}
+                {(() => {
+                    const streetParts = [selectedPerson.addressLine1, selectedPerson.addressLine2].filter(Boolean);
+                    const cityState = [selectedPerson.city, selectedPerson.state].filter(Boolean).join(', ');
+                    const zip = selectedPerson.postalCode;
+                    const cityLine = [cityState, zip].filter(Boolean).join(' ');
+                    const addressLines = [...streetParts, cityLine].filter(Boolean);
+                    if (!addressLines.length) return null;
+                    const mapQuery = encodeURIComponent(addressLines.join(', '));
+                    return (
+                        <div className="detail-section">
+                            <a
+                                className="panel-meta panel-link address-link"
+                                href={`https://www.google.com/maps/search/?api=1&query=${mapQuery}`}
+                                target="_blank"
+                                rel="noreferrer"
+                            >
+                                {addressLines.map((line) => (
+                                    <span className="address-line" key={line}>{line}</span>
+                                ))}
+                            </a>
+                        </div>
+                    );
+                })()}
+                {(() => {
+                    const tags = (selectedPerson.tags || []).filter((tag) => !/^env-\d+/i.test(tag));
+                    const chips = renderTagChips(tags);
+                    return chips ? <div className="detail-section">{chips}</div> : null;
+                })()}
+                {selectedPerson.roles?.length ? (
+                    <div className="detail-section">
+                        <span className="detail-label">Roles</span>
+                        {renderRoleChips(selectedPerson.roles, selectedPerson.teams)}
+                    </div>
+                ) : null}
             </div>
         );
     };
@@ -767,17 +1017,31 @@ const People = () => {
                                         setPanelMode('view');
                                     }}
                                 >
-                                    <div>
-                                        <div className="people-list-name">{person.displayName}</div>
-                                        {person.email && <div className="people-list-email">{person.email}</div>}
-                                    </div>
-                                    <div className="people-list-meta">
-                                        {person.category && (
-                                            <span className={`category-chip category-${person.category}`}>
-                                                {CATEGORY_LABELS[person.category] || person.category}
-                                            </span>
-                                        )}
-                                        <span className="role-count">{(person.roles || []).length} roles</span>
+                                    <div className="people-list-row">
+                                        <div className="people-list-cell people-list-env">
+                                            {(() => {
+                                                const envelopeTag = (person.tags || []).find((tag) => /^env-\d+/i.test(tag));
+                                                if (!envelopeTag) return null;
+                                                const label = envelopeTag.replace(/^env-/i, '');
+                                                return <span className="env-chip env-chip--list">{label}</span>;
+                                            })()}
+                                        </div>
+                                        <div className="people-list-cell people-list-name">
+                                            <span>{person.displayName}</span>
+                                        </div>
+                                        <div className="people-list-cell people-list-email">
+                                            {person.email || ''}
+                                        </div>
+                                        <div className="people-list-cell people-list-phone">
+                                            {formatPhone(person.phonePrimary || person.phoneAlternate || '')}
+                                        </div>
+                                        <div className="people-list-cell people-list-category">
+                                            {person.category && (
+                                                <span className={`category-chip category-${person.category}`}>
+                                                    {CATEGORY_LABELS[person.category] || person.category}
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
                                 </button>
                             ))}
