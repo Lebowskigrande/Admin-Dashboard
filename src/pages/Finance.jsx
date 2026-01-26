@@ -35,6 +35,19 @@ const formatCurrency = (value) => {
     }).format(numeric);
 };
 
+const formatDateStamp = (date = new Date()) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}.${month}.${day}`;
+};
+
+const buildDepositFilename = (total) => {
+    const numeric = Number(total);
+    const amount = Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00';
+    return `${formatDateStamp()} Deposit $${amount}.pdf`;
+};
+
 const normalizeAmountInput = (value) => {
     const trimmed = String(value ?? '').trim();
     if (!trimmed) return '';
@@ -309,11 +322,12 @@ const Finance = () => {
         setPreviewError('');
         setPreviewNotice('');
         setPreviewActionBusy((prev) => ({ ...prev, save: true }));
+        const filename = buildDepositFilename(overallTotal);
         try {
             const blob = base64ToBlob(previewModal.pdfBase64, 'application/pdf');
             if (window?.showSaveFilePicker) {
                 const handle = await window.showSaveFilePicker({
-                    suggestedName: 'deposit-slip.pdf',
+                    suggestedName: filename,
                     types: [
                         {
                             description: 'PDF',
@@ -330,7 +344,7 @@ const Finance = () => {
             const url = URL.createObjectURL(blob);
             const anchor = document.createElement('a');
             anchor.href = url;
-            anchor.download = 'deposit-slip.pdf';
+            anchor.download = filename;
             anchor.click();
             URL.revokeObjectURL(url);
             setPreviewNotice('Deposit slip saved.');
@@ -499,7 +513,7 @@ const Finance = () => {
                 </div>
             </Card>
 
-            <Modal isOpen={previewModal.open} onClose={closePreviewModal} title="Deposit Slip Preview" className="modal-large">
+            <Modal isOpen={previewModal.open} onClose={closePreviewModal} title="Deposit Slip Preview" className="modal-large deposit-preview-modal">
                 <div className="deposit-preview">
                     <div className="deposit-preview-toolbar">
                         <div className="deposit-preview-actions">
@@ -527,7 +541,12 @@ const Finance = () => {
                     {previewNotice && <div className="alert success">{previewNotice}</div>}
                     <div className="deposit-preview-frame">
                         {previewModal.url ? (
-                            <iframe src={previewModal.url} title="Deposit slip preview" />
+                            <div className="deposit-preview-page">
+                                <iframe
+                                    src={`${previewModal.url}#view=FitV&toolbar=0&navpanes=0`}
+                                    title="Deposit slip preview"
+                                />
+                            </div>
                         ) : (
                             <span className="text-muted">No preview available.</span>
                         )}

@@ -503,7 +503,7 @@ const pdfUpload = multer({ dest: join(tmpdir(), 'deposit-slip-pdf-uploads') });
 const vestryUpload = multer({ dest: join(tmpdir(), 'vestry-packet-uploads') });
 
 app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
 
 const SESSION_COOKIE = 'dashboard_session';
 const SESSION_TTL_DAYS = 30;
@@ -1933,6 +1933,9 @@ const parseNotes = (value) => {
 };
 
 const syncLivestreamsToSundays = (streams) => {
+    if (!tableExists('event_occurrences')) {
+        return 0;
+    }
     const update = db.prepare('UPDATE event_occurrences SET notes = ? WHERE id = ?');
     const findOccurrence = db.prepare(`
         SELECT id, notes FROM event_occurrences
@@ -5280,6 +5283,24 @@ async function getDefaultPrinterName() {
     return name;
 }
 
+const resolveSumatraPdfPath = async () => {
+    const override = String(process.env.SUMATRA_PDF_PATH || '').trim();
+    const candidates = [
+        override,
+        'C:\\Program Files\\SumatraPDF\\SumatraPDF.exe',
+        'C:\\Program Files (x86)\\SumatraPDF\\SumatraPDF.exe'
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        try {
+            await access(candidate);
+            return candidate;
+        } catch {
+            // Try next candidate.
+        }
+    }
+    return null;
+};
+
 async function printDocxBuffer(docBuffer) {
     const scriptPath = resolve(__dirname, '..', 'Print-WordToPrinter.ps1');
     await access(scriptPath);
@@ -5459,6 +5480,7 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
 app.post('/api/deposit-slip/print-base64', async (req, res) => {
     let outputDir = null;
     try {
+        console.log('Deposit slip print request received');
         const rawBase64 = String(req.body?.pdfBase64 || '').trim();
         if (!rawBase64) {
             return res.status(400).json({ error: 'pdfBase64 is required' });
@@ -5470,12 +5492,36 @@ app.post('/api/deposit-slip/print-base64', async (req, res) => {
         const pdfPath = join(outputDir, 'deposit-slip.pdf');
         await writeFile(pdfPath, pdfBuffer);
         const escaped = pdfPath.replace(/'/g, "''");
-        await execFileAsync('powershell', [
+        const preferredPrinter = String(process.env.DEPOSIT_PRINTER_NAME || '').trim();
+        const printerName = preferredPrinter || await getDefaultPrinterName().catch(() => null);
+        const escapedPrinter = printerName ? printerName.replace(/'/g, "''") : '';
+        const sumatraPath = await resolveSumatraPdfPath();
+        if (sumatraPath) {
+            const sumatraArgs = printerName
+                ? ['-silent', '-print-to', printerName, '-exit-on-print', pdfPath]
+                : ['-silent', '-print-to-default', '-exit-on-print', pdfPath];
+            await execFileAsync(sumatraPath, sumatraArgs, { windowsHide: true });
+            console.log('Deposit slip print dispatched', { printer: printerName || null, method: 'sumatra' });
+            return res.json({ success: true, printer: printerName || null, method: 'sumatra' });
+        }
+        const script = [
+            `$path = '${escaped}'`,
+            printerName ? `$printer = '${escapedPrinter}'` : `$printer = $null`,
+            `$printed = $false`,
+            `if ($printer) {`,
+            `  try { Start-Process -FilePath $path -Verb PrintTo -ArgumentList $printer; $printed = $true } catch { }`,
+            `}`,
+            `if (-not $printed) { Start-Process -FilePath $path -Verb Print }`
+        ].join('; ');
+        const { stdout, stderr } = await execFileAsync('powershell', [
             '-NoProfile',
             '-Command',
-            `Start-Process -FilePath '${escaped}' -Verb Print`
+            script
         ], { windowsHide: true });
-        res.json({ success: true });
+        console.log('Deposit slip print dispatched', { printer: printerName || null, method: 'shell' });
+        if (stdout) console.log('Deposit slip print stdout:', stdout.trim());
+        if (stderr) console.log('Deposit slip print stderr:', stderr.trim());
+        res.json({ success: true, printer: printerName || null, method: 'shell' });
     } catch (error) {
         console.error('Deposit slip print error:', error);
         if (error?.stdout) console.error('Deposit slip print stdout:', String(error.stdout).trim());

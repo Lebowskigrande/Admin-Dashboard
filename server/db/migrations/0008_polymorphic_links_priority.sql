@@ -16,6 +16,24 @@ CREATE TABLE IF NOT EXISTS task_priority_policy (
 );
 --> statement-breakpoint
 
+CREATE TABLE IF NOT EXISTS tickets (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT,
+    notes TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+--> statement-breakpoint
+
+CREATE TABLE IF NOT EXISTS ticket_areas (
+    ticket_id TEXT NOT NULL,
+    area_id TEXT NOT NULL,
+    UNIQUE(ticket_id, area_id)
+);
+--> statement-breakpoint
+
 INSERT OR IGNORE INTO entity_links (
     id,
     from_type,
