@@ -713,6 +713,7 @@ function seedTaskEngine() {
     seedSundayTasksFromTemplates();
     seedVestryTasksFromTemplates();
     seedOperationsTasksFromTemplates();
+    seedEventTasksFromTemplates();
 }
 
 const DEFAULT_TASK_PRIORITY_BY_TYPE = {
@@ -986,6 +987,58 @@ const seedOperationsTasksFromTemplates = () => {
     });
 };
 
+const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey }) => {
+    if (!tableExists('recurring_task_templates')) return;
+    if (!occurrenceId || !eventTypeId || !dateKey) return;
+    const templates = listRecurringTemplates('event', String(eventTypeId));
+    if (!templates.length) return;
+    templates.forEach((template) => {
+        const dueOffset = Number.isFinite(Number(template.due_offset_days))
+            ? Number(template.due_offset_days)
+            : null;
+        const dueAt = dueOffset != null
+            ? addDaysIso(dateKey, dueOffset)
+            : dateKey;
+        createTaskInstance({
+            title: template.title,
+            taskType: 'event',
+            priorityBase: Number.isFinite(Number(template.priority_base))
+                ? Number(template.priority_base)
+                : getDefaultPriorityBase('event'),
+            dueAt,
+            originType: 'event',
+            originId: occurrenceId,
+            originEvent: template.step_key,
+            generationKey: `event:${occurrenceId}:${template.list_key || 'list'}:${template.step_key}`,
+            listKey: template.list_key || null,
+            listTitle: template.list_title || null,
+            listMode: template.list_mode || 'sequential'
+        });
+    });
+};
+
+const seedEventTasksFromTemplates = (daysAhead = 120) => {
+    if (!tableExists('event_occurrences') || !tableExists('events')) return;
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const endKey = addDaysIso(todayKey, daysAhead);
+    const rows = db.prepare(`
+        SELECT o.id AS occurrence_id, o.date AS date_key, e.event_type_id
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        WHERE e.event_type_id IS NOT NULL
+          AND o.date >= ?
+          AND o.date <= ?
+        ORDER BY o.date ASC
+    `).all(todayKey, endKey);
+    rows.forEach((row) => {
+        seedEventTasksForOccurrence({
+            occurrenceId: row.occurrence_id,
+            eventTypeId: row.event_type_id,
+            dateKey: row.date_key
+        });
+    });
+};
+
 const createTaskInstance = (payload) => {
     const {
         title,
@@ -1184,7 +1237,18 @@ const formatTaskInstanceRow = (row) => {
         origin_id: row.origin_id || null,
         origin_event: row.origin_event || null,
         ticket_id: row.origin_type === 'ticket' ? row.origin_id : null,
-        ticket_title: row.ticket_title || ''
+        ticket_title: row.ticket_title || '',
+        event_occurrence_id: row.event_occurrence_id || null,
+        event_id: row.event_id || null,
+        event_title: row.event_title || '',
+        event_description: row.event_description || '',
+        event_date: row.event_date || null,
+        event_time: row.event_start_time || null,
+        event_type_id: row.event_type_id != null ? Number(row.event_type_id) : null,
+        event_type_name: row.event_type_name || '',
+        event_type_slug: row.event_type_slug || '',
+        event_category_name: row.event_category_name || '',
+        event_color: row.event_color || ''
     };
 };
 
@@ -2673,7 +2737,8 @@ app.get('/api/google/events', requireAuth, async (req, res) => {
                     access_token: tokens.access_token,
                     refresh_token: tokens.refresh_token,
                     expiry_date: tokens.expiry_date
-                }
+                },
+                onOccurrence: seedEventTasksForOccurrence
             }).catch(err => {
                 console.error('Background sync failed:', err);
             });
@@ -2709,7 +2774,8 @@ app.post('/api/google/sync', requireAuth, async (req, res) => {
                 access_token: tokens.access_token,
                 refresh_token: tokens.refresh_token,
                 expiry_date: tokens.expiry_date
-            }
+            },
+            onOccurrence: seedEventTasksForOccurrence
         });
         res.json({ success: true, count: total });
     } catch (error) {
@@ -3197,7 +3263,18 @@ const listTaskInstances = (whereClause = '', params = []) => {
                 src.origin_event,
                 ${hasTemplates ? 'rt.sort_order AS step_order,' : 'NULL AS step_order,'}
                 t.created_at AS task_created_at,
-                tickets.title AS ticket_title
+                tickets.title AS ticket_title,
+                eo.id AS event_occurrence_id,
+                eo.date AS event_date,
+                eo.start_time AS event_start_time,
+                ev.id AS event_id,
+                ev.title AS event_title,
+                ev.description AS event_description,
+                et.id AS event_type_id,
+                et.name AS event_type_name,
+                et.slug AS event_type_slug,
+                ec.name AS event_category_name,
+                COALESCE(et.color, ec.color) AS event_color
             FROM task_instances ti
             JOIN tasks_new t ON t.id = ti.task_id
             LEFT JOIN view_task_source src ON src.task_instance_id = ti.id
@@ -3208,6 +3285,10 @@ const listTaskInstances = (whereClause = '', params = []) => {
                 AND (rt.origin_id IS NULL OR rt.origin_id = src.origin_id)
             ` : ''}
             LEFT JOIN tickets ON src.origin_type = 'ticket' AND src.origin_id = tickets.id
+            LEFT JOIN event_occurrences eo ON src.origin_type = 'event' AND src.origin_id = eo.id
+            LEFT JOIN events ev ON eo.event_id = ev.id
+            LEFT JOIN event_types et ON ev.event_type_id = et.id
+            LEFT JOIN event_categories ec ON et.category_id = ec.id
             ${whereClause}
         `).all(...params);
         return rows.map(formatTaskInstanceRow);
@@ -3236,12 +3317,27 @@ const listTaskInstances = (whereClause = '', params = []) => {
                 tli.position AS step_order,
                 tl.id AS list_id,
                 tl.title AS list_title,
-                tl.list_type AS list_type
+                tl.list_type AS list_type,
+                eo.id AS event_occurrence_id,
+                eo.date AS event_date,
+                eo.start_time AS event_start_time,
+                ev.id AS event_id,
+                ev.title AS event_title,
+                ev.description AS event_description,
+                et.id AS event_type_id,
+                et.name AS event_type_name,
+                et.slug AS event_type_slug,
+                ec.name AS event_category_name,
+                COALESCE(et.color, ec.color) AS event_color
             FROM task_instances ti
             JOIN tasks t ON t.id = ti.task_id
             LEFT JOIN task_list_items tli ON tli.task_instance_id = ti.id
             LEFT JOIN task_lists tl ON tl.id = tli.task_list_id
             LEFT JOIN task_origins o ON o.scope = 'instance' AND o.task_instance_id = ti.id
+            LEFT JOIN event_occurrences eo ON o.origin_type = 'event' AND o.origin_id = eo.id
+            LEFT JOIN events ev ON eo.event_id = ev.id
+            LEFT JOIN event_types et ON ev.event_type_id = et.id
+            LEFT JOIN event_categories ec ON et.category_id = ec.id
             ${resolvedWhere}
         `).all(...params);
         return rows.map(formatTaskInstanceRow);
@@ -3588,6 +3684,93 @@ app.get('/api/task-origins', (req, res) => {
         label: origin.next_task?.text || `${origin.origin_type}:${origin.origin_id}`
     }));
     res.json(rollups);
+});
+
+app.get('/api/task-origins/links', (req, res) => {
+    const includeAll = String(req.query.all || '').trim() === '1';
+    if (includeAll) {
+        const rows = db.prepare(`
+            SELECT
+                l.to_type AS child_origin_type,
+                l.to_id AS child_origin_id,
+                src.origin_type AS parent_origin_type,
+                src.origin_id AS parent_origin_id,
+                l.meta_json
+            FROM entity_links l
+            JOIN view_task_source src ON src.task_instance_id = l.from_id
+            WHERE l.from_type = 'task_instance'
+              AND l.role = 'origin_link'
+        `).all();
+        const links = rows.map((row) => {
+            const meta = parseJsonField(row.meta_json);
+            return {
+                parent_origin_type: row.parent_origin_type,
+                parent_origin_id: row.parent_origin_id,
+                child_origin_type: row.child_origin_type,
+                child_origin_id: row.child_origin_id,
+                label: meta?.label || ''
+            };
+        });
+        return res.json({ links });
+    }
+
+    const originType = String(req.query.origin_type || '').trim();
+    const originId = String(req.query.origin_id || '').trim();
+    if (!originType || !originId) {
+        return res.status(400).json({ error: 'origin_type and origin_id are required' });
+    }
+
+    const parentLink = db.prepare(`
+        SELECT l.from_id AS task_instance_id, l.meta_json
+        FROM entity_links l
+        WHERE l.from_type = 'task_instance'
+          AND l.role = 'origin_link'
+          AND l.to_type = ?
+          AND l.to_id = ?
+        LIMIT 1
+    `).get(originType, originId);
+
+    let parent = null;
+    if (parentLink?.task_instance_id) {
+        const [parentTask] = listTaskInstances('WHERE ti.id = ?', [parentLink.task_instance_id]);
+        if (parentTask) {
+            const meta = parseJsonField(parentLink.meta_json);
+            parent = {
+                origin_type: parentTask.origin_type,
+                origin_id: parentTask.origin_id,
+                task_instance_id: parentLink.task_instance_id,
+                label: meta?.label || parentTask.text || ''
+            };
+        }
+    }
+
+    const childLinks = db.prepare(`
+        SELECT l.from_id AS task_instance_id, l.to_type, l.to_id, l.meta_json
+        FROM entity_links l
+        JOIN view_task_source src ON src.task_instance_id = l.from_id
+        WHERE l.from_type = 'task_instance'
+          AND l.role = 'origin_link'
+          AND src.origin_type = ?
+          AND src.origin_id = ?
+    `).all(originType, originId);
+
+    const childTasks = childLinks.length
+        ? listTaskInstances(`WHERE ti.id IN (${childLinks.map(() => '?').join(', ')})`, childLinks.map((row) => row.task_instance_id))
+        : [];
+    const childTaskMap = new Map(childTasks.map((task) => [task.id, task]));
+
+    const children = childLinks.map((row) => {
+        const task = childTaskMap.get(row.task_instance_id);
+        const meta = parseJsonField(row.meta_json);
+        return {
+            task_instance_id: row.task_instance_id,
+            origin_type: row.to_type,
+            origin_id: row.to_id,
+            label: meta?.label || task?.text || ''
+        };
+    });
+
+    res.json({ parent, children });
 });
 
 app.delete('/api/task-origins', (req, res) => {
@@ -4232,13 +4415,120 @@ app.delete('/api/recurring-templates/:id', (req, res) => {
 
 app.post('/api/recurring-templates/seed', (req, res) => {
     const originType = String(req.query.origin_type || req.body?.origin_type || '').trim();
-    if (originType && !['sunday', 'vestry', 'operations'].includes(originType)) {
-        return res.status(400).json({ error: 'Only sunday, vestry, and operations seeding is supported right now.' });
+    const originId = req.query.origin_id ? String(req.query.origin_id) : (req.body?.origin_id ? String(req.body.origin_id) : null);
+    if (originType && !['sunday', 'vestry', 'operations', 'event'].includes(originType)) {
+        return res.status(400).json({ error: 'Only sunday, vestry, operations, and event seeding is supported right now.' });
     }
     if (!originType || originType === 'sunday') seedSundayTasksFromTemplates();
     if (!originType || originType === 'vestry') seedVestryTasksFromTemplates();
     if (!originType || originType === 'operations') seedOperationsTasksFromTemplates();
+    if (originType === 'event' && originId) {
+        const rows = db.prepare(`
+            SELECT o.id AS occurrence_id, o.date AS date_key
+            FROM event_occurrences o
+            JOIN events e ON e.id = o.event_id
+            WHERE e.event_type_id = ?
+              AND o.date >= date('now')
+            ORDER BY o.date ASC
+        `).all(Number(originId));
+        rows.forEach((row) => {
+            seedEventTasksForOccurrence({
+                occurrenceId: row.occurrence_id,
+                eventTypeId: Number(originId),
+                dateKey: row.date_key
+            });
+        });
+    }
     res.json({ success: true });
+});
+
+app.get('/api/recurring-templates/instances', (req, res) => {
+    const originType = String(req.query.origin_type || '').trim();
+    const originId = req.query.origin_id ? String(req.query.origin_id) : null;
+    const listKey = req.query.list_key ? String(req.query.list_key) : null;
+    if (!originType) {
+        return res.status(400).json({ error: 'origin_type is required' });
+    }
+
+    const tasks = listTaskInstances('');
+    const filtered = tasks.filter((task) => {
+        if (task.origin_type !== originType) return false;
+        if (listKey && (task.list_key || 'default') !== listKey) return false;
+        if (originType === 'operations' && originId) {
+            if (originId === 'weekly') return String(task.origin_id || '').startsWith('weekly-');
+            if (originId === 'timesheets') return String(task.origin_id || '').startsWith('timesheets-');
+            return task.origin_id === originId;
+        }
+        if (originType === 'event' && originId) {
+            return Number(task.event_type_id) === Number(originId);
+        }
+        if (originId && task.origin_id !== originId) return false;
+        return true;
+    });
+
+    const grouped = filtered.reduce((acc, task) => {
+        const originIdValue = task.origin_id || 'manual';
+        const key = `${task.origin_type}:${originIdValue}`;
+        if (!acc[key]) {
+            acc[key] = {
+                key,
+                origin_type: task.origin_type,
+                origin_id: originIdValue,
+                tasks: [],
+                sample: task
+            };
+        }
+        acc[key].tasks.push(task);
+        return acc;
+    }, {});
+
+    const instances = Object.values(grouped).map((group) => {
+        const openTasks = group.tasks.filter((task) => !task.completed);
+        let nextTask = null;
+        if (openTasks.length) {
+            const listMode = openTasks[0]?.list_mode || 'sequential';
+            const hasSequence = listMode === 'sequential'
+                || openTasks.some((task) => task.rank != null || task.step_order != null);
+            if (hasSequence) {
+                const sorted = [...openTasks].sort((a, b) => {
+                    const rankA = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
+                    const rankB = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
+                    if (rankA !== rankB) return rankA - rankB;
+                    const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : a.step_order;
+                    const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : b.step_order;
+                    if (orderA !== orderB) return orderA - orderB;
+                    const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
+                    const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+                    if (dueA !== dueB) return dueA - dueB;
+                    return b.priority_effective - a.priority_effective;
+                });
+                const chainMax = Math.max(...openTasks.map((task) => task.priority_effective ?? 0));
+                nextTask = {
+                    ...sorted[0],
+                    priority_effective: chainMax,
+                    priority_tier: getPriorityTier(chainMax)
+                };
+            } else {
+                nextTask = sortTasksByPriority(openTasks)[0];
+            }
+        }
+        return {
+            key: group.key,
+            origin_type: group.origin_type,
+            origin_id: group.origin_id,
+            total_count: group.tasks.length,
+            open_count: openTasks.length,
+            next_task: nextTask,
+            sample: group.sample
+        };
+    });
+
+    const withNext = instances.filter((row) => row.next_task);
+    const withoutNext = instances.filter((row) => !row.next_task);
+    const sortedWithNext = sortTasksByPriority(withNext.map((row) => row.next_task)).map((task) => (
+        withNext.find((row) => row.next_task?.id === task.id)
+    )).filter(Boolean);
+    res.json([...sortedWithNext, ...withoutNext]);
 });
 
 // Get all events (merged)
@@ -4277,7 +4567,7 @@ app.get('/api/events', async (req, res) => {
         // 2. Get scheduled/custom events
         const eventRows = db.prepare(`
             SELECT e.id, e.title, e.description, e.event_type_id, e.source, e.metadata,
-                   o.date, o.start_time, o.end_time, o.building_id,
+                   o.id AS occurrence_id, o.date, o.start_time, o.end_time, o.building_id,
                    t.name as type_name, t.slug as type_slug, c.name as category_name,
                    COALESCE(t.color, c.color) as type_color
             FROM events e
@@ -4289,6 +4579,8 @@ app.get('/api/events', async (req, res) => {
 
         const scheduledEvents = eventRows.map(e => ({
             id: e.id,
+            occurrence_id: e.occurrence_id,
+            event_id: e.id,
             title: e.title,
             description: e.description,
             date: e.date,
@@ -4359,6 +4651,12 @@ app.post('/api/events', (req, res) => {
             null,
             location || null
         );
+
+        seedEventTasksForOccurrence({
+            occurrenceId,
+            eventTypeId: Number.isNaN(parsedTypeId) ? null : parsedTypeId,
+            dateKey: date
+        });
 
         res.json({
             id: eventId,

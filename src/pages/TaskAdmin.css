@@ -27,6 +27,13 @@
     margin-bottom: var(--space-sm);
 }
 
+.template-scope-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
 .origin-list {
     display: flex;
     flex-direction: column;
@@ -44,6 +51,21 @@
     gap: 0.6rem;
     cursor: pointer;
     text-align: left;
+}
+
+.origin-row.outline {
+    position: relative;
+}
+
+.origin-row.outline::before {
+    content: '';
+    position: absolute;
+    left: 0.35rem;
+    top: 0.6rem;
+    bottom: 0.6rem;
+    width: 2px;
+    background: rgba(148, 163, 184, 0.35);
+    border-radius: 999px;
 }
 
 .origin-context-menu {
@@ -168,6 +190,11 @@
     border-radius: 10px;
     border: 1px solid rgba(15, 23, 42, 0.08);
     background: #fff;
+}
+
+.template-row.selected {
+    border-color: rgba(30, 64, 175, 0.4);
+    background: #f8fafc;
 }
 
 .task-row-admin {

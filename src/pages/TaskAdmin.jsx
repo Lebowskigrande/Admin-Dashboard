@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { format } from 'date-fns';
 import { FaPlus, FaSave, FaTrash } from 'react-icons/fa';
 import Card from '../components/Card';
 import { API_URL } from '../services/apiConfig';
@@ -9,6 +10,7 @@ const TaskAdmin = () => {
     const [originsLoading, setOriginsLoading] = useState(true);
     const [originError, setOriginError] = useState('');
     const [selectedOriginKey, setSelectedOriginKey] = useState('');
+    const [originLinksAll, setOriginLinksAll] = useState([]);
 
     const [originTasks, setOriginTasks] = useState([]);
     const [tasksLoading, setTasksLoading] = useState(false);
@@ -18,6 +20,13 @@ const TaskAdmin = () => {
     const [templates, setTemplates] = useState([]);
     const [templatesLoading, setTemplatesLoading] = useState(false);
     const [templatesError, setTemplatesError] = useState('');
+    const [selectedTemplateId, setSelectedTemplateId] = useState('');
+    const [templateInstances, setTemplateInstances] = useState([]);
+    const [instancesLoading, setInstancesLoading] = useState(false);
+    const [instancesError, setInstancesError] = useState('');
+    const [eventTypes, setEventTypes] = useState([]);
+    const [templateOriginType, setTemplateOriginType] = useState('sunday');
+    const [templateOriginId, setTemplateOriginId] = useState(null);
 
     const [newTaskText, setNewTaskText] = useState('');
     const [newTaskDue, setNewTaskDue] = useState('');
@@ -43,12 +52,15 @@ const TaskAdmin = () => {
         origins.find((origin) => origin.key === selectedOriginKey) || null
     ), [origins, selectedOriginKey]);
 
-    const getTemplateOriginId = useCallback((origin) => {
-        if (!origin) return null;
-        if (origin.origin_type !== 'operations') return origin.origin_id || null;
-        if ((origin.origin_id || '').startsWith('weekly-')) return 'weekly';
-        if ((origin.origin_id || '').startsWith('timesheets-')) return 'timesheets';
-        return origin.origin_id || null;
+    const selectedTemplate = useMemo(() => (
+        templates.find((template) => template.id === selectedTemplateId) || null
+    ), [templates, selectedTemplateId]);
+
+    const getTemplateOriginId = useCallback((originType, originId) => {
+        if (!originType) return null;
+        if (originType === 'operations') return originId || 'weekly';
+        if (originType === 'event') return originId || null;
+        return null;
     }, []);
 
     const loadOrigins = useCallback(async () => {
@@ -71,6 +83,18 @@ const TaskAdmin = () => {
             setOriginsLoading(false);
         }
     }, [selectedOriginKey]);
+
+    const loadOriginLinksAll = useCallback(async () => {
+        try {
+            const response = await fetch(`${API_URL}/task-origins/links?all=1`);
+            if (!response.ok) throw new Error('Failed to load origin links');
+            const data = await response.json();
+            setOriginLinksAll(Array.isArray(data?.links) ? data.links : []);
+        } catch (err) {
+            console.error('Failed to load origin links:', err);
+            setOriginLinksAll([]);
+        }
+    }, []);
 
     const loadOriginTasks = useCallback(async (originType, originId) => {
         if (!originType || !originId) {
@@ -122,15 +146,85 @@ const TaskAdmin = () => {
         }
     }, []);
 
+    const loadTemplateInstances = useCallback(async (template) => {
+        if (!template) {
+            setTemplateInstances([]);
+            return;
+        }
+        setInstancesLoading(true);
+        setInstancesError('');
+        try {
+            const params = new URLSearchParams({
+                origin_type: template.origin_type
+            });
+            if (template.origin_id) params.set('origin_id', template.origin_id);
+            if (template.list_key) params.set('list_key', template.list_key);
+            const response = await fetch(`${API_URL}/recurring-templates/instances?${params.toString()}`);
+            if (!response.ok) throw new Error('Failed to load template instances');
+            const data = await response.json();
+            setTemplateInstances(Array.isArray(data) ? data : []);
+        } catch (err) {
+            console.error('Failed to load template instances:', err);
+            setTemplateInstances([]);
+            setInstancesError('Unable to load template instances.');
+        } finally {
+            setInstancesLoading(false);
+        }
+    }, []);
+
     useEffect(() => {
         loadOrigins();
     }, [loadOrigins]);
 
     useEffect(() => {
+        loadOriginLinksAll();
+    }, [loadOriginLinksAll]);
+
+    useEffect(() => {
+        const loadEventTypes = async () => {
+            try {
+                const response = await fetch(`${API_URL}/event-types`);
+                if (!response.ok) throw new Error('Failed to load event types');
+                const data = await response.json();
+                setEventTypes(Array.isArray(data) ? data : []);
+            } catch (err) {
+                console.error('Failed to load event types:', err);
+                setEventTypes([]);
+            }
+        };
+        loadEventTypes();
+    }, []);
+
+    useEffect(() => {
+        if (templateOriginType !== 'event') return;
+        if (templateOriginId) return;
+        if (eventTypes.length === 0) return;
+        setTemplateOriginId(String(eventTypes[0].id));
+    }, [eventTypes, templateOriginId, templateOriginType]);
+
+    useEffect(() => {
         if (!selectedOrigin) return;
         loadOriginTasks(selectedOrigin.origin_type, selectedOrigin.origin_id);
-        loadTemplates(selectedOrigin.origin_type, getTemplateOriginId(selectedOrigin));
-    }, [selectedOrigin, loadOriginTasks, loadTemplates, getTemplateOriginId]);
+    }, [selectedOrigin, loadOriginTasks]);
+
+    useEffect(() => {
+        const normalizedId = getTemplateOriginId(templateOriginType, templateOriginId);
+        loadTemplates(templateOriginType, normalizedId);
+    }, [templateOriginType, templateOriginId, loadTemplates, getTemplateOriginId]);
+
+    useEffect(() => {
+        loadTemplateInstances(selectedTemplate);
+    }, [loadTemplateInstances, selectedTemplate]);
+
+    useEffect(() => {
+        if (!templates.length) {
+            setSelectedTemplateId('');
+            return;
+        }
+        if (!selectedTemplateId || !templates.find((template) => template.id === selectedTemplateId)) {
+            setSelectedTemplateId(templates[0].id);
+        }
+    }, [templates, selectedTemplateId]);
 
     useEffect(() => {
         if (!contextMenu.visible) return undefined;
@@ -229,6 +323,7 @@ const TaskAdmin = () => {
             if (!response.ok) throw new Error('Failed to delete origin');
             setSelectedOriginKey('');
             await loadOrigins();
+            await loadOriginLinksAll();
             setOriginTasks([]);
         } catch (err) {
             console.error('Failed to delete origin:', err);
@@ -252,6 +347,7 @@ const TaskAdmin = () => {
             });
             if (!response.ok) throw new Error('Failed to assign origin');
             await loadOrigins();
+            await loadOriginLinksAll();
             if (selectedOrigin?.key === target.key) {
                 await loadOriginTasks(target.origin_type, target.origin_id);
             }
@@ -285,7 +381,7 @@ const TaskAdmin = () => {
                 })
             });
             if (!response.ok) throw new Error('Failed to save template');
-            await loadTemplates(selectedOrigin.origin_type, getTemplateOriginId(selectedOrigin));
+            await loadTemplates(templateOriginType, getTemplateOriginId(templateOriginType, templateOriginId));
         } catch (err) {
             console.error('Failed to save template:', err);
             setTemplatesError('Unable to save template changes.');
@@ -296,7 +392,7 @@ const TaskAdmin = () => {
         try {
             const response = await fetch(`${API_URL}/recurring-templates/${templateId}`, { method: 'DELETE' });
             if (!response.ok) throw new Error('Failed to delete template');
-            await loadTemplates(selectedOrigin.origin_type, getTemplateOriginId(selectedOrigin));
+            await loadTemplates(templateOriginType, getTemplateOriginId(templateOriginType, templateOriginId));
         } catch (err) {
             console.error('Failed to delete template:', err);
             setTemplatesError('Unable to delete template.');
@@ -305,14 +401,16 @@ const TaskAdmin = () => {
 
     const createTemplate = async (event) => {
         event.preventDefault();
-        if (!selectedOrigin || !newTemplate.title.trim() || !newTemplate.step_key.trim()) return;
+        const templateOriginValue = getTemplateOriginId(templateOriginType, templateOriginId);
+        if (!templateOriginType || !newTemplate.title.trim() || !newTemplate.step_key.trim()) return;
+        if (templateOriginType === 'event' && !templateOriginValue) return;
         try {
             const response = await fetch(`${API_URL}/recurring-templates`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    origin_type: selectedOrigin.origin_type,
-                    origin_id: getTemplateOriginId(selectedOrigin),
+                    origin_type: templateOriginType,
+                    origin_id: templateOriginValue,
                     list_key: newTemplate.list_key.trim(),
                     list_title: newTemplate.list_title.trim() || newTemplate.list_key.trim(),
                     list_mode: newTemplate.list_mode,
@@ -336,16 +434,100 @@ const TaskAdmin = () => {
                 priority_base: 50,
                 active: true
             });
-            await loadTemplates(selectedOrigin.origin_type, getTemplateOriginId(selectedOrigin));
+            await loadTemplates(templateOriginType, templateOriginValue);
         } catch (err) {
             console.error('Failed to create template:', err);
             setTemplatesError('Unable to create template.');
         }
     };
 
+    const seedTemplates = async () => {
+        try {
+            const params = new URLSearchParams({
+                origin_type: templateOriginType
+            });
+            const originId = getTemplateOriginId(templateOriginType, templateOriginId);
+            if (originId) params.set('origin_id', originId);
+            const response = await fetch(`${API_URL}/recurring-templates/seed?${params.toString()}`, {
+                method: 'POST'
+            });
+            if (!response.ok) throw new Error('Failed to seed templates');
+            if (selectedOrigin) {
+                await loadOriginTasks(selectedOrigin.origin_type, selectedOrigin.origin_id);
+            }
+            await loadOrigins();
+        } catch (err) {
+            console.error('Failed to seed templates:', err);
+            setTemplatesError('Unable to seed templates.');
+        }
+    };
+
     const filteredTasks = useMemo(() => (
         showCompleted ? originTasks : originTasks.filter((task) => !task.completed)
     ), [originTasks, showCompleted]);
+
+    const formatInstanceLabel = useCallback((instance) => {
+        const sample = instance?.sample || instance?.next_task || {};
+        if (sample.event_title) return sample.event_title;
+        if (instance?.next_task?.text) return instance.next_task.text;
+        if (sample.text) return sample.text;
+        return `${instance?.origin_type || 'origin'}:${instance?.origin_id || 'unknown'}`;
+    }, []);
+
+    const formatInstanceSubtitle = useCallback((instance) => {
+        const sample = instance?.sample || {};
+        if (sample.event_date) {
+            const dateLabel = format(new Date(`${sample.event_date}T00:00:00`), 'MMM d, yyyy');
+            return sample.event_time ? `${dateLabel} at ${sample.event_time}` : dateLabel;
+        }
+        if (typeof instance?.origin_id === 'string') {
+            if (/^\d{4}-\d{2}-\d{2}$/.test(instance.origin_id)) {
+                return format(new Date(`${instance.origin_id}T00:00:00`), 'MMM d, yyyy');
+            }
+            if (/^\d{4}-\d{2}$/.test(instance.origin_id)) {
+                return format(new Date(`${instance.origin_id}-01T00:00:00`), 'MMM yyyy');
+            }
+        }
+        return `${instance?.origin_type || ''} - ${instance?.origin_id || ''}`.trim();
+    }, []);
+
+    const originMap = useMemo(() => (
+        new Map(origins.map((origin) => [origin.key, origin]))
+    ), [origins]);
+
+    const outlineOrigins = useMemo(() => {
+        const childrenMap = new Map();
+        const childSet = new Set();
+        originLinksAll.forEach((link) => {
+            const parentKey = `${link.parent_origin_type}:${link.parent_origin_id}`;
+            const childKey = `${link.child_origin_type}:${link.child_origin_id}`;
+            if (!childrenMap.has(parentKey)) childrenMap.set(parentKey, []);
+            childrenMap.get(parentKey).push(childKey);
+            childSet.add(childKey);
+        });
+
+        const roots = origins
+            .filter((origin) => !childSet.has(origin.key))
+            .sort((a, b) => String(a.label).localeCompare(String(b.label)));
+
+        const ordered = [];
+        const visited = new Set();
+        const visit = (origin, depth) => {
+            if (!origin || visited.has(origin.key)) return;
+            visited.add(origin.key);
+            ordered.push({ origin, depth });
+            const children = (childrenMap.get(origin.key) || [])
+                .map((key) => originMap.get(key))
+                .filter(Boolean)
+                .sort((a, b) => String(a.label).localeCompare(String(b.label)));
+            children.forEach((child) => visit(child, depth + 1));
+        };
+        roots.forEach((origin) => visit(origin, 0));
+        origins
+            .filter((origin) => !visited.has(origin.key))
+            .forEach((origin) => ordered.push({ origin, depth: 0 }));
+        return ordered;
+    }, [originLinksAll, originMap, origins]);
 
     return (
         <div className="page-task-admin">
@@ -377,11 +559,11 @@ const TaskAdmin = () => {
                         <div className="empty-state">No origins found.</div>
                     )}
                     <div className="origin-list">
-                        {origins.map((origin) => (
+                        {outlineOrigins.map(({ origin, depth }) => (
                             <button
                                 key={origin.key}
                                 type="button"
-                                className={`origin-row ${origin.key === selectedOriginKey ? 'active' : ''}`}
+                                className={`origin-row outline ${origin.key === selectedOriginKey ? 'active' : ''}`}
                                 onClick={() => setSelectedOriginKey(origin.key)}
                                 onContextMenu={(event) => {
                                     event.preventDefault();
@@ -392,10 +574,11 @@ const TaskAdmin = () => {
                                         origin
                                     });
                                 }}
+                                style={{ paddingLeft: `${0.7 + depth * 1.25}rem` }}
                             >
                                 <div>
                                     <div className="origin-title">{origin.label}</div>
-                                    <div className="origin-meta">{origin.origin_type} • {origin.origin_id}</div>
+                                    <div className="origin-meta">{origin.origin_type} - {origin.origin_id}</div>
                                 </div>
                                 <div className="origin-counts">
                                     <span>{origin.open_count} open</span>
@@ -410,7 +593,60 @@ const TaskAdmin = () => {
                     <Card className="task-admin-card">
                         <div className="task-admin-card-header">
                             <h2>Recurring Templates</h2>
-                            <span className="muted">{selectedOrigin?.origin_type || 'Select an origin'}</span>
+                            <div className="template-scope-controls">
+                                <select
+                                    className="template-select"
+                                    value={templateOriginType}
+                                    onChange={(e) => {
+                                        const nextType = e.target.value;
+                                        setTemplateOriginType(nextType);
+                                        if (nextType === 'operations') {
+                                            setTemplateOriginId('weekly');
+                                        } else if (nextType === 'event') {
+                                            setTemplateOriginId(eventTypes[0]?.id ? String(eventTypes[0].id) : '');
+                                        } else {
+                                            setTemplateOriginId(null);
+                                        }
+                                    }}
+                                >
+                                    <option value="sunday">Sunday</option>
+                                    <option value="vestry">Vestry</option>
+                                    <option value="operations">Operations</option>
+                                    <option value="event">Event Type</option>
+                                </select>
+                                {templateOriginType === 'operations' && (
+                                    <select
+                                        className="template-select"
+                                        value={templateOriginId || 'weekly'}
+                                        onChange={(e) => setTemplateOriginId(e.target.value)}
+                                    >
+                                        <option value="weekly">Weekly</option>
+                                        <option value="timesheets">Timesheets</option>
+                                    </select>
+                                )}
+                                {templateOriginType === 'event' && (
+                                    <select
+                                        className="template-select"
+                                        value={templateOriginId || ''}
+                                        onChange={(e) => setTemplateOriginId(e.target.value)}
+                                    >
+                                        {eventTypes.length === 0 && <option value="">No event types</option>}
+                                        {eventTypes.map((type) => (
+                                            <option key={type.id} value={String(type.id)}>
+                                                {type.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                )}
+                                <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={seedTemplates}
+                                    disabled={templateOriginType === 'event' && !templateOriginId}
+                                >
+                                    Seed Tasks
+                                </button>
+                            </div>
                         </div>
                         {templatesLoading && <div className="empty-state">Loading templates...</div>}
                         {templatesError && <div className="empty-state">{templatesError}</div>}
@@ -479,14 +715,30 @@ const TaskAdmin = () => {
                             <button
                                 type="submit"
                                 className="btn-primary"
-                                disabled={!newTemplate.list_key.trim() || !newTemplate.title.trim() || !newTemplate.step_key.trim()}
+                                disabled={
+                                    !newTemplate.list_key.trim()
+                                    || !newTemplate.title.trim()
+                                    || !newTemplate.step_key.trim()
+                                    || (templateOriginType === 'event' && !templateOriginId)
+                                }
                             >
                                 <FaPlus /> Add
                             </button>
                         </form>
                         <div className="template-list">
                             {templates.map((template) => (
-                                <div key={template.id} className="template-row">
+                                <div
+                                    key={template.id}
+                                    className={`template-row ${template.id === selectedTemplateId ? 'selected' : ''}`}
+                                    onClick={() => setSelectedTemplateId(template.id)}
+                                    role="button"
+                                    tabIndex={0}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                            setSelectedTemplateId(template.id);
+                                        }
+                                    }}
+                                >
                                     <input
                                         type="text"
                                         value={template.list_title || ''}
@@ -548,6 +800,44 @@ const TaskAdmin = () => {
                                 </div>
                             ))}
                         </div>
+                    </Card>
+
+                    <Card className="task-admin-card">
+                        <div className="task-admin-card-header">
+                            <h2>Template Instances</h2>
+                            <span className="muted">
+                                {selectedTemplate?.list_title || selectedTemplate?.list_key || 'Select a template'}
+                            </span>
+                        </div>
+                        {!selectedTemplate && (
+                            <div className="empty-state">Select a template to see instances.</div>
+                        )}
+                        {instancesLoading && <div className="empty-state">Loading instances...</div>}
+                        {instancesError && <div className="empty-state">{instancesError}</div>}
+                        {selectedTemplate && !instancesLoading && !instancesError && templateInstances.length === 0 && (
+                            <div className="empty-state">No seeded instances found.</div>
+                        )}
+                        {selectedTemplate && templateInstances.length > 0 && (
+                            <div className="origin-list">
+                                {templateInstances.map((instance) => (
+                                    <button
+                                        key={instance.key}
+                                        type="button"
+                                        className={`origin-row ${instance.key === selectedOriginKey ? 'active' : ''}`}
+                                        onClick={() => setSelectedOriginKey(instance.key)}
+                                    >
+                                        <div>
+                                            <div className="origin-title">{formatInstanceLabel(instance)}</div>
+                                            <div className="origin-meta">{formatInstanceSubtitle(instance)}</div>
+                                        </div>
+                                        <div className="origin-counts">
+                                            <span>{instance.open_count} open</span>
+                                            <span>{instance.total_count} total</span>
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                     </Card>
 
                     <Card className="task-admin-card">

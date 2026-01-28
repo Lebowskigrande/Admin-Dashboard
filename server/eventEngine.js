@@ -142,7 +142,7 @@ const isSundayDate = (dateStr) => {
     return date.getDay() === 0;
 };
 
-export const syncGoogleEvents = async (fetchFn, { userId, tokens }) => {
+export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence }) => {
     const { categories, eventTypes } = getEventContext();
 
     // Get selected calendars
@@ -308,10 +308,17 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens }) => {
             0,
             null
         );
+        if (typeof onOccurrence === 'function') {
+            onOccurrence({
+                occurrenceId,
+                eventTypeId: categorization.type_id,
+                dateKey: date
+            });
+        }
         totalSynced++;
     }
 
-    ensureHgkOccurrences();
+    ensureHgkOccurrences(onOccurrence);
     return totalSynced;
 };
 
@@ -325,7 +332,7 @@ const getThirdSundayOfMonth = (referenceDate) => {
     return new Date(year, month, thirdSunday);
 };
 
-const ensureHgkOccurrences = () => {
+const ensureHgkOccurrences = (onOccurrence) => {
     const volunteerType = sqlite.prepare('SELECT id FROM event_types WHERE slug = ?').get('volunteer');
     if (!volunteerType) return;
     const eventId = 'hgk-volunteer';
@@ -357,5 +364,12 @@ const ensureHgkOccurrences = () => {
             dateKey,
             JSON.stringify({ tags: ['#HGK'], source: 'Holy Ghost Kitchen' })
         );
+        if (typeof onOccurrence === 'function') {
+            onOccurrence({
+                occurrenceId,
+                eventTypeId: volunteerType.id,
+                dateKey
+            });
+        }
     }
 };
