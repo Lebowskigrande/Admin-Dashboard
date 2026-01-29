@@ -75,20 +75,6 @@ const loadSavedChecks = () => {
     }
 };
 
-const base64ToBlob = (base64, contentType = 'application/pdf') => {
-    const payload = String(base64 || '').trim();
-    if (!payload) {
-        throw new Error('Missing base64 payload');
-    }
-    const normalized = payload.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
-    const byteCharacters = atob(normalized);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i += 1) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    return new Blob([new Uint8Array(byteNumbers)], { type: contentType });
-};
-
 const Finance = () => {
     const [checks, setChecks] = useState(() => {
         const saved = loadSavedChecks();
@@ -105,20 +91,22 @@ const Finance = () => {
             };
         });
     });
-    const [slipUrl, setSlipUrl] = useState('');
     const [slipBusy, setSlipBusy] = useState(false);
     const [slipError, setSlipError] = useState('');
     const [saveMessage, setSaveMessage] = useState('');
     const [previewModal, setPreviewModal] = useState({
         open: false,
         url: '',
-        pdfBase64: ''
+        fileId: ''
     });
     const [previewNotice, setPreviewNotice] = useState('');
     const [previewError, setPreviewError] = useState('');
     const [previewActionBusy, setPreviewActionBusy] = useState({ save: false, print: false });
+    const [depositSlipFileId, setDepositSlipFileId] = useState('');
     const saveMessageTimeoutRef = useRef(null);
-    const pdfInputRef = useRef(null);
+    const [checksPdfFile, setChecksPdfFile] = useState(null);
+    const [cashPdfFile, setCashPdfFile] = useState(null);
+    const [uploadResetKey, setUploadResetKey] = useState(0);
 
     const updateCheck = (index, field, value) => {
         setChecks((prev) => {
@@ -126,6 +114,9 @@ const Finance = () => {
             next[index] = { ...next[index], [field]: value };
             return next;
         });
+        if (depositSlipFileId) {
+            setDepositSlipFileId('');
+        }
     };
 
     const handleSaveDepositData = () => {
@@ -150,18 +141,25 @@ const Finance = () => {
         }
     };
 
-    const handleBuildDepositFromPdf = async (event) => {
-        const file = event.target?.files?.[0];
-        if (!file) return;
-        event.target.value = '';
+    const handleBuildDepositPacket = async () => {
+        if (!checksPdfFile || !cashPdfFile) {
+            setSlipError('Upload both the checks PDF and the cash count PDF.');
+            return;
+        }
         setSlipError('');
-        setSlipUrl('');
         setPreviewError('');
         setPreviewNotice('');
         setSlipBusy(true);
         try {
+            let slipFileId = depositSlipFileId;
+            if (!slipFileId) {
+                slipFileId = await requestDepositSlipFile();
+                setDepositSlipFileId(slipFileId);
+            }
             const formData = new FormData();
-            formData.append('checksPdf', file);
+            formData.append('checksPdf', checksPdfFile);
+            formData.append('cashPdf', cashPdfFile);
+            formData.append('slipFileId', slipFileId);
             const payloadChecks = checks.map((entry) => ({
                 checkNumber: entry.checkNumber || '',
                 amount: buildPayloadAmount(entry.amount)
@@ -179,49 +177,27 @@ const Finance = () => {
                 method: 'POST',
                 body: formData
             });
-            if (!response.ok) throw new Error('Failed to build deposit slip from PDF');
+            if (!response.ok) throw new Error('Failed to build deposit packet');
             const data = await response.json();
-            if (!data?.pdfBase64) throw new Error('Missing PDF data');
-            const blob = base64ToBlob(data.pdfBase64, 'application/pdf');
-            setSlipUrl((prev) => {
-                if (prev) URL.revokeObjectURL(prev);
-                return URL.createObjectURL(blob);
-            });
-            setPreviewModal((prev) => {
-                if (prev.url) URL.revokeObjectURL(prev.url);
-                return {
-                    open: true,
-                    url: URL.createObjectURL(blob),
-                    pdfBase64: data.pdfBase64
-                };
+            if (!data?.fileId) throw new Error('Missing PDF data');
+            setPreviewModal({
+                open: true,
+                url: buildPreviewUrl(data.fileId),
+                fileId: data.fileId
             });
         } catch (error) {
-            console.error('Deposit slip PDF error:', error);
-            setSlipError('Unable to build deposit slip from the uploaded PDF.');
+            console.error('Deposit packet error:', error);
+            setSlipError('Unable to build the deposit packet with the uploaded PDFs.');
         } finally {
             setSlipBusy(false);
         }
     };
 
     useEffect(() => () => {
-        if (slipUrl) {
-            URL.revokeObjectURL(slipUrl);
-        }
-    }, [slipUrl]);
-
-    useEffect(() => () => {
         if (saveMessageTimeoutRef.current) {
             clearTimeout(saveMessageTimeoutRef.current);
         }
     }, []);
-
-    useEffect(() => {
-        return () => {
-            if (previewModal.url) {
-                URL.revokeObjectURL(previewModal.url);
-            }
-        };
-    }, [previewModal.url]);
 
     const budgetTotals = useMemo(() => {
         return checks.reduce((acc, check) => {
@@ -257,47 +233,48 @@ const Finance = () => {
         }, 0);
     }, [checks]);
 
+    const buildPreviewUrl = (fileId) => `${API_URL}/deposit-slip/file/${fileId}`;
+
+    const requestDepositSlipFile = async () => {
+        const payloadChecks = checks.map((entry) => ({
+            checkNumber: entry.checkNumber || '',
+            amount: buildPayloadAmount(entry.amount)
+        }));
+        const response = await fetch(`${API_URL}/deposit-slip/manual`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                checks: payloadChecks,
+                totals: {
+                    cash: cashTotal,
+                    subtotal: overallTotal,
+                    total: overallTotal
+                },
+                fundsReport: {
+                    entries: fundsReportEntries
+                }
+            })
+        });
+        if (!response.ok) throw new Error('Failed to build deposit slip');
+        const data = await response.json();
+        if (!data?.fileId) throw new Error('Missing PDF file');
+        return data.fileId;
+    };
+
     const handleGenerateDepositSlip = async () => {
         setSlipError('');
-        setSlipUrl('');
         setPreviewError('');
         setPreviewNotice('');
         setSlipBusy(true);
         try {
-            const payloadChecks = checks.map((entry) => ({
-                checkNumber: entry.checkNumber || '',
-                amount: buildPayloadAmount(entry.amount)
-            }));
-            const response = await fetch(`${API_URL}/deposit-slip/manual`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    checks: payloadChecks,
-                    totals: {
-                        cash: cashTotal,
-                        subtotal: overallTotal,
-                        total: overallTotal
-                    },
-                    fundsReport: {
-                        entries: fundsReportEntries
-                    }
-                })
-            });
-            if (!response.ok) throw new Error('Failed to build deposit slip');
-            const data = await response.json();
-            if (!data?.pdfBase64) throw new Error('Missing PDF data');
-            const blob = base64ToBlob(data.pdfBase64, 'application/pdf');
-            setSlipUrl((prev) => {
-                if (prev) URL.revokeObjectURL(prev);
-                return URL.createObjectURL(blob);
-            });
-            setPreviewModal((prev) => {
-                if (prev.url) URL.revokeObjectURL(prev.url);
-                return {
-                    open: true,
-                    url: URL.createObjectURL(blob),
-                    pdfBase64: data.pdfBase64
-                };
+            const fileId = depositSlipFileId || await requestDepositSlipFile();
+            if (!depositSlipFileId) {
+                setDepositSlipFileId(fileId);
+            }
+            setPreviewModal({
+                open: true,
+                url: buildPreviewUrl(fileId),
+                fileId
             });
         } catch (error) {
             console.error('Deposit slip error:', error);
@@ -308,23 +285,22 @@ const Finance = () => {
     };
 
     const closePreviewModal = () => {
-        if (previewModal.url) {
-            URL.revokeObjectURL(previewModal.url);
-        }
-        setPreviewModal({ open: false, url: '', pdfBase64: '' });
+        setPreviewModal({ open: false, url: '', fileId: '' });
         setPreviewNotice('');
         setPreviewError('');
         setPreviewActionBusy({ save: false, print: false });
     };
 
     const handleSaveSlip = async () => {
-        if (!previewModal.pdfBase64) return;
+        if (!previewModal.fileId) return;
         setPreviewError('');
         setPreviewNotice('');
         setPreviewActionBusy((prev) => ({ ...prev, save: true }));
         const filename = buildDepositFilename(overallTotal);
         try {
-            const blob = base64ToBlob(previewModal.pdfBase64, 'application/pdf');
+            const response = await fetch(buildPreviewUrl(previewModal.fileId));
+            if (!response.ok) throw new Error('Unable to load deposit slip.');
+            const blob = await response.blob();
             if (window?.showSaveFilePicker) {
                 const handle = await window.showSaveFilePicker({
                     suggestedName: filename,
@@ -357,15 +333,15 @@ const Finance = () => {
     };
 
     const handlePrintSlip = async () => {
-        if (!previewModal.pdfBase64) return;
+        if (!previewModal.fileId) return;
         setPreviewError('');
         setPreviewNotice('');
         setPreviewActionBusy((prev) => ({ ...prev, print: true }));
         try {
-            const response = await fetch(`${API_URL}/deposit-slip/print-base64`, {
+            const response = await fetch(`${API_URL}/deposit-slip/print-file`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pdfBase64: previewModal.pdfBase64 })
+                body: JSON.stringify({ fileId: previewModal.fileId })
             });
             if (!response.ok) {
                 throw new Error('Unable to print the deposit slip.');
@@ -377,6 +353,33 @@ const Finance = () => {
         } finally {
             setPreviewActionBusy((prev) => ({ ...prev, print: false }));
         }
+    };
+
+    const handleClearDepositForm = async () => {
+        setChecks(createChecks());
+        setChecksPdfFile(null);
+        setCashPdfFile(null);
+        setUploadResetKey((value) => value + 1);
+        setSlipError('');
+        setPreviewError('');
+        setPreviewNotice('');
+        if (typeof window !== 'undefined') {
+            try {
+                window.localStorage.removeItem(DEPOSIT_STORAGE_KEY);
+            } catch {
+                // ignore
+            }
+        }
+        const idsToDelete = new Set([depositSlipFileId, previewModal.fileId].filter(Boolean));
+        if (idsToDelete.size > 0) {
+            await Promise.all(
+                Array.from(idsToDelete).map((fileId) => (
+                    fetch(`${API_URL}/deposit-slip/file/${fileId}`, { method: 'DELETE' }).catch(() => {})
+                ))
+            );
+        }
+        setDepositSlipFileId('');
+        setPreviewModal({ open: false, url: '', fileId: '' });
     };
 
     return (
@@ -397,11 +400,10 @@ const Finance = () => {
                     <div className="deposit-header-actions">
                         <button
                             type="button"
-                            className="deposit-build-button"
-                            onClick={() => pdfInputRef.current?.click()}
-                            disabled={slipBusy}
+                            className="deposit-clear-button"
+                            onClick={handleClearDepositForm}
                         >
-                            Build deposit
+                            Clear
                         </button>
                         <button
                             type="button"
@@ -421,13 +423,6 @@ const Finance = () => {
                         </button>
                     </div>
                 </div>
-                <input
-                    ref={pdfInputRef}
-                    type="file"
-                    accept="application/pdf"
-                    style={{ display: 'none' }}
-                    onChange={handleBuildDepositFromPdf}
-                />
                 <div className="deposit-builder-body">
                         <div className="deposit-checks-table-wrapper">
                             <table className="deposit-checks-table">
@@ -482,32 +477,71 @@ const Finance = () => {
                             </tbody>
                         </table>
                     </div>
-                    <div className="deposit-total-panel">
-                        <h3>Totals by Budget Code</h3>
-                        <div className="deposit-total-list">
-                            {Object.keys(budgetTotals).length === 0 ? (
-                                <p className="empty-state">Enter budget codes to see totals.</p>
-                            ) : (
-                                Object.entries(budgetTotals).map(([code, total]) => (
-                                    <div key={code} className="deposit-total-line">
-                                        <span>{code}</span>
-                                        <strong>{formatCurrency(total)}</strong>
-                                    </div>
-                                ))
-                            )}
+                    <div className="deposit-side-panel">
+                        <div className="deposit-total-panel">
+                            <h3>Totals by Budget Code</h3>
+                            <div className="deposit-total-list">
+                                {Object.keys(budgetTotals).length === 0 ? (
+                                    <p className="empty-state">Enter budget codes to see totals.</p>
+                                ) : (
+                                    Object.entries(budgetTotals).map(([code, total]) => (
+                                        <div key={code} className="deposit-total-line">
+                                            <span>{code}</span>
+                                            <strong>{formatCurrency(total)}</strong>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                            <div className="deposit-total-line cash">
+                                <span>Cash (no check #)</span>
+                                <strong>{formatCurrency(cashTotal)}</strong>
+                            </div>
+                            <div className="deposit-total-divider" />
+                            <div className="deposit-total-line overall">
+                                <span>Total</span>
+                                <strong>{formatCurrency(overallTotal)}</strong>
+                            </div>
+                            <div className="deposit-status-area">
+                                {saveMessage && <p className="deposit-save-message">{saveMessage}</p>}
+                                {slipError && <div className="alert error">{slipError}</div>}
+                            </div>
                         </div>
-                        <div className="deposit-total-line cash">
-                            <span>Cash (no check #)</span>
-                            <strong>{formatCurrency(cashTotal)}</strong>
-                        </div>
-                        <div className="deposit-total-divider" />
-                        <div className="deposit-total-line overall">
-                            <span>Total</span>
-                            <strong>{formatCurrency(overallTotal)}</strong>
-                        </div>
-                        <div className="deposit-status-area">
-                            {saveMessage && <p className="deposit-save-message">{saveMessage}</p>}
-                            {slipError && <div className="alert error">{slipError}</div>}
+                        <div className="deposit-upload-panel">
+                            <h3>Deposit Attachments</h3>
+                            <div className="deposit-upload-field">
+                                <label htmlFor="deposit-checks-pdf">Checks PDF</label>
+                                <input
+                                    key={`checks-${uploadResetKey}`}
+                                    id="deposit-checks-pdf"
+                                    type="file"
+                                    accept="application/pdf"
+                                    onChange={(event) => setChecksPdfFile(event.target.files?.[0] || null)}
+                                />
+                                <p className="deposit-upload-hint">
+                                    {checksPdfFile ? checksPdfFile.name : 'Upload the scanned checks PDF.'}
+                                </p>
+                            </div>
+                            <div className="deposit-upload-field">
+                                <label htmlFor="deposit-cash-pdf">Cash Count PDF</label>
+                                <input
+                                    key={`cash-${uploadResetKey}`}
+                                    id="deposit-cash-pdf"
+                                    type="file"
+                                    accept="application/pdf"
+                                    onChange={(event) => setCashPdfFile(event.target.files?.[0] || null)}
+                                />
+                                <p className="deposit-upload-hint">
+                                    {cashPdfFile ? cashPdfFile.name : 'Upload the cash count PDF.'}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                className="deposit-build-button deposit-build-secondary"
+                                onClick={handleBuildDepositPacket}
+                                disabled={slipBusy || overallTotal <= 0 || !checksPdfFile || !cashPdfFile}
+                            >
+                                Build deposit
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -521,7 +555,7 @@ const Finance = () => {
                                 className="btn-icon"
                                 type="button"
                                 aria-label="Save deposit slip"
-                                disabled={!previewModal.pdfBase64 || previewActionBusy.save}
+                                disabled={!previewModal.fileId || previewActionBusy.save}
                                 onClick={handleSaveSlip}
                             >
                                 <FaSave />
@@ -530,7 +564,7 @@ const Finance = () => {
                                 className="btn-icon"
                                 type="button"
                                 aria-label="Print deposit slip"
-                                disabled={!previewModal.pdfBase64 || previewActionBusy.print}
+                                disabled={!previewModal.fileId || previewActionBusy.print}
                                 onClick={handlePrintSlip}
                             >
                                 <FaPrint />

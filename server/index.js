@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
 import { addMonths, format } from 'date-fns';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib';
 import { access, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
 import { join, dirname, resolve, basename, extname } from 'path';
 import { homedir, tmpdir } from 'os';
@@ -23,7 +23,7 @@ import { createOAuthClient, getAuthUrl, getTokensFromCode, setStoredCredentials,
 import { fetchGoogleCalendarEvents, fetchCalendarList } from './googleCalendar.js';
 import { google } from 'googleapis';
 import { syncGoogleEvents } from './eventEngine.js';
-import { buildDepositSlipPdf, convertPdfToImages, extractChecksFromImages } from './depositSlip.js';
+import { buildDepositSlipPdf, extractChecksFromImages } from './depositSlip.js';
 
 dotenv.config({ path: './server/.env' });
 
@@ -494,12 +494,13 @@ const sanitizeEmailHtml = (html) => {
 };
 const execFileAsync = promisify(execFile);
 const dbPath = join(__dirname, 'church.db');
+const DEPOSIT_OUTPUT_DIR = join(__dirname, 'deposit-outputs');
 
 const app = express();
 const PORT = 3001;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const upload = multer({ dest: join(tmpdir(), 'deposit-slip-uploads') });
-const pdfUpload = multer({ dest: join(tmpdir(), 'deposit-slip-pdf-uploads') });
+const depositBundleUpload = multer({ dest: join(tmpdir(), 'deposit-slip-bundle-uploads') });
 const vestryUpload = multer({ dest: join(tmpdir(), 'vestry-packet-uploads') });
 
 app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
@@ -5628,6 +5629,29 @@ const sanitizeFileName = (value) => String(value || '')
     .replace(/[<>:"/\\|?*]/g, '')
     .trim();
 
+const ensureDepositOutputDir = async () => {
+    await mkdir(DEPOSIT_OUTPUT_DIR, { recursive: true });
+    return DEPOSIT_OUTPUT_DIR;
+};
+
+const sanitizeDepositFileId = (value) => String(value || '')
+    .replace(/[^a-z0-9-]/gi, '')
+    .slice(0, 64);
+
+const buildDepositFilePath = (fileId) => {
+    const safeId = sanitizeDepositFileId(fileId);
+    if (!safeId) return null;
+    return join(DEPOSIT_OUTPUT_DIR, `${safeId}.pdf`);
+};
+
+const saveDepositPdf = async (pdfBuffer) => {
+    await ensureDepositOutputDir();
+    const fileId = randomUUID();
+    const filePath = buildDepositFilePath(fileId);
+    await writeFile(filePath, pdfBuffer);
+    return { fileId, filePath };
+};
+
 const safePacketCacheId = (value) => String(value || '')
     .replace(/[^a-z0-9-_]/gi, '')
     .slice(0, 80);
@@ -5758,9 +5782,9 @@ app.post('/api/deposit-slip/manual', async (req, res) => {
         });
 
         const pdfBytes = await readFile(outputPath);
-        const pdfBase64 = pdfBytes.toString('base64');
+        const saved = await saveDepositPdf(pdfBytes);
         res.json({
-            pdfBase64,
+            fileId: saved.fileId,
             cashTotal: Number.isFinite(cashTotal) ? cashTotal : 0
         });
     } catch (error) {
@@ -5829,6 +5853,80 @@ app.post('/api/deposit-slip/print-base64', async (req, res) => {
         if (outputDir) {
             await rm(outputDir, { recursive: true, force: true }).catch(() => {});
         }
+    }
+});
+
+app.get('/api/deposit-slip/file/:id', async (req, res) => {
+    const filePath = buildDepositFilePath(req.params.id);
+    if (!filePath) {
+        return res.status(400).json({ error: 'Invalid file id' });
+    }
+    try {
+        await access(filePath);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="deposit-slip-${req.params.id}.pdf"`);
+        return res.sendFile(filePath);
+    } catch {
+        return res.status(404).json({ error: 'Deposit file not found' });
+    }
+});
+
+app.delete('/api/deposit-slip/file/:id', async (req, res) => {
+    const filePath = buildDepositFilePath(req.params.id);
+    if (!filePath) {
+        return res.status(400).json({ error: 'Invalid file id' });
+    }
+    try {
+        await rm(filePath, { force: true });
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Deposit slip delete error:', error);
+        return res.status(500).json({ error: 'Failed to delete deposit file' });
+    }
+});
+
+app.post('/api/deposit-slip/print-file', async (req, res) => {
+    try {
+        const fileId = String(req.body?.fileId || '').trim();
+        const filePath = buildDepositFilePath(fileId);
+        if (!filePath) {
+            return res.status(400).json({ error: 'fileId is required' });
+        }
+        await access(filePath);
+        const escaped = filePath.replace(/'/g, "''");
+        const preferredPrinter = String(process.env.DEPOSIT_PRINTER_NAME || '').trim();
+        const printerName = preferredPrinter || await getDefaultPrinterName().catch(() => null);
+        const sumatraPath = await resolveSumatraPdfPath();
+        if (sumatraPath) {
+            const sumatraArgs = printerName
+                ? ['-silent', '-print-to', printerName, '-exit-on-print', filePath]
+                : ['-silent', '-print-to-default', '-exit-on-print', filePath];
+            await execFileAsync(sumatraPath, sumatraArgs, { windowsHide: true });
+            console.log('Deposit slip print dispatched', { printer: printerName || null, method: 'sumatra' });
+            return res.json({ success: true, printer: printerName || null, method: 'sumatra' });
+        }
+        const escapedPrinter = printerName ? printerName.replace(/'/g, "''") : '';
+        const script = [
+            `$path = '${escaped}'`,
+            printerName ? `$printer = '${escapedPrinter}'` : `$printer = $null`,
+            `$printed = $false`,
+            `if ($printer) {`,
+            `  try { Start-Process -FilePath $path -Verb PrintTo -ArgumentList $printer; $printed = $true } catch { }`,
+            `}`,
+            `if (-not $printed) { Start-Process -FilePath $path -Verb Print }`
+        ].join('; ');
+        await execFileAsync('powershell', [
+            '-NoProfile',
+            '-Command',
+            script
+        ], { windowsHide: true });
+        console.log('Deposit slip print dispatched', { printer: printerName || null, method: 'shell' });
+        return res.json({ success: true, printer: printerName || null, method: 'shell' });
+    } catch (error) {
+        console.error('Deposit slip print error:', error);
+        if (error?.stdout) console.error('Deposit slip print stdout:', String(error.stdout).trim());
+        if (error?.stderr) console.error('Deposit slip print stderr:', String(error.stderr).trim());
+        return res.status(500).json({ error: 'Failed to print deposit slip' });
     }
 });
 
@@ -6144,97 +6242,133 @@ Start-Process '${escapePsString(HGK_INSTACART_LIST_URL)}'
     }
 });
 
-app.post('/api/deposit-slip/pdf', pdfUpload.single('checksPdf'), async (req, res) => {
-    let conversionDir = null;
-    let uploadedPath = req.file?.path || null;
+app.post('/api/deposit-slip/pdf', depositBundleUpload.fields([
+    { name: 'checksPdf', maxCount: 1 },
+    { name: 'cashPdf', maxCount: 1 }
+]), async (req, res) => {
+    let checksPath = null;
+    let cashPath = null;
     try {
-        if (!req.file) {
-            return res.status(400).json({ error: 'A PDF file is required' });
+        const checksFile = req.files?.checksPdf?.[0] || null;
+        const cashFile = req.files?.cashPdf?.[0] || null;
+        if (!checksFile || !cashFile) {
+            return res.status(400).json({ error: 'Checks PDF and Cash Count PDF are required' });
         }
-        const configPath = resolve(__dirname, 'depositSlipConfig.json');
-        const config = JSON.parse(await readFile(configPath, 'utf8'));
-        const templatePath = resolve(__dirname, '..', config.templatePath || 'deposit slip template.pdf');
-        const maxChecks = Array.isArray(config.fieldMap?.checks)
-            ? config.fieldMap.checks.length
-            : 18;
+        const slipFileId = String(req.body?.slipFileId || '').trim();
+        const slipPath = buildDepositFilePath(slipFileId);
+        if (!slipPath) {
+            return res.status(400).json({ error: 'Deposit slip file is required' });
+        }
+        try {
+            await access(slipPath);
+        } catch {
+            return res.status(404).json({ error: 'Deposit slip file not found' });
+        }
+        checksPath = checksFile.path;
+        cashPath = cashFile.path;
 
-        conversionDir = join(tmpdir(), `deposit-slip-pdf-${Date.now()}`);
-        await mkdir(conversionDir, { recursive: true });
-        const images = await convertPdfToImages(uploadedPath, conversionDir);
-        const ocrChecks = await extractChecksFromImages(images, {
-            ocrRegions: config.ocrRegions,
-            includeOcrLines: true,
-            ocrEngines: config.ocrEngines,
-            ocrRegionOrigin: config.ocrRegionOrigin,
-            ocrRegionAnchor: config.ocrRegionAnchor,
-            ocrModel: config.ocrModel,
-            ocrCropMaxSize: config.ocrCropMaxSize,
-            ocrPreviewOnly: config.ocrPreviewOnly === true,
-            ocrAlign: config.ocrAlign
-        });
-        const clientChecksPayload = parseJsonValue(req.body?.checks, []) || [];
-        const { manualChecks, cashTotal } = buildManualChecks(clientChecksPayload, maxChecks);
-        const manualTotals = parseJsonValue(req.body?.totals, {}) || {};
-        const subtotalOverride = parseCurrencyOverride(manualTotals.subtotal);
-        const totalOverride = parseCurrencyOverride(manualTotals.total);
-        const manualCashOverride = parseCurrencyOverride(manualTotals.cash);
-        const manualSubtotal = manualChecks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
-        const subtotalValue = subtotalOverride != null ? subtotalOverride : manualSubtotal;
-        const cashValue = manualCashOverride != null ? manualCashOverride : cashTotal;
-        const totalValue = totalOverride != null ? totalOverride : subtotalValue + cashValue;
-
-        const fundsReportEntries = normalizeFundsReportEntries(req.body?.fundsReport?.entries);
-        const depositChecks = manualChecks;
-
-        const depositPath = join(conversionDir, 'deposit-slip.pdf');
-        await buildDepositSlipPdf({
-            templatePath,
-            outputPath: depositPath,
-            checks: depositChecks,
-            fieldMap: config.fieldMap || {},
-            totals: {
-                cash: cashValue,
-                subtotal: subtotalValue,
-                total: totalValue
-            },
-            fundsReport: {
-                entries: fundsReportEntries,
-                total: totalValue
-            }
-        });
-
-        const depositBytes = await readFile(depositPath);
+        const depositBytes = await readFile(slipPath);
         const depositDoc = await PDFDocument.load(depositBytes);
         const finalDoc = await PDFDocument.create();
         const [depositPage] = await finalDoc.copyPages(depositDoc, [0]);
         finalDoc.addPage(depositPage);
 
-        const checkAssets = ocrChecks.map((check, index) => ({
-            ...check,
-            imagePath: images[index]
-        }));
-        await addCheckGridPages(finalDoc, checkAssets, {
+        const cashBytes = await readFile(cashPath);
+        const cashDoc = await PDFDocument.load(cashBytes);
+        if (cashDoc.getPageCount() > 0) {
+            const [cashPage] = await finalDoc.copyPages(cashDoc, [0]);
+            finalDoc.addPage(cashPage);
+        }
+
+        const checksBytes = await readFile(checksPath);
+        const checksDoc = await PDFDocument.load(checksBytes);
+        await addChecksGridFromPdf(finalDoc, checksDoc, {
             pageWidth: depositPage.getWidth(),
             pageHeight: depositPage.getHeight()
         });
 
         const finalBytes = await finalDoc.save();
         const finalBuffer = Buffer.from(finalBytes);
-        res.json({ pdfBase64: finalBuffer.toString('base64') });
+        const saved = await saveDepositPdf(finalBuffer);
+        res.json({ fileId: saved.fileId });
     } catch (error) {
         console.error('PDF deposit slip error:', error);
         if (!res.headersSent) {
-            res.status(500).json({ error: 'Failed to build deposit slip from PDF' });
+            res.status(500).json({ error: 'Failed to build deposit packet' });
         }
     } finally {
-        if (conversionDir) {
-            await rm(conversionDir, { recursive: true, force: true }).catch(() => {});
+        if (checksPath) {
+            await rm(checksPath, { force: true }).catch(() => {});
         }
-        if (uploadedPath) {
-            await rm(uploadedPath, { force: true }).catch(() => {});
+        if (cashPath) {
+            await rm(cashPath, { force: true }).catch(() => {});
         }
     }
 });
+
+const addChecksGridFromPdf = async (pdfDoc, checksDoc, options = {}) => {
+    const {
+        pageWidth = 612,
+        pageHeight = 792,
+        margin = 36,
+        columns = 2,
+        rows = 3,
+        colGap = 12,
+        rowGap = 12
+    } = options;
+    if (!checksDoc) return;
+    const pages = checksDoc.getPages();
+    if (!pages.length) return;
+    const perPage = columns * rows;
+    const cellWidth = (pageWidth - margin * 2 - colGap * (columns - 1)) / columns;
+    const cellHeight = (pageHeight - margin * 2 - rowGap * (rows - 1)) / rows;
+    let pageIndex = 0;
+    while (pageIndex < pages.length) {
+        const gridPage = pdfDoc.addPage([pageWidth, pageHeight]);
+        for (let slot = 0; slot < perPage && pageIndex < pages.length; slot += 1) {
+            const column = slot % columns;
+            const row = Math.floor(slot / columns);
+            const targetX = margin + column * (cellWidth + colGap);
+            const targetYTop = pageHeight - margin - row * (cellHeight + rowGap);
+            const sourcePage = pages[pageIndex];
+            const embedded = await pdfDoc.embedPage(sourcePage);
+            const baseRotation = ((sourcePage.getRotation()?.angle || 0) % 360 + 360) % 360;
+            const baseIsRotated = baseRotation === 90 || baseRotation === 270;
+            const baseDisplayWidth = baseIsRotated ? embedded.height : embedded.width;
+            const baseDisplayHeight = baseIsRotated ? embedded.width : embedded.height;
+            const isPortrait = baseDisplayHeight > baseDisplayWidth;
+            const rotation = (baseRotation + (isPortrait ? 180 : 0)) % 360;
+            const isRotated = rotation === 90 || rotation === 270;
+            const displayWidth = isRotated ? embedded.height : embedded.width;
+            const displayHeight = isRotated ? embedded.width : embedded.height;
+            const scale = Math.min(cellWidth / displayWidth, cellHeight / displayHeight, 1);
+            const drawWidth = embedded.width * scale;
+            const drawHeight = embedded.height * scale;
+            const scaledDisplayWidth = displayWidth * scale;
+            const scaledDisplayHeight = displayHeight * scale;
+            const offsetX = targetX + (cellWidth - scaledDisplayWidth) / 2;
+            const offsetY = targetYTop - scaledDisplayHeight - (cellHeight - scaledDisplayHeight) / 2;
+            let drawX = offsetX;
+            let drawY = offsetY;
+            if (rotation === 90) {
+                drawX = offsetX + scaledDisplayWidth;
+            } else if (rotation === 180) {
+                drawX = offsetX + scaledDisplayWidth;
+                drawY = offsetY + scaledDisplayHeight;
+            } else if (rotation === 270) {
+                drawY = offsetY + scaledDisplayHeight;
+            }
+            gridPage.drawPage(embedded, {
+                x: drawX,
+                y: drawY,
+                width: drawWidth,
+                height: drawHeight,
+                rotate: rotation ? degrees(rotation) : undefined
+            });
+            pageIndex += 1;
+        }
+    }
+};
 
 const addCheckGridPages = async (pdfDoc, checks, options = {}) => {
     const {

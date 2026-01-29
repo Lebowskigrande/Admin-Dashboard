@@ -58,3 +58,6 @@ src-tauri/node_modules/
 # Vestry packet cache
 server/vestry-packet-cache/
 
+# Deposit slip cache
+server/deposit-outputs/
+
