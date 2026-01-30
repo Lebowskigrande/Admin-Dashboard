@@ -61,3 +61,6 @@ server/vestry-packet-cache/
 # Deposit slip cache
 server/deposit-outputs/
 
+# Document preview cache
+server/preview-cache/
+

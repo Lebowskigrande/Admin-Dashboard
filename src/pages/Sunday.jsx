@@ -16,6 +16,31 @@ const serializeDate = (date) => date.toISOString().slice(0, 10);
 const bulletinOptions = ['Not Started', 'draft', 'review', 'ready', 'printed'];
 const insertOptions = ['Not Started', 'draft', 'review', 'ready', 'printed', 'stuffed'];
 
+const resolveBulletinStatusFromDoc = (doc) => {
+    if (!doc?.exists) return 'Not Started';
+    const raw = String(doc.status || '').toLowerCase().trim();
+    if (!raw) return 'draft';
+    if (raw === 'not_started') return 'Not Started';
+    if (raw === 'final') return 'ready';
+    return raw;
+};
+
+const normalizeStatusLabel = (value) => {
+    const raw = String(value || '').toLowerCase().trim();
+    if (!raw || raw === 'not_started') return 'Not Started';
+    if (raw === 'final') return 'ready';
+    return raw;
+};
+
+const getStatusPillClass = (status) => {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'not started' || normalized === 'not_started') return 'pill-neutral';
+    if (normalized === 'review') return 'status-reviewed';
+    if (normalized === 'draft') return 'status-in_process';
+    if (normalized === 'ready' || normalized === 'printed') return 'status-closed';
+    return 'pill-neutral';
+};
+
 const apiRoleKeys = new Set([
     'celebrant',
     'preacher',
@@ -397,30 +422,139 @@ const Sunday = () => {
     }, [currentDate]);
 
 
-    useEffect(() => {
+    const loadDocs = useCallback(async () => {
         if (!currentDate) return;
-        const loadDocs = async () => {
-            setDocsLoading(true);
-            try {
-                const dateStr = serializeDate(currentDate);
-                const name = liturgicalInfo?.name || liturgicalInfo?.feast || '';
-                const response = await fetch(`${API_URL}/sunday/documents?date=${dateStr}&name=${encodeURIComponent(name)}`);
-                if (!response.ok) throw new Error('Failed to load document status');
-                const data = await response.json();
-                setBulletinDoc(data?.bulletin10 || { exists: false, preview: '', path: '', name: '' });
-                setBulletin8Doc(data?.bulletin8 || { exists: false, preview: '', path: '', name: '' });
-                setInsertDoc(data?.insert || { exists: false, preview: '', path: '', name: '' });
-            } catch (err) {
-                console.error(err);
-                setBulletinDoc({ exists: false, preview: '', path: '', name: '' });
-                setBulletin8Doc({ exists: false, preview: '', path: '', name: '' });
-                setInsertDoc({ exists: false, preview: '', path: '', name: '' });
-            } finally {
-                setDocsLoading(false);
+        setDocsLoading(true);
+        try {
+            const dateStr = serializeDate(currentDate);
+            const name = liturgicalInfo?.name || liturgicalInfo?.feast || '';
+            const cachedDetails = getSundayDetails(currentDate);
+            setBulletinDoc((prev) => ({
+                ...prev,
+                preview: cachedDetails.bulletinPreview10 || prev.preview || ''
+            }));
+            setBulletin8Doc((prev) => ({
+                ...prev,
+                preview: cachedDetails.bulletinPreview8 || prev.preview || ''
+            }));
+            setInsertDoc((prev) => ({
+                ...prev,
+                preview: cachedDetails.insertPreview || prev.preview || ''
+            }));
+
+            const response = await fetch(`${API_URL}/sunday/documents?date=${dateStr}&name=${encodeURIComponent(name)}&preview=0`);
+            if (!response.ok) throw new Error('Failed to load document status');
+            const data = await response.json();
+            const bulletin10Exists = !!data?.bulletin10?.exists;
+            const bulletin8Exists = !!data?.bulletin8?.exists;
+            const insertExists = !!data?.insert?.exists;
+            setBulletinDoc((prev) => ({
+                ...(data?.bulletin10 || {}),
+                preview: bulletin10Exists
+                    ? (cachedDetails.bulletinPreview10 || prev.preview || '')
+                    : ''
+            }));
+            setBulletin8Doc((prev) => ({
+                ...(data?.bulletin8 || {}),
+                preview: bulletin8Exists
+                    ? (cachedDetails.bulletinPreview8 || prev.preview || '')
+                    : ''
+            }));
+            setInsertDoc((prev) => ({
+                ...(data?.insert || {}),
+                preview: insertExists
+                    ? (cachedDetails.insertPreview || prev.preview || '')
+                    : ''
+            }));
+
+            const nextBulletin10Status = bulletin10Exists
+                ? normalizeStatusLabel(data?.bulletin10?.status || cachedDetails.bulletinStatus10 || 'Not Started')
+                : 'Not Started';
+            const nextBulletin8Status = bulletin8Exists
+                ? normalizeStatusLabel(data?.bulletin8?.status || cachedDetails.bulletinStatus8 || 'Not Started')
+                : 'Not Started';
+            const nextInsertStatus = insertExists
+                ? normalizeStatusLabel(data?.insert?.status || cachedDetails.bulletinInsertStatus || 'Not Started')
+                : 'Not Started';
+
+            setDetails((prev) => {
+                const next = {
+                    ...prev,
+                    bulletinStatus10: nextBulletin10Status,
+                    bulletinStatus8: nextBulletin8Status,
+                    bulletinInsertStatus: nextInsertStatus,
+                    bulletinPreview10: bulletin10Exists ? (cachedDetails.bulletinPreview10 || prev.bulletinPreview10 || '') : '',
+                    bulletinPreview8: bulletin8Exists ? (cachedDetails.bulletinPreview8 || prev.bulletinPreview8 || '') : '',
+                    insertPreview: insertExists ? (cachedDetails.insertPreview || prev.insertPreview || '') : ''
+                };
+                if (currentDate) {
+                    saveSundayDetails(currentDate, next);
+                }
+                return next;
+            });
+            setStatusDrafts((prev) => ({
+                ...prev,
+                bulletin10: null,
+                bulletin8: null
+            }));
+
+            const needsPreview = (bulletin10Exists && !(cachedDetails.bulletinPreview10 || ''))
+                || (bulletin8Exists && !(cachedDetails.bulletinPreview8 || ''))
+                || (insertExists && !(cachedDetails.insertPreview || ''));
+            if (needsPreview) {
+                fetch(`${API_URL}/sunday/documents?date=${dateStr}&name=${encodeURIComponent(name)}&preview=1`)
+                    .then((previewResponse) => (previewResponse.ok ? previewResponse.json() : null))
+                    .then((previewData) => {
+                        if (!previewData) return;
+                        const nextBulletin10Preview = previewData?.bulletin10?.exists
+                            ? (previewData?.bulletin10?.preview || '')
+                            : '';
+                        const nextBulletin8Preview = previewData?.bulletin8?.exists
+                            ? (previewData?.bulletin8?.preview || '')
+                            : '';
+                        const nextInsertPreview = previewData?.insert?.exists
+                            ? (previewData?.insert?.preview || '')
+                            : '';
+                        setBulletinDoc((prev) => ({ ...prev, preview: nextBulletin10Preview }));
+                        setBulletin8Doc((prev) => ({ ...prev, preview: nextBulletin8Preview }));
+                        setInsertDoc((prev) => ({ ...prev, preview: nextInsertPreview }));
+                        setDetails((prev) => {
+                            const next = {
+                                ...prev,
+                                bulletinPreview10: nextBulletin10Preview || prev.bulletinPreview10 || '',
+                                bulletinPreview8: nextBulletin8Preview || prev.bulletinPreview8 || '',
+                                insertPreview: nextInsertPreview || prev.insertPreview || ''
+                            };
+                            if (currentDate) {
+                                saveSundayDetails(currentDate, next);
+                            }
+                            return next;
+                        });
+                    })
+                    .catch(() => {});
             }
-        };
-        loadDocs();
+        } catch (err) {
+            console.error(err);
+            // Keep last known state on error to avoid flicker.
+        } finally {
+            setDocsLoading(false);
+        }
     }, [currentDate, liturgicalInfo?.feast, liturgicalInfo?.name]);
+
+    useEffect(() => {
+        loadDocs();
+    }, [loadDocs]);
+
+    useEffect(() => {
+        if (!currentDate) return undefined;
+        const interval = window.setInterval(loadDocs, 30000);
+        const handleFocus = () => loadDocs();
+        window.addEventListener('focus', handleFocus);
+        return () => {
+            window.clearInterval(interval);
+            window.removeEventListener('focus', handleFocus);
+        };
+    }, [currentDate, loadDocs]);
 
     const handleNavigate = async (direction) => {
         if (!currentDate) return;
@@ -578,52 +712,6 @@ const Sunday = () => {
         }
     };
 
-    const renderStatusStack = (key, options, selected, onSelect, disabled, lockedOptions = []) => {
-        const resolvedSelected = options.includes(selected) ? selected : options[0];
-        const activeIndex = Math.max(0, options.indexOf(resolvedSelected));
-        const draft = statusDrafts[key];
-        const displaySelected = draft || resolvedSelected;
-        const expanded = statusExpandedKey === key;
-        return (
-            <div
-                className={`status-stack ${disabled ? 'disabled' : ''} ${expanded ? 'expanded' : ''}`}
-                style={{ '--active-index': activeIndex, '--stack-count': options.length - 1 }}
-                onMouseEnter={() => {
-                    if (!disabled) setStatusExpandedKey(key);
-                }}
-                onMouseLeave={() => {
-                    if (statusDrafts[key]) {
-                        onSelect(statusDrafts[key]);
-                        setStatusDrafts((prev) => ({ ...prev, [key]: null }));
-                    }
-                    setStatusExpandedKey(null);
-                }}
-            >
-                <span className="status-anchor" aria-hidden="true">
-                    {displaySelected}
-                </span>
-                {options.map((option, index) => {
-                    const isLocked = lockedOptions.includes(option);
-                    return (
-                        <button
-                            key={option}
-                            type="button"
-                            className={`status-option ${displaySelected === option ? 'active' : ''} ${isLocked ? 'locked' : ''}`}
-                            style={{ '--index': index }}
-                            onClick={() => {
-                                if (disabled || isLocked) return;
-                                setStatusDrafts((prev) => ({ ...prev, [key]: option }));
-                            }}
-                            disabled={disabled}
-                        >
-                            {option}
-                        </button>
-                    );
-                })}
-            </div>
-        );
-    };
-
     const handleUploadBulletin = async () => {
         if (!bulletinDoc?.path || uploadingBulletin) return;
         setUploadingBulletin(true);
@@ -702,11 +790,17 @@ const Sunday = () => {
         );
     };
 
-    const bulletin10Status = bulletinDoc?.preview ? (details.bulletinStatus10 || 'draft') : 'Not Started';
-    const bulletin8Status = bulletin8Doc?.preview ? (details.bulletinStatus8 || 'draft') : 'Not Started';
-    const insertStatus = insertDoc.exists ? (details.bulletinInsertStatus || 'Not Started') : 'Not Started';
-    const bulletin10Display = bulletinDoc?.preview ? bulletin10Status : 'Not Started';
-    const bulletin8Display = bulletin8Doc?.preview ? bulletin8Status : 'Not Started';
+    const bulletin10Status = bulletinDoc?.exists
+        ? normalizeStatusLabel(bulletinDoc.status || details.bulletinStatus10 || 'draft')
+        : 'Not Started';
+    const bulletin8Status = bulletin8Doc?.exists
+        ? normalizeStatusLabel(bulletin8Doc.status || details.bulletinStatus8 || 'draft')
+        : 'Not Started';
+    const insertStatus = insertDoc.exists
+        ? normalizeStatusLabel(insertDoc.status || details.bulletinInsertStatus || 'Not Started')
+        : 'Not Started';
+    const bulletin10Display = bulletinDoc?.exists ? bulletin10Status : 'Not Started';
+    const bulletin8Display = bulletin8Doc?.exists ? bulletin8Status : 'Not Started';
     const insertDisplay = insertDoc.exists ? insertStatus : 'Not Started';
     const isBulletin10Complete = (statusDrafts.bulletin10 || bulletin10Status) === 'printed';
     const isBulletin8Complete = (statusDrafts.bulletin8 || bulletin8Status) === 'printed';
@@ -724,26 +818,6 @@ const Sunday = () => {
             bulletin8: getBulletinDefaultCopies(bulletin8Display, 20)
         });
     }, [bulletin10Display, bulletin8Display]);
-
-    useEffect(() => {
-        if (!bulletinDoc?.preview) return;
-        setDetails((prev) => {
-            if (!prev?.bulletinStatus10 || prev.bulletinStatus10 === 'Not Started') {
-                return { ...prev, bulletinStatus10: 'draft' };
-            }
-            return prev;
-        });
-    }, [bulletinDoc?.preview]);
-
-    useEffect(() => {
-        if (!bulletin8Doc?.preview) return;
-        setDetails((prev) => {
-            if (!prev?.bulletinStatus8 || prev.bulletinStatus8 === 'Not Started') {
-                return { ...prev, bulletinStatus8: 'draft' };
-            }
-            return prev;
-        });
-    }, [bulletin8Doc?.preview]);
 
     const toggleEmailChecklistItem = (field) => {
         updateDetailField(field, !details[field]);
@@ -1291,14 +1365,7 @@ const Sunday = () => {
                     </div>
                     <div className="status-row">
                         <span className="status-label">Status</span>
-                        {renderStatusStack(
-                            'bulletin10',
-                            bulletinOptions,
-                            bulletin10Display,
-                            (option) => updateDetailField('bulletinStatus10', option),
-                            !bulletinDoc?.preview,
-                            ['printed']
-                        )}
+                        <span className={`pill ${getStatusPillClass(bulletin10Display)}`}>{bulletin10Display}</span>
                     </div>
                     {uploadError && <div className="text-muted">{uploadError}</div>}
                 </Card>
@@ -1362,14 +1429,7 @@ const Sunday = () => {
                     </div>
                     <div className="status-row">
                         <span className="status-label">Status</span>
-                        {renderStatusStack(
-                            'bulletin8',
-                            bulletinOptions,
-                            bulletin8Display,
-                            (option) => updateDetailField('bulletinStatus8', option),
-                            !bulletin8Doc?.preview,
-                            ['printed']
-                        )}
+                        <span className={`pill ${getStatusPillClass(bulletin8Display)}`}>{bulletin8Display}</span>
                     </div>
                 </Card>
                 <Card
@@ -1411,13 +1471,7 @@ const Sunday = () => {
                     </div>
                     <div className="status-row">
                         <span className="status-label">Status</span>
-                        {renderStatusStack(
-                            'insert',
-                            insertOptions,
-                            insertDisplay,
-                            (option) => updateDetailField('bulletinInsertStatus', option),
-                            !insertDoc.exists
-                        )}
+                        <span className={`pill ${getStatusPillClass(insertDisplay)}`}>{insertDisplay}</span>
                     </div>
                 </Card>
                 <Card className={`sunday-panel livestream-card ${isEmailChecklistComplete ? 'panel-complete' : ''}`}>

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, primaryKey } from 'drizzle-orm/sqlite-core';
 
 export const liturgicalDays = sqliteTable('liturgical_days', {
     date: text('date').primaryKey(),
@@ -220,3 +220,13 @@ export const recurringTaskTemplates = sqliteTable('recurring_task_templates', {
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull()
 });
+
+export const bulletinStatus = sqliteTable('bulletin_status', {
+    date: text('date').notNull(),
+    docKey: text('doc_key').notNull(),
+    status: text('status').notNull(),
+    source: text('source'),
+    updatedAt: text('updated_at').notNull()
+}, (table) => ({
+    pk: primaryKey({ columns: [table.date, table.docKey] })
+}));

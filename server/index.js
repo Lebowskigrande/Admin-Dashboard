@@ -495,6 +495,7 @@ const sanitizeEmailHtml = (html) => {
 const execFileAsync = promisify(execFile);
 const dbPath = join(__dirname, 'church.db');
 const DEPOSIT_OUTPUT_DIR = join(__dirname, 'deposit-outputs');
+const PREVIEW_CACHE_ROOT = join(__dirname, 'preview-cache');
 
 const app = express();
 const PORT = 3001;
@@ -650,6 +651,21 @@ migrateLegacyData();
 ensureDefaultSundayServices();
 
 const db = sqlite;
+
+const ensureBulletinStatusTable = () => {
+    sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS bulletin_status (
+            date TEXT NOT NULL,
+            doc_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (date, doc_key)
+        );
+    `);
+};
+
+ensureBulletinStatusTable();
 
 const ensureTasksColumns = () => {
     const table = sqlite.prepare(`
@@ -1523,6 +1539,49 @@ const findBulletinFile = async (dateStr, timeToken = '10am') => {
     return scored[0]?.name ? join(folder, scored[0].name) : null;
 };
 
+const findInsertFile = async (dateStr) => {
+    const year = (dateStr || '').slice(0, 4);
+    const folder = join(DROPBOX_ROOT, DROPBOX_INSERTS_DIR, year);
+    try {
+        await access(folder);
+    } catch {
+        return null;
+    }
+
+    const exactName = `${dateStr} Insert.pub`;
+    const exactPath = join(folder, exactName);
+    try {
+        await access(exactPath);
+        return exactPath;
+    } catch {
+        // fall through
+    }
+
+    const entries = await readdir(folder, { withFileTypes: true });
+    const candidates = entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .filter((name) => name.toLowerCase().endsWith('.pub'))
+        .filter((name) => name.startsWith(`${dateStr}`))
+        .filter((name) => /insert/i.test(name));
+
+    if (!candidates.length) return null;
+
+    const scored = await Promise.all(candidates.map(async (name) => {
+        let modified = 0;
+        try {
+            const stats = await stat(join(folder, name));
+            modified = stats.mtimeMs || 0;
+        } catch {
+            modified = 0;
+        }
+        return { name, modified };
+    }));
+
+    scored.sort((a, b) => b.modified - a.modified);
+    return scored[0]?.name ? join(folder, scored[0].name) : null;
+};
+
 let cachedSofficePath = null;
 let cachedPublisherAvailable = null;
 
@@ -1596,8 +1655,86 @@ const runSofficeConvert = async (sofficePath, args) => {
     }
 };
 
+const normalizeBulletinStatus = (value) => {
+    const normalized = String(value || '').trim().toUpperCase();
+    if (normalized === 'DRAFT') return 'draft';
+    if (normalized === 'REVIEW') return 'review';
+    if (normalized === 'FINAL') return 'ready';
+    if (normalized === 'PRINTED') return 'printed';
+    if (normalized === 'READY') return 'ready';
+    if (normalized === 'NOT STARTED' || normalized === 'NOT_STARTED') return 'not_started';
+    return '';
+};
+
+const normalizeBulletinStatusValue = (value) => normalizeBulletinStatus(value);
+
+const readDocxCustomProperty = async (filePath, propName) => {
+    try {
+        const buffer = await readFile(filePath);
+        const zip = new PizZip(buffer);
+        const custom = zip.file('docProps/custom.xml');
+        if (!custom) return '';
+        const xml = custom.asText();
+        const propRegex = /<property\b[^>]*name=["']([^"']+)["'][^>]*>([\s\S]*?)<\/property>/gi;
+        let match = null;
+        while ((match = propRegex.exec(xml))) {
+            const name = String(match[1] || '').trim().toLowerCase();
+            if (name !== String(propName || '').trim().toLowerCase()) continue;
+            const body = match[2] || '';
+            const valueMatch = body.match(/<vt:[^>]+>([\s\S]*?)<\/vt:[^>]+>/i);
+            if (valueMatch) {
+                return String(valueMatch[1] || '').replace(/<\/?[^>]+>/g, '').trim();
+            }
+            const fallback = body.replace(/<\/?[^>]+>/g, '').trim();
+            return fallback;
+        }
+        return '';
+    } catch (error) {
+        const details = error?.message || error;
+        console.error('Custom property read failed:', details);
+        return '';
+    }
+};
+
+const readDocxStatus = async (filePath) => {
+    const ext = extname(filePath || '').toLowerCase();
+    if (!['.doc', '.docx', '.docm'].includes(ext)) return '';
+    const fromXml = await readDocxCustomProperty(filePath, 'Status');
+    if (fromXml) return normalizeBulletinStatus(fromXml);
+    const escaped = String(filePath || '').replace(/'/g, "''");
+    const script = [
+        "$ErrorActionPreference = 'Stop';",
+        '$word = New-Object -ComObject Word.Application;',
+        '$word.Visible = $false;',
+        '$word.DisplayAlerts = 0;',
+        `$doc = $word.Documents.Open('${escaped}', $false, $true);`,
+        "$value = ''",
+        'try {',
+        '  foreach ($prop in $doc.CustomDocumentProperties) {',
+        "    if ($prop.Name -and $prop.Name.ToString().Trim().ToLower() -eq 'status') {",
+        '      $value = $prop.Value;',
+        '      break;',
+        '    }',
+        '  }',
+        '} catch { }',
+        '$doc.Close($false);',
+        '$word.Quit();',
+        '[System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null;',
+        '[System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null;',
+        'Write-Output $value'
+    ].join(' ');
+    try {
+        const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-Command', script], { windowsHide: true });
+        return normalizeBulletinStatus(stdout || '');
+    } catch (error) {
+        const details = error?.stderr || error?.message || error;
+        console.error('Bulletin status metadata read failed:', details);
+        return '';
+    }
+};
+
 const buildDocumentPreview = async (filePath) => {
-    const cacheRoot = join(tmpdir(), 'preview-cache');
+    const cacheRoot = PREVIEW_CACHE_ROOT;
     const outputDir = join(tmpdir(), `preview-${randomUUID()}`);
     const ext = extname(filePath || '').toLowerCase();
     try {
@@ -1685,22 +1822,56 @@ const buildDocumentPreview = async (filePath) => {
     }
 };
 
-const buildDocumentStatus = async (filePath) => {
+const buildDocumentStatus = async (filePath, options = {}) => {
+    const { includePreview = true, statusOverride = '' } = options;
     if (!filePath) {
-        return { exists: false, preview: '', path: '', name: '' };
+        return { exists: false, preview: '', path: '', name: '', status: '' };
     }
     try {
         await access(filePath);
     } catch {
-        return { exists: false, preview: '', path: filePath, name: basename(filePath) };
+        return { exists: false, preview: '', path: filePath, name: basename(filePath), status: '' };
     }
-    const preview = await buildDocumentPreview(filePath);
+    const status = statusOverride || await readDocxStatus(filePath);
+    const preview = includePreview ? await buildDocumentPreview(filePath) : '';
     return {
         exists: true,
         preview,
         path: filePath,
-        name: basename(filePath)
+        name: basename(filePath),
+        status
     };
+};
+
+const hasBulletinStatusTable = () => !!sqlite.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bulletin_status'
+`).get();
+
+const getBulletinStatus = (dateKey, docKey) => {
+    if (!dateKey || !docKey || !hasBulletinStatusTable()) return '';
+    const row = sqlite.prepare(`
+        SELECT status FROM bulletin_status WHERE date = ? AND doc_key = ?
+    `).get(dateKey, docKey);
+    return row?.status || '';
+};
+
+const upsertBulletinStatus = (dateKey, docKey, status, source = 'metadata') => {
+    if (!dateKey || !docKey || !hasBulletinStatusTable()) return;
+    const normalized = normalizeBulletinStatusValue(status);
+    if (!normalized) return;
+    sqlite.prepare(`
+        INSERT INTO bulletin_status (date, doc_key, status, source, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(date, doc_key) DO UPDATE SET
+            status = excluded.status,
+            source = excluded.source,
+            updated_at = excluded.updated_at
+    `).run(dateKey, docKey, normalized, source, new Date().toISOString());
+};
+
+const clearBulletinStatus = (dateKey, docKey) => {
+    if (!dateKey || !docKey || !hasBulletinStatusTable()) return;
+    sqlite.prepare('DELETE FROM bulletin_status WHERE date = ? AND doc_key = ?').run(dateKey, docKey);
 };
 
 
@@ -2106,20 +2277,53 @@ app.get('/api/sunday/documents', async (req, res) => {
         return res.status(400).json({ error: 'date is required' });
     }
     try {
+        const includePreview = String(req.query.preview || '').trim() !== '0';
         const bulletin10Path = await findBulletinFile(date, '10am');
         const bulletin8Path = await findBulletinFile(date, '8am');
-        const year = date.slice(0, 4);
-        const insertPath = join(
-            DROPBOX_ROOT,
-            DROPBOX_INSERTS_DIR,
-            year,
-            `${date} Insert.pub`
-        );
+        const insertPath = await findInsertFile(date);
+        let insertExists = false;
+        try {
+            await access(insertPath);
+            insertExists = true;
+        } catch {
+            insertExists = false;
+        }
+        const bulletin10Stored = getBulletinStatus(date, 'bulletin10');
+        const bulletin8Stored = getBulletinStatus(date, 'bulletin8');
+        const insertStored = getBulletinStatus(date, 'insert');
+        const bulletin10Meta = bulletin10Path ? await readDocxStatus(bulletin10Path) : '';
+        const bulletin8Meta = bulletin8Path ? await readDocxStatus(bulletin8Path) : '';
+        const bulletin10Status = bulletin10Meta || bulletin10Stored;
+        const bulletin8Status = bulletin8Meta || bulletin8Stored;
+        if (bulletin10Path && bulletin10Meta) {
+            upsertBulletinStatus(date, 'bulletin10', bulletin10Meta, 'metadata');
+        }
+        if (bulletin8Path && bulletin8Meta) {
+            upsertBulletinStatus(date, 'bulletin8', bulletin8Meta, 'metadata');
+        }
+        if (!bulletin10Path && bulletin10Stored) {
+            clearBulletinStatus(date, 'bulletin10');
+        }
+        if (!bulletin8Path && bulletin8Stored) {
+            clearBulletinStatus(date, 'bulletin8');
+        }
         const [bulletin10, bulletin8, insert] = await Promise.all([
-            buildDocumentStatus(bulletin10Path),
-            buildDocumentStatus(bulletin8Path),
-            buildDocumentStatus(insertPath)
+            buildDocumentStatus(bulletin10Path, { includePreview, statusOverride: bulletin10Status }),
+            buildDocumentStatus(bulletin8Path, { includePreview, statusOverride: bulletin8Status }),
+            buildDocumentStatus(insertPath, { includePreview, statusOverride: insertStored })
         ]);
+        console.log('Sunday docs status', {
+            date,
+            bulletin10: { exists: bulletin10.exists, status: bulletin10.status, stored: bulletin10Stored },
+            bulletin8: { exists: bulletin8.exists, status: bulletin8.status, stored: bulletin8Stored },
+            insert: { exists: insert.exists, status: insert.status, stored: insertStored, path: insertPath || '' }
+        });
+        if (bulletin10.exists && bulletin10Status) bulletin10.status = bulletin10Status;
+        if (bulletin8.exists && bulletin8Status) bulletin8.status = bulletin8Status;
+        if (insert.exists && insertStored) insert.status = insertStored;
+        if (!insertExists && insertStored) {
+            clearBulletinStatus(date, 'insert');
+        }
         res.json({ bulletin10, bulletin8, insert });
     } catch (error) {
         console.error('Error checking documents:', error);
@@ -5853,6 +6057,26 @@ app.post('/api/deposit-slip/print-base64', async (req, res) => {
         if (outputDir) {
             await rm(outputDir, { recursive: true, force: true }).catch(() => {});
         }
+    }
+});
+
+app.post('/api/sunday/insert-status', async (req, res) => {
+    try {
+        const date = String(req.body?.date || '').trim();
+        const status = String(req.body?.status || '').trim();
+        if (!date || !status) {
+            return res.status(400).json({ error: 'date and status are required' });
+        }
+        const normalized = normalizeBulletinStatusValue(status);
+        if (!normalized) {
+            return res.status(400).json({ error: 'Invalid status' });
+        }
+        upsertBulletinStatus(date, 'insert', normalized, 'publisher');
+        console.log('Insert status updated', { date, status: normalized, source: 'publisher' });
+        res.json({ success: true, status: normalized });
+    } catch (error) {
+        console.error('Insert status update failed:', error);
+        res.status(500).json({ error: 'Failed to update insert status' });
     }
 });
 
