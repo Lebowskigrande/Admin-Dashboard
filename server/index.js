@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import multer from 'multer';
 import { addMonths, format } from 'date-fns';
 import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib';
-import { access, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
+import { access, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'fs/promises';
 import { join, dirname, resolve, basename, extname } from 'path';
 import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
@@ -83,8 +83,24 @@ const findHgkOccurrenceId = (monthKey) => {
     const dateKey = getThirdSundayFromMonth(monthKey);
     if (!dateKey) return null;
     const row = sqlite.prepare(`
-        SELECT id FROM event_occurrences
-        WHERE event_id = 'hgk-volunteer' AND date = ?
+        SELECT o.id
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        LEFT JOIN event_types t ON e.event_type_id = t.id
+        WHERE o.date = ?
+          AND e.source = 'google'
+          AND (
+              lower(e.title) LIKE '%holy ghost kitchen%'
+              OR lower(e.title) LIKE '%hgk%'
+              OR lower(e.description) LIKE '%holy ghost kitchen%'
+              OR lower(e.description) LIKE '%hgk%'
+              OR (o.notes LIKE '%\"hgk\"%' OR o.notes LIKE '%#HGK%')
+              OR t.slug = 'volunteer'
+          )
+        ORDER BY
+            CASE WHEN o.notes LIKE '%\"hgk\"%' OR o.notes LIKE '%#HGK%' THEN 0 ELSE 1 END,
+            o.start_time IS NULL,
+            o.start_time
         LIMIT 1
     `).get(dateKey);
     return row?.id || null;
@@ -97,6 +113,36 @@ const normalizeSupplyString = (value) => String(value || '')
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+const sanitizeFileSegment = (value) => String(value || '')
+    .trim()
+    .replace(/[^a-z0-9-_]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'item';
+
+const ensureEventDocDir = async (eventId, occurrenceId) => {
+    const safeEvent = sanitizeFileSegment(eventId);
+    const safeOccurrence = sanitizeFileSegment(occurrenceId);
+    const dir = join(DROPBOX_ROOT, DROPBOX_EVENT_DOCS_DIR, safeEvent, safeOccurrence);
+    await mkdir(dir, { recursive: true });
+    return dir;
+};
+
+const ensureUniquePath = async (dir, filename) => {
+    const base = filename.replace(/\.[^/.]+$/, '');
+    const ext = extname(filename);
+    let candidate = join(dir, filename);
+    let counter = 1;
+    while (true) {
+        try {
+            await access(candidate);
+            candidate = join(dir, `${base}-${counter}${ext}`);
+            counter += 1;
+        } catch {
+            return candidate;
+        }
+    }
+};
 
 const singularizeToken = (token) => token.endsWith('s') ? token.slice(0, -1) : token;
 
@@ -503,6 +549,7 @@ const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const upload = multer({ dest: join(tmpdir(), 'deposit-slip-uploads') });
 const depositBundleUpload = multer({ dest: join(tmpdir(), 'deposit-slip-bundle-uploads') });
 const vestryUpload = multer({ dest: join(tmpdir(), 'vestry-packet-uploads') });
+const eventDocUpload = multer({ dest: join(tmpdir(), 'event-doc-uploads') });
 
 app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
 app.use(express.json({ limit: '25mb' }));
@@ -1212,6 +1259,76 @@ const createTaskInstance = (payload) => {
 
 seedTaskEngine();
 
+const BULLETIN_STATUS_RANK = {
+    draft: 1,
+    review: 2,
+    ready: 3,
+    printed: 4,
+    stuffed: 5
+};
+
+const getStatusRank = (value) => {
+    const key = String(value || '').toLowerCase().trim();
+    return BULLETIN_STATUS_RANK[key] || 0;
+};
+
+const getStoredBulletinStatus = (dateKey, docKey) => {
+    if (!dateKey || !docKey || !tableExists('bulletin_status')) return '';
+    try {
+        const row = sqlite.prepare('SELECT status FROM bulletin_status WHERE date = ? AND doc_key = ?').get(dateKey, docKey);
+        return row?.status || '';
+    } catch {
+        return '';
+    }
+};
+
+const getSundayDocumentStatusRank = (dateKey, listKey) => {
+    if (!dateKey || !listKey) return 0;
+    if (listKey === 'insert') {
+        return getStatusRank(getStoredBulletinStatus(dateKey, 'insert'));
+    }
+    if (listKey === 'bulletins') {
+        const ranks = [
+            getStatusRank(getStoredBulletinStatus(dateKey, 'bulletin10')),
+            getStatusRank(getStoredBulletinStatus(dateKey, 'bulletin8'))
+        ].filter((rank) => rank > 0);
+        if (!ranks.length) return 0;
+        if (ranks.length === 2) return Math.min(...ranks);
+        return ranks[0];
+    }
+    return 0;
+};
+
+const getSundayTaskStepRank = (listKey, originEvent) => {
+    const step = String(originEvent || '').toLowerCase().trim();
+    if (!step) return 0;
+    if (listKey === 'bulletins') {
+        if (step === 'draft') return 1;
+        if (step === 'review') return 2;
+        if (step === 'finalize' || step === 'final') return 3;
+        if (step === 'print' || step === 'printed') return 4;
+    }
+    if (listKey === 'insert') {
+        if (step === 'draft') return 1;
+        if (step === 'review') return 2;
+        if (step === 'finalize' || step === 'final') return 3;
+        if (step === 'print' || step === 'printed') return 4;
+        if (step === 'stuff' || step === 'stuffed') return 5;
+    }
+    return 0;
+};
+
+const isSundayTaskAutoComplete = (row) => {
+    if (row.origin_type !== 'sunday' || !row.origin_id) return false;
+    const listKey = row.list_key || row.list_id || '';
+    if (!['bulletins', 'insert'].includes(listKey)) return false;
+    const statusRank = getSundayDocumentStatusRank(row.origin_id, listKey);
+    if (!statusRank) return false;
+    const stepRank = getSundayTaskStepRank(listKey, row.origin_event);
+    if (!stepRank) return false;
+    return statusRank >= stepRank;
+};
+
 const formatTaskInstanceRow = (row) => {
     const effectivePriority = computeEffectivePriority(
         row.priority_base,
@@ -1220,9 +1337,13 @@ const formatTaskInstanceRow = (row) => {
         row.sla_target_at
     );
     const tier = getPriorityTier(effectivePriority);
-    const completed = row.instance_state === 'done' || row.completed_at != null;
     const rawState = row.instance_state || 'open';
-    const normalizedState = row.blocked && rawState !== 'done' ? 'blocked' : rawState;
+    let completed = row.instance_state === 'done' || row.completed_at != null;
+    let normalizedState = row.blocked && rawState !== 'done' ? 'blocked' : rawState;
+    if (!completed && isSundayTaskAutoComplete(row)) {
+        completed = true;
+        normalizedState = 'done';
+    }
     const listMode = row.list_mode || (row.list_type === 'parallel' ? 'parallel' : 'sequential');
     return {
         id: row.task_instance_id,
@@ -1449,6 +1570,7 @@ const DROPBOX_ROOT = process.env.DROPBOX_ROOT
     || join(homedir(), 'Dropbox', 'Parish Administrator');
 const DROPBOX_BULLETINS_DIR = 'Bulletins';
 const DROPBOX_INSERTS_DIR = 'Bulletin Inserts';
+const DROPBOX_EVENT_DOCS_DIR = 'Events';
 const CERTIFICATE_TEMPLATE_DIR = join(homedir(), 'Dropbox', 'Parish Administrator', 'Vestry', 'Certificates');
 const FUND_A_CERT_DIR = join(homedir(), 'Dropbox', 'SENS REPORTS', 'Certificates', 'Certificates Fund A');
 const FUND_B_CERT_BASE_DIR = join(homedir(), 'Dropbox', 'SENS REPORTS', 'Certificates');
@@ -2950,7 +3072,7 @@ app.get('/api/google/events', requireAuth, async (req, res) => {
         }
 
         const formatted = rows.map(e => ({
-            id: `google-${e.id}`,
+            id: `google-${e.id}-${e.date}-${e.start_time || 'all-day'}`,
             summary: e.title,
             description: e.description,
             start: { dateTime: e.start_time ? `${e.date}T${e.start_time}:00` : null, date: !e.start_time ? e.date : null },
@@ -3213,6 +3335,13 @@ const buildBuildingMapId = (name = '') => {
     return aliases[normalized] || normalized;
 };
 
+const normalizeBuildingName = (value = '') => {
+    const name = String(value || '').trim();
+    if (!name) return '';
+    if (name.toLowerCase() === 'parish hall') return 'Fellows Hall';
+    return name;
+};
+
 app.get('/api/buildings', (req, res) => {
     if (!tableExists('buildings')) {
         return res.json([]);
@@ -3240,7 +3369,7 @@ app.get('/api/buildings', (req, res) => {
         return {
             id: row.id,
             map_id: buildBuildingMapId(row.name || ''),
-            name: row.name,
+            name: normalizeBuildingName(row.name),
             category: row.category,
             capacity: row.capacity,
             size_sqft: row.size_sqft,
@@ -4783,7 +4912,7 @@ app.get('/api/events', async (req, res) => {
         `).all();
 
         const scheduledEvents = eventRows.map(e => ({
-            id: e.id,
+            id: e.occurrence_id,
             occurrence_id: e.occurrence_id,
             event_id: e.id,
             title: e.title,
@@ -4808,6 +4937,255 @@ app.get('/api/events', async (req, res) => {
         console.error('Error fetching merged events:', error);
         res.status(500).json({ error: 'Failed to fetch events' });
     }
+});
+
+app.get('/api/event-occurrences/:id', (req, res) => {
+    const { id } = req.params;
+    if (!tableExists('events') || !tableExists('event_occurrences')) {
+        return res.status(404).json({ error: 'Events not available' });
+    }
+    const row = db.prepare(`
+        SELECT
+            o.id AS occurrence_id,
+            o.date,
+            o.start_time,
+            o.end_time,
+            o.building_id,
+            o.notes,
+            e.id AS event_id,
+            e.title,
+            e.description,
+            e.event_type_id,
+            e.source,
+            e.metadata,
+            t.name AS type_name,
+            t.slug AS type_slug,
+            c.name AS category_name,
+            COALESCE(t.color, c.color) AS type_color
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        LEFT JOIN event_types t ON e.event_type_id = t.id
+        LEFT JOIN event_categories c ON t.category_id = c.id
+        WHERE o.id = ?
+        LIMIT 1
+    `).get(id);
+    if (!row) {
+        return res.status(404).json({ error: 'Event occurrence not found' });
+    }
+    const notes = parseNotes(row.notes);
+    const metadata = row.metadata ? parseNotes(row.metadata) : {};
+    res.json({
+        occurrence: {
+            id: row.occurrence_id,
+            date: row.date,
+            start_time: row.start_time,
+            end_time: row.end_time,
+            building_id: row.building_id
+        },
+        event: {
+            id: row.event_id,
+            title: row.title,
+            description: row.description,
+            event_type_id: row.event_type_id,
+            source: row.source,
+            type_name: row.type_name,
+            type_slug: row.type_slug,
+            category_name: row.category_name,
+            color: row.type_color
+        },
+        notes,
+        metadata
+    });
+});
+
+app.put('/api/event-occurrences/:id', (req, res) => {
+    const { id } = req.params;
+    if (!tableExists('event_occurrences')) {
+        return res.status(404).json({ error: 'Events not available' });
+    }
+    const existing = db.prepare('SELECT notes FROM event_occurrences WHERE id = ?').get(id);
+    if (!existing) {
+        return res.status(404).json({ error: 'Event occurrence not found' });
+    }
+    const { internal_notes: internalNotes, template_data: templateData } = req.body || {};
+    const notes = parseNotes(existing.notes);
+    notes.internal = String(internalNotes || '').trim();
+    if (templateData && typeof templateData === 'object') {
+        notes.template = templateData;
+    }
+    db.prepare('UPDATE event_occurrences SET notes = ? WHERE id = ?').run(JSON.stringify(notes), id);
+    res.json({ success: true, notes });
+});
+
+app.get('/api/event-occurrences/:id/documents', async (req, res) => {
+    if (!tableExists('event_documents')) {
+        return res.json([]);
+    }
+    const { id } = req.params;
+    const includePreview = String(req.query.preview || '').trim() === '1';
+    const rows = db.prepare(`
+        SELECT id, occurrence_id, event_id, doc_type, label, file_name, file_path, created_at
+        FROM event_documents
+        WHERE occurrence_id = ?
+        ORDER BY created_at DESC
+    `).all(id);
+    if (!includePreview) {
+        return res.json(rows);
+    }
+    const withPreview = await Promise.all(rows.map(async (row) => {
+        let preview = '';
+        try {
+            preview = await buildDocumentPreview(row.file_path);
+        } catch {
+            preview = '';
+        }
+        return { ...row, preview };
+    }));
+    res.json(withPreview);
+});
+
+app.post('/api/event-occurrences/:id/documents', eventDocUpload.single('file'), async (req, res) => {
+    if (!tableExists('event_documents')) {
+        return res.status(400).json({ error: 'Event documents not available' });
+    }
+    const { id } = req.params;
+    const file = req.file;
+    if (!file) {
+        return res.status(400).json({ error: 'file is required' });
+    }
+    const occurrence = db.prepare('SELECT id, event_id FROM event_occurrences WHERE id = ?').get(id);
+    if (!occurrence) {
+        return res.status(404).json({ error: 'Event occurrence not found' });
+    }
+    const docType = String(req.body?.doc_type || 'attachment').toLowerCase();
+    const label = String(req.body?.label || '').trim();
+    try {
+        const targetDir = await ensureEventDocDir(occurrence.event_id, occurrence.id);
+        const originalName = file.originalname || file.filename || 'document';
+        const safeName = originalName.replace(/[<>:"/\\|?*]+/g, '_');
+        const targetPath = await ensureUniquePath(targetDir, safeName);
+        try {
+            await rename(file.path, targetPath);
+        } catch {
+            await copyFile(file.path, targetPath);
+        }
+
+        if (docType === 'contract') {
+            const existing = db.prepare(`
+                SELECT id, file_path FROM event_documents
+                WHERE occurrence_id = ? AND doc_type = 'contract'
+            `).all(occurrence.id);
+            existing.forEach((row) => {
+                db.prepare('DELETE FROM event_documents WHERE id = ?').run(row.id);
+                if (row.file_path) {
+                    rm(row.file_path, { force: true }).catch(() => {});
+                }
+            });
+        }
+
+        const docId = `doc-${randomUUID()}`;
+        const createdAt = new Date().toISOString();
+        db.prepare(`
+            INSERT INTO event_documents (
+                id, occurrence_id, event_id, doc_type, label, file_name, file_path, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            docId,
+            occurrence.id,
+            occurrence.event_id,
+            docType,
+            label || null,
+            basename(targetPath),
+            targetPath,
+            createdAt
+        );
+
+        res.status(201).json({
+            id: docId,
+            occurrence_id: occurrence.id,
+            event_id: occurrence.event_id,
+            doc_type: docType,
+            label: label || null,
+            file_name: basename(targetPath),
+            file_path: targetPath,
+            created_at: createdAt
+        });
+    } catch (error) {
+        console.error('Event document upload error:', error);
+        res.status(500).json({ error: 'Failed to upload document' });
+    }
+});
+
+app.get('/api/event-template-fields', (req, res) => {
+    if (!tableExists('event_template_fields')) {
+        return res.json([]);
+    }
+    const eventTypeId = Number(req.query.event_type_id);
+    if (!Number.isFinite(eventTypeId)) {
+        return res.status(400).json({ error: 'event_type_id is required' });
+    }
+    const rows = db.prepare(`
+        SELECT *
+        FROM event_template_fields
+        WHERE event_type_id = ?
+        ORDER BY sort_order ASC, label ASC
+    `).all(eventTypeId);
+    res.json(rows.map((row) => ({
+        id: row.id,
+        event_type_id: row.event_type_id,
+        field_key: row.field_key,
+        label: row.label,
+        field_type: row.field_type,
+        options: row.options_json ? parseJsonField(row.options_json, []) : [],
+        placeholder: row.placeholder || '',
+        help_text: row.help_text || '',
+        sort_order: row.sort_order || 0,
+        required: !!row.required
+    })));
+});
+
+app.put('/api/event-template-fields/:eventTypeId', (req, res) => {
+    if (!tableExists('event_template_fields')) {
+        return res.status(400).json({ error: 'event_template_fields table not initialized' });
+    }
+    const eventTypeId = Number(req.params.eventTypeId);
+    if (!Number.isFinite(eventTypeId)) {
+        return res.status(400).json({ error: 'Invalid eventTypeId' });
+    }
+    const fields = Array.isArray(req.body?.fields) ? req.body.fields : [];
+    const now = new Date().toISOString();
+    const insert = db.prepare(`
+        INSERT INTO event_template_fields (
+            id, event_type_id, field_key, label, field_type, options_json,
+            placeholder, help_text, sort_order, required, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const tx = db.transaction(() => {
+        db.prepare('DELETE FROM event_template_fields WHERE event_type_id = ?').run(eventTypeId);
+        fields.forEach((field, index) => {
+            const fieldKey = String(field.field_key || '').trim();
+            const label = String(field.label || '').trim();
+            const fieldType = String(field.field_type || 'text').trim();
+            if (!fieldKey || !label) return;
+            const options = Array.isArray(field.options) ? field.options : [];
+            insert.run(
+                `tmplfield-${randomUUID()}`,
+                eventTypeId,
+                fieldKey,
+                label,
+                fieldType,
+                options.length ? JSON.stringify(options) : null,
+                field.placeholder ? String(field.placeholder) : null,
+                field.help_text ? String(field.help_text) : null,
+                Number.isFinite(Number(field.sort_order)) ? Number(field.sort_order) : index,
+                field.required ? 1 : 0,
+                now,
+                now
+            );
+        });
+    });
+    tx();
+    res.json({ success: true });
 });
 
 app.post('/api/events', (req, res) => {

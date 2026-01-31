@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
     format,
     startOfMonth,
@@ -11,38 +12,36 @@ import {
     addMonths,
     subMonths
 } from 'date-fns';
-import { FaChevronLeft, FaChevronRight, FaPlus } from 'react-icons/fa';
+import { FaChevronLeft, FaChevronRight, FaEye, FaExternalLinkAlt, FaFolderOpen, FaPaperclip, FaUpload } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
-import { getEventTypes } from '../services/eventService';
+import DataPill from '../components/DataPill';
 import { useEvents } from '../context/EventsContext';
 import { getSundaysInRange } from '../services/liturgicalService';
+import { API_URL } from '../services/apiConfig';
 import './Calendar.css';
 
 
 
 const Calendar = () => {
-    const { events, loading, refreshEvents, setEvents } = useEvents();
+    const { events, loading, refreshEvents } = useEvents();
+    const navigate = useNavigate();
     const [currentDate, setCurrentDate] = useState(new Date());
-    const [eventTypes, setEventTypes] = useState([]);
     const [sundayServices, setSundayServices] = useState([]);
     const [showModal, setShowModal] = useState(false);
-    const [newEvent, setNewEvent] = useState({
-        title: '',
-        date: '',
-        time: '',
-        location: '',
-        type_id: '',
-        setupNeeds: '',
-        staffingNeeds: '',
-        contractSigned: false,
-        depositPaid: false,
-        finalPaymentPaid: false
-    });
-
-    useEffect(() => {
-        loadTypes();
-    }, []);
+    const [selectedEvent, setSelectedEvent] = useState(null);
+    const [eventDetails, setEventDetails] = useState(null);
+    const [buildings, setBuildings] = useState([]);
+    const [eventTasks, setEventTasks] = useState([]);
+    const [eventNotes, setEventNotes] = useState('');
+    const [templateFields, setTemplateFields] = useState([]);
+    const [templateData, setTemplateData] = useState({});
+    const [eventDocs, setEventDocs] = useState([]);
+    const [docPreview, setDocPreview] = useState({ open: false, url: '', name: '' });
+    const [loadingDetails, setLoadingDetails] = useState(false);
+    const [taskInput, setTaskInput] = useState('');
+    const [contractFile, setContractFile] = useState(null);
+    const [otherFile, setOtherFile] = useState(null);
 
     useEffect(() => {
         const monthStart = startOfMonth(currentDate);
@@ -62,55 +61,250 @@ const Calendar = () => {
         };
     }, [currentDate]);
 
-    const loadTypes = async () => {
+    const closeModal = () => {
+        setShowModal(false);
+        setSelectedEvent(null);
+        setEventDetails(null);
+        setEventTasks([]);
+        setEventNotes('');
+        setTemplateFields([]);
+        setTemplateData({});
+        setEventDocs([]);
+        setDocPreview({ open: false, url: '', name: '' });
+        setTaskInput('');
+        setContractFile(null);
+        setOtherFile(null);
+        setLoadingDetails(false);
+    };
+
+    const loadEventDetails = async (eventItem) => {
+        if (!eventItem?.occurrence_id) return;
+        setLoadingDetails(true);
         try {
-            const types = await getEventTypes();
-            setEventTypes(types);
-            if (types.length > 0 && !newEvent.type_id) {
-                setNewEvent(prev => ({ ...prev, type_id: types[0].id }));
+            const occurrenceId = eventItem.occurrence_id;
+            const [detailResponse, taskResponse, docResponse] = await Promise.all([
+                fetch(`${API_URL}/event-occurrences/${occurrenceId}`),
+                fetch(`${API_URL}/tasks?origin_type=event&origin_id=${encodeURIComponent(occurrenceId)}`),
+                fetch(`${API_URL}/event-occurrences/${occurrenceId}/documents?preview=1`)
+            ]);
+
+            if (detailResponse.ok) {
+                const detailPayload = await detailResponse.json();
+                setEventDetails(detailPayload);
+                setEventNotes(detailPayload?.notes?.internal || '');
+                setTemplateData(detailPayload?.notes?.template || {});
+                const eventTypeId = detailPayload?.event?.event_type_id;
+                if (eventTypeId) {
+                    const templateResponse = await fetch(`${API_URL}/event-template-fields?event_type_id=${eventTypeId}`);
+                    if (templateResponse.ok) {
+                        const templatePayload = await templateResponse.json();
+                        setTemplateFields(Array.isArray(templatePayload) ? templatePayload : []);
+                    } else {
+                        setTemplateFields([]);
+                    }
+                } else {
+                    setTemplateFields([]);
+                }
+            } else {
+                setEventDetails(null);
+            }
+
+            if (taskResponse.ok) {
+                const taskPayload = await taskResponse.json();
+                setEventTasks(Array.isArray(taskPayload) ? taskPayload : []);
+            } else {
+                setEventTasks([]);
+            }
+
+            if (docResponse.ok) {
+                const docPayload = await docResponse.json();
+                setEventDocs(Array.isArray(docPayload) ? docPayload : []);
+            } else {
+                setEventDocs([]);
             }
         } catch (error) {
-            console.error('Error loading types:', error);
+            console.error('Failed to load event details:', error);
+        } finally {
+            setLoadingDetails(false);
         }
     };
 
-    const handleDayClick = (dayItem) => {
-        setNewEvent({ ...newEvent, date: format(dayItem, 'yyyy-MM-dd') });
+    const handleEventClick = (eventItem) => {
+        if (!eventItem?.occurrence_id) return;
+        setSelectedEvent(eventItem);
         setShowModal(true);
+        loadEventDetails(eventItem);
     };
 
-    const calculateNewDate = (dateString) => {
-        const [y, m, d] = dateString.split('-').map(Number);
-        return new Date(y, m - 1, d);
+    const handleSaveNotes = async () => {
+        if (!selectedEvent?.occurrence_id) return;
+        try {
+            await fetch(`${API_URL}/event-occurrences/${selectedEvent.occurrence_id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    internal_notes: eventNotes || '',
+                    template_data: templateData || {}
+                })
+            });
+        } catch (error) {
+            console.error('Failed to save notes:', error);
+        }
     };
 
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        if (!newEvent.title || !newEvent.date) return;
+    const handleTemplateChange = (key, value) => {
+        setTemplateData((prev) => ({
+            ...(prev || {}),
+            [key]: value
+        }));
+    };
 
-        // In a real app, we'd call createEvent(newEvent)
-        // For now, update local state to show it works
-        const selectedType = eventTypes.find(t => t.id === parseInt(newEvent.type_id));
+    useEffect(() => {
+        let active = true;
+        const loadBuildings = async () => {
+            try {
+                const response = await fetch(`${API_URL}/buildings`);
+                if (!response.ok) throw new Error('Failed to load buildings');
+                const data = await response.json();
+                if (active) setBuildings(Array.isArray(data) ? data : []);
+            } catch (error) {
+                console.error('Failed to load buildings:', error);
+                if (active) setBuildings([]);
+            }
+        };
+        loadBuildings();
+        return () => {
+            active = false;
+        };
+    }, []);
 
-        setEvents([...events, {
-            id: `temp-${Date.now()}`,
-            title: newEvent.title,
-            date: calculateNewDate(newEvent.date),
-            time: newEvent.time,
-            location: newEvent.location,
-            type_name: selectedType?.name || 'Event',
-            category_name: selectedType?.category_name || 'General',
-            color: selectedType?.color || selectedType?.category_color || '#3B82F6',
-            source: 'manual',
-            ...newEvent
-        }]);
+    const normalizeLocationName = (value) => {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        if (raw.toLowerCase() === 'parish hall' || raw.toLowerCase() === 'parish-hall' || raw.toLowerCase() === 'fellows hall' || raw.toLowerCase() === 'fellows-hall') {
+            return 'Fellows Hall';
+        }
+        const tokens = raw.replace(/[_-]+/g, ' ').split(' ').filter(Boolean);
+        return tokens.map((token) => token.charAt(0).toUpperCase() + token.slice(1)).join(' ');
+    };
 
-        setShowModal(false);
-        setNewEvent({
-            title: '', date: '', time: '', type_id: eventTypes[0]?.id || '',
-            location: 'Church', contractSigned: false, depositPaid: false,
-            finalPaymentPaid: false, setupNeeds: '', staffingNeeds: ''
-        });
+    const locationId = useMemo(() => (
+        eventDetails?.occurrence?.building_id || selectedEvent?.location || ''
+    ), [eventDetails?.occurrence?.building_id, selectedEvent?.location]);
+
+    const locationName = useMemo(() => {
+        const buildingId = locationId;
+        if (!buildingId) return '';
+        const match = buildings.find((building) => building.id === buildingId);
+        const name = match?.name || buildingId;
+        return normalizeLocationName(name);
+    }, [buildings, locationId]);
+
+    const refreshDocuments = async () => {
+        if (!selectedEvent?.occurrence_id) return;
+        try {
+            const response = await fetch(`${API_URL}/event-occurrences/${selectedEvent.occurrence_id}/documents?preview=1`);
+            if (!response.ok) throw new Error('Failed to load documents');
+            const payload = await response.json();
+            setEventDocs(Array.isArray(payload) ? payload : []);
+        } catch (error) {
+            console.error('Failed to load documents:', error);
+        }
+    };
+
+    const handleUploadDocument = async (file, docType = 'attachment') => {
+        if (!file || !selectedEvent?.occurrence_id) return;
+        const form = new FormData();
+        form.append('file', file);
+        form.append('doc_type', docType);
+        if (docType === 'contract') {
+            form.append('label', 'Contract');
+        }
+        try {
+            const response = await fetch(`${API_URL}/event-occurrences/${selectedEvent.occurrence_id}/documents`, {
+                method: 'POST',
+                body: form
+            });
+            if (!response.ok) {
+                throw new Error('Upload failed');
+            }
+            await refreshDocuments();
+        } catch (error) {
+            console.error('Failed to upload document:', error);
+        }
+    };
+
+    const handleUploadContract = async () => {
+        if (!contractFile) return;
+        await handleUploadDocument(contractFile, 'contract');
+        setContractFile(null);
+    };
+
+    const handleUploadOther = async () => {
+        if (!otherFile) return;
+        await handleUploadDocument(otherFile, 'attachment');
+        setOtherFile(null);
+    };
+
+    const handlePreviewDocument = (doc) => {
+        if (!doc?.preview) return;
+        setDocPreview({ open: true, url: doc.preview, name: doc.file_name || 'Document' });
+    };
+
+    const handleOpenDocument = (doc) => {
+        if (!doc?.file_path) return;
+        const url = `${API_URL}/files/download?path=${encodeURIComponent(doc.file_path)}`;
+        window.open(url, '_blank', 'noopener');
+    };
+
+    const handleOpenLocation = async (doc) => {
+        if (!doc?.file_path) return;
+        try {
+            await fetch(`${API_URL}/files/open`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: doc.file_path })
+            });
+        } catch (error) {
+            console.error('Failed to open file location:', error);
+        }
+    };
+
+    const handleTaskToggle = async (task) => {
+        if (!task?.id) return;
+        try {
+            await fetch(`${API_URL}/tasks/${task.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ completed: !task.completed })
+            });
+            if (selectedEvent) {
+                await loadEventDetails(selectedEvent);
+            }
+        } catch (error) {
+            console.error('Failed to update task:', error);
+        }
+    };
+
+    const handleAddTask = async () => {
+        if (!taskInput.trim() || !selectedEvent?.occurrence_id) return;
+        try {
+            await fetch(`${API_URL}/tasks`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: taskInput.trim(),
+                    source_type: 'event',
+                    source_id: selectedEvent.occurrence_id
+                })
+            });
+            setTaskInput('');
+            if (selectedEvent) {
+                await loadEventDetails(selectedEvent);
+            }
+        } catch (error) {
+            console.error('Failed to add task:', error);
+        }
     };
 
     const header = () => {
@@ -129,12 +323,6 @@ const Calendar = () => {
                     </button>
                     <button className="btn-secondary" onClick={() => refreshEvents(true)} disabled={loading}>
                         {loading ? 'Syncing...' : 'Sync Google'}
-                    </button>
-                    <button className="btn-primary" onClick={() => {
-                        setNewEvent({ ...newEvent, date: format(new Date(), 'yyyy-MM-dd') });
-                        setShowModal(true);
-                    }}>
-                        <FaPlus /> New Event
                     </button>
                 </div>
             </header>
@@ -228,6 +416,24 @@ const Calendar = () => {
         [...filteredEvents, ...sundayServiceEvents]
     ), [filteredEvents, sundayServiceEvents]);
 
+    const taskGroups = useMemo(() => {
+        const grouped = eventTasks.reduce((acc, task) => {
+            const key = task.list_title || task.list_key || 'Tasks';
+            if (!acc[key]) acc[key] = [];
+            acc[key].push(task);
+            return acc;
+        }, {});
+        return Object.entries(grouped).map(([title, items]) => ({
+            title,
+            items: items.sort((a, b) => {
+                const orderA = a.step_order ?? Number.POSITIVE_INFINITY;
+                const orderB = b.step_order ?? Number.POSITIVE_INFINITY;
+                if (orderA !== orderB) return orderA - orderB;
+                return String(a.text || '').localeCompare(String(b.text || ''));
+            })
+        }));
+    }, [eventTasks]);
+
     const cells = () => {
         const monthStart = startOfMonth(currentDate);
         const monthEnd = endOfMonth(monthStart);
@@ -244,7 +450,6 @@ const Calendar = () => {
                         <div
                             className={`calendar-cell ${!isSameMonth(dayItem, monthStart) ? "disabled" : ""} ${isSameDay(dayItem, new Date()) ? "today" : ""}`}
                             key={dayItem.toString()}
-                            onClick={() => handleDayClick(dayItem)}
                         >
                             <div className="cell-header">
                                 <span className="day-number">{format(dayItem, dateFormat)}</span>
@@ -261,13 +466,17 @@ const Calendar = () => {
                                     return (
                                         <div
                                             key={event.id}
-                                            className="event-chip"
+                                            className={`event-chip ${event.occurrence_id ? 'event-chip--clickable' : 'event-chip--static'}`}
                                             style={{
                                                 backgroundColor: isLight ? '#f3f4f6' : `${event.color}25`,
                                                 color: contrastColor,
                                                 borderLeft: `3px solid ${event.color}`
                                             }}
                                             title={tooltip}
+                                            onClick={(clickEvent) => {
+                                                clickEvent.stopPropagation();
+                                                handleEventClick(event);
+                                            }}
                                         >
                                             <div className="event-chip-content">
                                                 {event.time && <span className="event-chip-time">{event.time}</span>}
@@ -294,121 +503,298 @@ const Calendar = () => {
 
             <Modal
                 isOpen={showModal}
-                onClose={() => setShowModal(false)}
-                title="Add New Event"
+                onClose={closeModal}
+                title={eventDetails?.event?.title || selectedEvent?.title || 'Event Details'}
             >
-                <form className="event-form" onSubmit={handleSubmit}>
-                    <div className="form-group">
-                        <label>Event Title</label>
-                        <input
-                            type="text"
-                            required
-                            value={newEvent.title}
-                            onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
-                            placeholder="e.g. Sunday Service"
-                        />
-                    </div>
-                    <div className="form-row">
-                        <div className="form-group">
-                            <label>Date</label>
-                            <input
-                                type="date"
-                                required
-                                value={newEvent.date}
-                                onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
-                            />
+                {loadingDetails ? (
+                    <div className="event-detail-loading">Loading event details...</div>
+                ) : (
+                    <div className="event-detail-modal">
+                        <div className="event-detail-section">
+                            <div className="event-detail-grid">
+                                <div>
+                                    <span className="event-detail-label">Date</span>
+                                    <span className="event-detail-value">
+                                        {selectedEvent?.date ? format(selectedEvent.date, 'MMMM d, yyyy') : '—'}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span className="event-detail-label">Time</span>
+                                    <span className="event-detail-value">{selectedEvent?.time || 'All day'}</span>
+                                </div>
+                                <div>
+                                    <span className="event-detail-label">Type</span>
+                                    <span className="event-detail-value">
+                                        {eventDetails?.event?.type_name || selectedEvent?.type_name || selectedEvent?.category_name || 'Event'}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span className="event-detail-label">Location</span>
+                                    <span className="event-detail-value">
+                                        {locationName ? (
+                                            <DataPill
+                                                type="building"
+                                                value={locationName}
+                                                label={locationName}
+                                                showType={false}
+                                                tooltip={`Location: ${locationName}`}
+                                                onClick={() => {
+                                                    if (!locationId) return;
+                                                    navigate(`/buildings?tab=map&location=${encodeURIComponent(locationId)}`);
+                                                }}
+                                            />
+                                        ) : 'TBD'}
+                                    </span>
+                                </div>
+                            </div>
                         </div>
-                        <div className="form-group">
-                            <label>Time</label>
-                            <input
-                                type="time"
-                                value={newEvent.time}
-                                onChange={(e) => setNewEvent({ ...newEvent, time: e.target.value })}
-                            />
-                        </div>
-                    </div>
-                    <div className="form-row">
-                        <div className="form-group">
-                            <label>Event Type</label>
-                            <select
-                                value={newEvent.type_id}
-                                onChange={(e) => setNewEvent({ ...newEvent, type_id: e.target.value })}
-                            >
-                                {eventTypes.map(type => (
-                                    <option key={type.id} value={type.id}>
-                                        {type.name} ({type.category_name})
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                        <div className="form-group">
-                            <label>Location</label>
-                            <input
-                                type="text"
-                                value={newEvent.location}
-                                onChange={(e) => setNewEvent({ ...newEvent, location: e.target.value })}
-                                placeholder="e.g. Church, Parish Hall"
-                            />
-                        </div>
-                    </div>
 
-                    <fieldset className="form-section">
-                        <legend>Logistics</legend>
-                        <div className="form-group">
-                            <label>Setup Needs</label>
+                        {templateFields.length > 0 && (
+                            <div className="event-detail-section">
+                                <div className="event-detail-label">Event Details</div>
+                                <div className="event-detail-template-grid">
+                                    {templateFields.map((field) => {
+                                        const value = templateData?.[field.field_key];
+                                        const fieldType = field.field_type || 'text';
+                                        const key = field.field_key;
+                                        if (fieldType === 'textarea') {
+                                            return (
+                                                <label key={key} className="event-detail-template-field">
+                                                    <span>{field.label}</span>
+                                                    <textarea
+                                                        value={value || ''}
+                                                        placeholder={field.placeholder || ''}
+                                                        onChange={(e) => handleTemplateChange(key, e.target.value)}
+                                                        rows="3"
+                                                    />
+                                                </label>
+                                            );
+                                        }
+                                        if (fieldType === 'select') {
+                                            const options = Array.isArray(field.options) ? field.options : [];
+                                            return (
+                                                <label key={key} className="event-detail-template-field">
+                                                    <span>{field.label}</span>
+                                                    <select
+                                                        value={value || ''}
+                                                        onChange={(e) => handleTemplateChange(key, e.target.value)}
+                                                    >
+                                                        <option value="">Select...</option>
+                                                        {options.map((option) => (
+                                                            <option key={option} value={option}>{option}</option>
+                                                        ))}
+                                                    </select>
+                                                </label>
+                                            );
+                                        }
+                                        if (fieldType === 'checkbox') {
+                                            return (
+                                                <label key={key} className="event-detail-template-field event-detail-template-checkbox">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={!!value}
+                                                        onChange={(e) => handleTemplateChange(key, e.target.checked)}
+                                                    />
+                                                    <span>{field.label}</span>
+                                                </label>
+                                            );
+                                        }
+                                        return (
+                                            <label key={key} className="event-detail-template-field">
+                                                <span>{field.label}</span>
+                                                <input
+                                                    type={fieldType}
+                                                    value={value || ''}
+                                                    placeholder={field.placeholder || ''}
+                                                    onChange={(e) => handleTemplateChange(key, e.target.value)}
+                                                />
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="event-detail-section">
+                            <div className="event-detail-label">Internal Notes</div>
                             <textarea
-                                value={newEvent.setupNeeds}
-                                onChange={(e) => setNewEvent({ ...newEvent, setupNeeds: e.target.value })}
-                                placeholder="e.g. 50 chairs, projector"
-                                rows="2"
+                                className="event-detail-notes"
+                                value={eventNotes}
+                                onChange={(e) => setEventNotes(e.target.value)}
+                                placeholder="Add internal notes for this occurrence..."
+                                rows="3"
                             />
+                            <div className="event-detail-actions">
+                                <button className="btn-secondary" type="button" onClick={handleSaveNotes}>
+                                    Save Changes
+                                </button>
+                            </div>
                         </div>
-                        <div className="form-group">
-                            <label>Staffing Needs</label>
-                            <textarea
-                                value={newEvent.staffingNeeds}
-                                onChange={(e) => setNewEvent({ ...newEvent, staffingNeeds: e.target.value })}
-                                placeholder="e.g. Sexton, AV Tech"
-                                rows="2"
-                            />
-                        </div>
-                    </fieldset>
 
-                    <fieldset className="form-section">
-                        <legend>Admin</legend>
-                        <div className="checkbox-group">
-                            <label>
-                                <input
-                                    type="checkbox"
-                                    checked={newEvent.contractSigned}
-                                    onChange={(e) => setNewEvent({ ...newEvent, contractSigned: e.target.checked })}
-                                />
-                                Contract Signed
-                            </label>
-                            <label>
-                                <input
-                                    type="checkbox"
-                                    checked={newEvent.depositPaid}
-                                    onChange={(e) => setNewEvent({ ...newEvent, depositPaid: e.target.checked })}
-                                />
-                                Deposit Paid
-                            </label>
-                            <label>
-                                <input
-                                    type="checkbox"
-                                    checked={newEvent.finalPaymentPaid}
-                                    onChange={(e) => setNewEvent({ ...newEvent, finalPaymentPaid: e.target.checked })}
-                                />
-                                Final Payment
-                            </label>
-                        </div>
-                    </fieldset>
+                        <div className="event-detail-section">
+                            <div className="event-detail-header-row">
+                                <span className="event-detail-label">Documents</span>
+                            </div>
+                            <div className="event-documents">
+                                <div className="event-document-slot">
+                                    <div className="event-document-slot-header">
+                                        <div className="event-document-slot-title">
+                                            <span>Contract</span>
+                                            <span className="event-document-slot-subtitle">Keep the signed contract here.</span>
+                                        </div>
+                                        <div className="event-document-upload">
+                                            <label className="btn-secondary event-document-upload-button">
+                                                <FaPaperclip />
+                                                Choose
+                                                <input
+                                                    type="file"
+                                                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                                                    onChange={(e) => setContractFile(e.target.files?.[0] || null)}
+                                                />
+                                            </label>
+                                            <button type="button" className="btn-primary event-document-upload-button" onClick={handleUploadContract} disabled={!contractFile}>
+                                                <FaUpload />
+                                                Upload
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {contractFile && (
+                                        <div className="event-document-selected">Selected: {contractFile.name}</div>
+                                    )}
+                                    {eventDocs.filter((doc) => doc.doc_type === 'contract').length === 0 ? (
+                                        <div className="event-detail-empty">No contract uploaded.</div>
+                                    ) : (
+                                        eventDocs
+                                            .filter((doc) => doc.doc_type === 'contract')
+                                            .map((doc) => (
+                                                <div key={doc.id} className="event-document-row">
+                                                    <div className="event-document-meta">
+                                                        <span className="event-document-name">{doc.file_name}</span>
+                                                        {doc.label && <span className="event-document-tag">{doc.label}</span>}
+                                                    </div>
+                                                    <div className="event-document-actions">
+                                                        <button type="button" className="btn-icon small" onClick={() => handlePreviewDocument(doc)} disabled={!doc.preview} title="Preview">
+                                                            <FaEye />
+                                                        </button>
+                                                        <button type="button" className="btn-icon small" onClick={() => handleOpenDocument(doc)} title="Open">
+                                                            <FaExternalLinkAlt />
+                                                        </button>
+                                                        <button type="button" className="btn-icon small" onClick={() => handleOpenLocation(doc)} title="Open File Location">
+                                                            <FaFolderOpen />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))
+                                    )}
+                                </div>
 
-                    <div className="form-actions">
-                        <button type="button" className="btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
-                        <button type="submit" className="btn-primary">Save Event</button>
+                                <div className="event-document-slot">
+                                    <div className="event-document-slot-header">
+                                        <div className="event-document-slot-title">
+                                            <span>Other Documents</span>
+                                            <span className="event-document-slot-subtitle">Add permits, schedules, or notes.</span>
+                                        </div>
+                                        <div className="event-document-upload">
+                                            <label className="btn-secondary event-document-upload-button">
+                                                <FaPaperclip />
+                                                Choose
+                                                <input
+                                                    type="file"
+                                                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                                                    onChange={(e) => setOtherFile(e.target.files?.[0] || null)}
+                                                />
+                                            </label>
+                                            <button type="button" className="btn-primary event-document-upload-button" onClick={handleUploadOther} disabled={!otherFile}>
+                                                <FaUpload />
+                                                Upload
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {otherFile && (
+                                        <div className="event-document-selected">Selected: {otherFile.name}</div>
+                                    )}
+                                    {eventDocs.filter((doc) => doc.doc_type !== 'contract').length === 0 ? (
+                                        <div className="event-detail-empty">No documents uploaded.</div>
+                                    ) : (
+                                        eventDocs
+                                            .filter((doc) => doc.doc_type !== 'contract')
+                                            .map((doc) => (
+                                                <div key={doc.id} className="event-document-row">
+                                                    <div className="event-document-meta">
+                                                        <span className="event-document-name">{doc.file_name}</span>
+                                                        {doc.label && <span className="event-document-tag">{doc.label}</span>}
+                                                    </div>
+                                                    <div className="event-document-actions">
+                                                        <button type="button" className="btn-icon small" onClick={() => handlePreviewDocument(doc)} disabled={!doc.preview} title="Preview">
+                                                            <FaEye />
+                                                        </button>
+                                                        <button type="button" className="btn-icon small" onClick={() => handleOpenDocument(doc)} title="Open">
+                                                            <FaExternalLinkAlt />
+                                                        </button>
+                                                        <button type="button" className="btn-icon small" onClick={() => handleOpenLocation(doc)} title="Open File Location">
+                                                            <FaFolderOpen />
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            ))
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="event-detail-section">
+                            <div className="event-detail-header-row">
+                                <span className="event-detail-label">Tasks & Checklists</span>
+                            </div>
+                            {taskGroups.length === 0 ? (
+                                <div className="event-detail-empty">No tasks for this occurrence yet.</div>
+                            ) : (
+                                taskGroups.map((group) => (
+                                    <div key={group.title} className="event-detail-task-group">
+                                        <div className="event-detail-task-title">{group.title}</div>
+                                        <div className="event-detail-task-list">
+                                            {group.items.map((task) => (
+                                                <label key={task.id} className={`event-detail-task ${task.completed ? 'completed' : ''}`}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={task.completed}
+                                                        onChange={() => handleTaskToggle(task)}
+                                                    />
+                                                    <span>{task.text}</span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                            <div className="event-detail-task-add">
+                                <input
+                                    type="text"
+                                    placeholder="Add task…"
+                                    value={taskInput}
+                                    onChange={(e) => setTaskInput(e.target.value)}
+                                />
+                                <button className="btn-primary" type="button" onClick={handleAddTask}>
+                                    Add Task
+                                </button>
+                            </div>
+                        </div>
                     </div>
-                </form>
+                )}
+            </Modal>
+            <Modal
+                isOpen={docPreview.open}
+                onClose={() => setDocPreview({ open: false, url: '', name: '' })}
+                title={docPreview.name || 'Document Preview'}
+                className="modal-large"
+            >
+                <div className="event-document-preview">
+                    {docPreview.url ? (
+                        <img src={docPreview.url} alt={docPreview.name || 'Document preview'} />
+                    ) : (
+                        <span className="text-muted">No preview available.</span>
+                    )}
+                </div>
             </Modal>
         </div>
     );

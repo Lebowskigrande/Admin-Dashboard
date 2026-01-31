@@ -8,19 +8,41 @@ const getCalendarClient = (tokens) => {
 };
 
 // Fetch events from Google Calendar
-export const fetchGoogleCalendarEvents = async (tokens, calendarId = 'primary', timeMin = null) => {
+export const fetchGoogleCalendarEvents = async (
+    tokens,
+    calendarId = 'primary',
+    {
+        timeMin = null,
+        timeMax = null,
+        maxResults = 250
+    } = {}
+) => {
     try {
         const calendar = getCalendarClient(tokens);
-        const date = timeMin || new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-        const response = await calendar.events.list({
-            calendarId: calendarId,
-            timeMin: date.toISOString(),
-            maxResults: 250,
+        const start = timeMin || new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+        const params = {
+            calendarId,
+            timeMin: start.toISOString(),
+            maxResults,
             singleEvents: true,
-            orderBy: 'startTime',
-        });
+            orderBy: 'startTime'
+        };
+        if (timeMax) {
+            params.timeMax = timeMax.toISOString();
+        }
 
-        return response.data.items || [];
+        const items = [];
+        let pageToken = null;
+        do {
+            const response = await calendar.events.list({
+                ...params,
+                pageToken
+            });
+            items.push(...(response.data.items || []));
+            pageToken = response.data.nextPageToken || null;
+        } while (pageToken);
+
+        return items;
     } catch (error) {
         console.error('Error fetching Google Calendar events:', error.message);
         throw error;

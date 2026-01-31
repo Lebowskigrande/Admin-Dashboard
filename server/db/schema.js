@@ -142,6 +142,32 @@ export const eventOccurrences = sqliteTable('event_occurrences', {
     notes: text('notes')
 });
 
+export const eventTemplateFields = sqliteTable('event_template_fields', {
+    id: text('id').primaryKey(),
+    eventTypeId: integer('event_type_id').notNull(),
+    fieldKey: text('field_key').notNull(),
+    label: text('label').notNull(),
+    fieldType: text('field_type').notNull(),
+    optionsJson: text('options_json'),
+    placeholder: text('placeholder'),
+    helpText: text('help_text'),
+    sortOrder: integer('sort_order').default(0),
+    required: integer('required').default(0),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull()
+});
+
+export const eventDocuments = sqliteTable('event_documents', {
+    id: text('id').primaryKey(),
+    occurrenceId: text('occurrence_id').notNull(),
+    eventId: text('event_id').notNull(),
+    docType: text('doc_type').notNull(),
+    label: text('label'),
+    fileName: text('file_name').notNull(),
+    filePath: text('file_path').notNull(),
+    createdAt: text('created_at').notNull()
+});
+
 export const assignments = sqliteTable('assignments', {
     id: text('id').primaryKey(),
     occurrenceId: text('occurrence_id').notNull(),

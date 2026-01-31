@@ -33,6 +33,33 @@ sqlite.exec(`
         token_type TEXT,
         created_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS event_template_fields (
+        id TEXT PRIMARY KEY,
+        event_type_id INTEGER NOT NULL,
+        field_key TEXT NOT NULL,
+        label TEXT NOT NULL,
+        field_type TEXT NOT NULL,
+        options_json TEXT,
+        placeholder TEXT,
+        help_text TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        required INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(event_type_id, field_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS event_documents (
+        id TEXT PRIMARY KEY,
+        occurrence_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        doc_type TEXT NOT NULL,
+        label TEXT,
+        file_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
 `);
 
 const seedVestryChecklist = () => {

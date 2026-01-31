@@ -252,11 +252,16 @@ const Buildings = () => {
     }, []);
 
     useEffect(() => {
+        const queryTab = searchParams.get('tab');
+        if (queryTab && ['tickets', 'map', 'vendors', 'needs'].includes(queryTab)) {
+            setActiveTab(queryTab);
+            return;
+        }
         const storedTab = sessionStorage.getItem('bgActiveTab');
         if (storedTab && ['tickets', 'map', 'vendors', 'needs'].includes(storedTab)) {
             setActiveTab(storedTab);
         }
-    }, []);
+    }, [searchParams]);
 
     useEffect(() => {
         sessionStorage.setItem('bgActiveTab', activeTab);
@@ -711,6 +716,7 @@ const Buildings = () => {
                                     key={area.id}
                                     type="button"
                                     className={`map-list-item ${isSelected ? 'selected' : ''} ${isHovered ? 'active' : ''}`}
+                                    data-area-id={area.id}
                                     onMouseEnter={() => setHoveredArea(area)}
                                     onFocus={() => setHoveredArea(area)}
                                     onClick={() => setActiveArea(area)}
@@ -984,6 +990,38 @@ const Buildings = () => {
             };
         });
     }, [buildingsByMapId, buildingsById]);
+
+    useEffect(() => {
+        const locationParam = searchParams.get('location');
+        if (!locationParam || mapAreas.length === 0) return;
+        const target = mapAreas.find((area) => area.id === locationParam)
+            || mapAreas.find((area) => slugify(area.name || '') === locationParam);
+        if (!target) return;
+        setActiveTab('map');
+        setActiveArea(target);
+    }, [mapAreas, searchParams]);
+
+    useEffect(() => {
+        if (activeTab !== 'map' || !activeArea?.id) return;
+        let attempts = 0;
+        let cancelled = false;
+        const tryScroll = () => {
+            if (cancelled) return;
+            const node = document.querySelector(`.map-list-item[data-area-id="${activeArea.id}"]`);
+            if (node) {
+                node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                return;
+            }
+            attempts += 1;
+            if (attempts < 10) {
+                setTimeout(tryScroll, 80);
+            }
+        };
+        tryScroll();
+        return () => {
+            cancelled = true;
+        };
+    }, [activeArea?.id, activeTab]);
 
     const activeDetails = useMemo(() => {
         const current = hoveredArea || activeArea || null;

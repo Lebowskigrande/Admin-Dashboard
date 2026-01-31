@@ -38,6 +38,21 @@ const compareTasks = (a, b) => {
 };
 
 const sortTasksByPriority = (tasks) => [...tasks].sort(compareTasks);
+const compareTasksIgnoreState = (a, b) => {
+    const rankA = a?.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
+    const rankB = b?.rank == null ? Number.POSITIVE_INFINITY : Number(b.rank);
+    if (rankA !== rankB) return rankA - rankB;
+    if (a?.priority_effective !== b?.priority_effective) {
+        return (b?.priority_effective || 0) - (a?.priority_effective || 0);
+    }
+    const dueA = a?.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
+    const dueB = b?.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+    if (dueA !== dueB) return dueA - dueB;
+    const createdA = a?.created_at ? new Date(a.created_at).getTime() : 0;
+    const createdB = b?.created_at ? new Date(b.created_at).getTime() : 0;
+    return createdA - createdB;
+};
+const sortTasksForDetails = (tasks) => [...tasks].sort(compareTasksIgnoreState);
 const parseDueDate = (value) => {
     if (!value) return null;
     const parsed = parseISO(value);
@@ -222,6 +237,12 @@ const Todo = () => {
         });
 
         const groups = Array.from(grouped.values()).map((group) => {
+            const openTasks = group.tasks.filter((task) => !task.completed && !task.archived_at);
+            const originDueDates = openTasks
+                .map((task) => parseDueDate(task.due_at))
+                .filter(Boolean)
+                .sort((a, b) => a.getTime() - b.getTime());
+            const originDue = originDueDates.length ? originDueDates[0] : null;
             const listSummaries = Array.from(group.lists.values()).map((list) => {
                 const totalCount = list.tasks.length;
                 const openTasks = list.tasks.filter((task) => !task.completed);
@@ -270,7 +291,8 @@ const Todo = () => {
                 totalCount: group.tasks.length,
                 openCount: group.tasks.filter((task) => !task.completed).length,
                 completedCount: group.tasks.filter((task) => task.completed).length,
-                nextTask
+                nextTask,
+                originDue
             };
         });
 
@@ -288,6 +310,10 @@ const Todo = () => {
         return map;
     }, [originGroups]);
 
+    const visibleOriginGroups = useMemo(() => (
+        showCompleted ? originGroups : originGroups.filter((group) => group.openCount > 0)
+    ), [originGroups, showCompleted]);
+
     const weekBuckets = useMemo(() => {
         const today = new Date();
         const weekStart = startOfWeek(today, { weekStartsOn: 1 });
@@ -295,47 +321,26 @@ const Todo = () => {
         const nextWeekStart = addWeeks(weekStart, 1);
         const nextWeekEnd = endOfWeek(nextWeekStart, { weekStartsOn: 1 });
 
-        const visibleTasks = showCompleted ? taskList : taskList.filter((task) => !task.completed);
-        const activeTasks = visibleTasks.filter((task) => !task.archived_at);
+        const bucketed = {
+            thisWeek: [],
+            nextWeek: [],
+            later: [],
+            noDue: []
+        };
 
-        const tasksThisWeek = activeTasks.filter((task) => {
-            const due = parseDueDate(task.due_at);
-            if (!due) return false;
-            return isWithinInterval(due, { start: weekStart, end: weekEnd });
-        });
-
-        const originBuckets = new Map();
-        originGroups.forEach((group) => {
-            const groupTasks = (showCompleted ? group.tasks : group.tasks.filter((task) => !task.completed))
-                .filter((task) => !task.archived_at);
-            const dueDates = groupTasks
-                .map((task) => parseDueDate(task.due_at))
-                .filter(Boolean)
-                .sort((a, b) => a.getTime() - b.getTime());
-            const earliestDue = dueDates.length ? dueDates[0] : null;
-            let bucket = earliestDue ? 'later' : 'nodue';
-            if (earliestDue && isWithinInterval(earliestDue, { start: weekStart, end: weekEnd })) {
-                bucket = 'thisWeek';
-            } else if (earliestDue && isWithinInterval(earliestDue, { start: nextWeekStart, end: nextWeekEnd })) {
-                bucket = 'nextWeek';
+        visibleOriginGroups.forEach((group) => {
+            const due = group.originDue || (group.nextTask?.due_at ? parseDueDate(group.nextTask.due_at) : null);
+            if (!due) {
+                bucketed.noDue.push(group);
+                return;
             }
-            originBuckets.set(group.key, {
-                bucket,
-                earliestDue
-            });
-        });
-
-        const nextWeekOrigins = originGroups.filter((group) => {
-            const bucket = originBuckets.get(group.key)?.bucket;
-            return bucket === 'nextWeek';
-        });
-        const laterOrigins = originGroups.filter((group) => {
-            const bucket = originBuckets.get(group.key)?.bucket;
-            return bucket === 'later';
-        });
-        const noDueOrigins = originGroups.filter((group) => {
-            const bucket = originBuckets.get(group.key)?.bucket;
-            return bucket === 'nodue';
+            if (isWithinInterval(due, { start: weekStart, end: weekEnd })) {
+                bucketed.thisWeek.push(group);
+            } else if (isWithinInterval(due, { start: nextWeekStart, end: nextWeekEnd })) {
+                bucketed.nextWeek.push(group);
+            } else {
+                bucketed.later.push(group);
+            }
         });
 
         return {
@@ -343,12 +348,9 @@ const Todo = () => {
             weekEnd,
             nextWeekStart,
             nextWeekEnd,
-            tasksThisWeek: sortTasksByPriority(tasksThisWeek),
-            nextWeekOrigins,
-            laterOrigins,
-            noDueOrigins
+            ...bucketed
         };
-    }, [originGroups, showCompleted, taskList]);
+    }, [visibleOriginGroups]);
 
     useEffect(() => {
         if (originGroups.length === 0) {
@@ -357,10 +359,13 @@ const Todo = () => {
             return;
         }
         if (!selectedOriginKey || !originGroups.find((group) => group.key === selectedOriginKey)) {
-            setSelectedOriginKey(originGroups[0].key);
+            const fallback = visibleOriginGroups[0] || originGroups[0];
+            if (fallback) {
+                setSelectedOriginKey(fallback.key);
+            }
             setSelectedTaskId('');
         }
-    }, [originGroups, selectedOriginKey]);
+    }, [originGroups, selectedOriginKey, visibleOriginGroups]);
 
     const selectedOrigin = useMemo(() => (
         originGroups.find((group) => group.key === selectedOriginKey) || null
@@ -493,35 +498,10 @@ const Todo = () => {
             <header className="page-header-controls page-header-bar">
                 <div className="page-header-title">
                     <h1>Tasks</h1>
-                    <p className="page-header-subtitle">This week focus, then upcoming origins.</p>
+                    <p className="page-header-subtitle">Due this week first, then next week and later.</p>
                 </div>
                 <div className="page-header-actions">
-                    <label className="toggle-inline">
-                        <input
-                            type="checkbox"
-                            checked={showCompleted}
-                            onChange={(e) => setShowCompleted(e.target.checked)}
-                        />
-                        Show completed
-                    </label>
-                </div>
-            </header>
-
-            <div className="tasks-layout">
-                <Card className="tasks-list-card">
-                    <div className="tasks-list-header">
-                        <div>
-                            <h2>This Week</h2>
-                            <p className="muted">
-                                Due {format(weekBuckets.weekStart, 'MMM d')} - {format(weekBuckets.weekEnd, 'MMM d')}
-                            </p>
-                        </div>
-                        <span className="count-badge" aria-label={`${weekBuckets.tasksThisWeek.length} tasks`}>
-                            {weekBuckets.tasksThisWeek.length}
-                        </span>
-                    </div>
-
-                    <form className="task-add-form" onSubmit={addTask}>
+                    <form className="task-add-form task-add-form--header" onSubmit={addTask}>
                         <input
                             type="text"
                             className="task-project-input"
@@ -539,183 +519,315 @@ const Todo = () => {
                             <FaPlus /> Add
                         </button>
                     </form>
+                    <label className="toggle-inline">
+                        <input
+                            type="checkbox"
+                            checked={showCompleted}
+                            onChange={(e) => setShowCompleted(e.target.checked)}
+                        />
+                        Show completed
+                    </label>
+                </div>
+            </header>
+
+            <div className="tasks-layout">
+                <div className="tasks-stack">
+                    <Card className="tasks-list-card allow-overflow">
+                    <div className="tasks-list-header">
+                        <div>
+                            <h2>This Week</h2>
+                            <p className="muted">
+                                Due {format(weekBuckets.weekStart, 'MMM d')} - {format(weekBuckets.weekEnd, 'MMM d')}
+                            </p>
+                        </div>
+                        <span className="count-badge" aria-label={`${weekBuckets.thisWeek.length} origins`}>
+                            {weekBuckets.thisWeek.length}
+                        </span>
+                    </div>
 
                     <div className="task-list-wrapper">
                         {tasksLoading && <div className="empty-state">Loading tasks...</div>}
                         {error && !tasksLoading && <div className="empty-state">{error}</div>}
-                        {!tasksLoading && !error && weekBuckets.tasksThisWeek.length === 0 && (
-                            <div className="empty-state">No tasks due this week.</div>
+                        {!tasksLoading && !error && weekBuckets.thisWeek.length === 0 && (
+                            <div className="empty-state">No origins due this week.</div>
                         )}
-                        {weekBuckets.tasksThisWeek.map((task) => (
-                            <button
-                                key={task.id}
-                                type="button"
-                                className={`task-row ${task.id === selectedTaskId ? 'active' : ''}`}
-                                onClick={() => {
-                                    setSelectedOriginKey(normalizeOriginKey(task.origin_type, task.origin_id));
-                                    setSelectedTaskId(task.id);
-                                }}
-                            >
-                                <div className="task-row-main">
-                                    <div className="task-row-title">
-                                        <span className={`priority-dot ${getPriorityClass(task)}`} aria-hidden="true" />
-                                        <div>
-                                            <div className="task-row-text">{formatTaskTitle(task)}</div>
-                                            <div className="task-row-origin">
-                                                {formatOriginLabel(task)}
-                                                {formatOriginSubtitle(task) ? ` - ${formatOriginSubtitle(task)}` : ''}
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="task-row-meta">
-                                        <span className={`priority-pill ${getPriorityClass(task)}`}>
-                                            {formatPriorityLabel(task)}
-                                        </span>
-                                        {task.due_at && (
-                                            <span className="task-row-due">Due {format(new Date(task.due_at), 'MMM d')}</span>
-                                        )}
-                                    </div>
+                        {!tasksLoading && !error && weekBuckets.thisWeek.length > 0 && (
+                            <div className="origin-summary-table">
+                                <div className="origin-summary-header" role="row">
+                                    <span>Origin</span>
+                                    <span>Next step</span>
+                                    <span>Next due</span>
+                                    <span>Origin due</span>
+                                    <span>Priority</span>
                                 </div>
-                                <div className="task-row-actions">
-                                    <button
-                                        type="button"
-                                        className="task-action-btn"
-                                        onClick={(event) => {
-                                            event.stopPropagation();
-                                            toggleTask(task);
-                                        }}
-                                        aria-label="Mark complete"
-                                    >
-                                        <FaCheck />
-                                    </button>
+                                <div className="origin-summary-body">
+                                    {weekBuckets.thisWeek.map((group) => {
+                                        const nextTask = group.nextTask;
+                                        const originLabel = formatOriginLabel(group.sample);
+                                        const originSubtitle = formatOriginSubtitle(group.sample);
+                                        const originTitle = group.sample?.event_title
+                                            || group.sample?.ticket_title
+                                            || group.sample?.list_title
+                                            || originLabel
+                                            || 'Task Origin';
+                                        const nextDue = nextTask?.due_at
+                                            ? format(new Date(nextTask.due_at), 'MMM d')
+                                            : '-';
+                                        const originDue = group.originDue
+                                            ? format(group.originDue, 'MMM d')
+                                            : '-';
+                                        return (
+                                            <button
+                                                key={group.key}
+                                                type="button"
+                                                className={`origin-summary-row ${group.key === selectedOriginKey ? 'active' : ''}`}
+                                                onClick={() => {
+                                                    setSelectedOriginKey(group.key);
+                                                    setSelectedTaskId('');
+                                                }}
+                                            >
+                                                <div className="origin-cell origin-cell-main">
+                                                    <div className="origin-title">{originTitle}</div>
+                                                    <div className="origin-meta">
+                                                        {originLabel}
+                                                        {originSubtitle ? ` - ${originSubtitle}` : ''}
+                                                    </div>
+                                                </div>
+                                                <div className="origin-cell origin-cell-next">
+                                                    {nextTask && (
+                                                        <button
+                                                            type="button"
+                                                            className="origin-summary-check"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                toggleTask(nextTask);
+                                                            }}
+                                                            aria-label="Mark next step complete"
+                                                        >
+                                                            {nextTask.completed && <FaCheck />}
+                                                        </button>
+                                                    )}
+                                                    <span className="origin-next-text">
+                                                        {nextTask ? nextTask.text : 'No open tasks'}
+                                                    </span>
+                                                </div>
+                                                <div className="origin-cell origin-cell-date">{nextDue}</div>
+                                                <div className="origin-cell origin-cell-date">{originDue}</div>
+                                                <div className="origin-cell origin-cell-priority">
+                                                    {nextTask ? (
+                                                        <span className={`priority-pill ${getPriorityClass(nextTask)}`}>
+                                                            {formatPriorityLabel(nextTask)}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="muted">-</span>
+                                                    )}
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
                                 </div>
-                            </button>
-                        ))}
+                            </div>
+                        )}
                     </div>
 
-                    <div className="tasks-section">
-                        <div className="tasks-section-header">
-                            <h3>Next Week</h3>
-                            <span className="muted">
+                    </Card>
+
+                    <Card className="tasks-list-card allow-overflow">
+                    <div className="tasks-list-header">
+                        <div>
+                            <h2>Next Week</h2>
+                            <p className="muted">
                                 {format(weekBuckets.nextWeekStart, 'MMM d')} - {format(weekBuckets.nextWeekEnd, 'MMM d')}
-                            </span>
+                            </p>
                         </div>
-                        {weekBuckets.nextWeekOrigins.length === 0 && (
-                            <div className="empty-state">No origins scheduled next week.</div>
-                        )}
-                        <div className="origin-list-stack">
-                            {weekBuckets.nextWeekOrigins.map((group) => (
-                                <button
-                                    key={group.key}
-                                    type="button"
-                                    className={`origin-row compact ${group.key === selectedOriginKey ? 'active' : ''}`}
-                                    onClick={() => {
-                                        setSelectedOriginKey(group.key);
-                                        setSelectedTaskId('');
-                                    }}
-                                >
-                                    <div>
-                                        <div className="origin-title">
-                                            {formatTaskTitle(group.nextTask || group.sample) || 'Origin'}
-                                        </div>
-                                        <div className="origin-meta">
-                                            {formatOriginLabel(group.sample)}
-                                            {formatOriginSubtitle(group.sample) ? ` - ${formatOriginSubtitle(group.sample)}` : ''}
-                                        </div>
-                                    </div>
-                                    <div className="origin-counts">
-                                        <span>{group.openCount} open</span>
-                                        {group.nextTask?.due_at && (
-                                            <span>Due {format(new Date(group.nextTask.due_at), 'MMM d')}</span>
-                                        )}
-                                    </div>
-                                </button>
-                            ))}
-                        </div>
+                        <span className="count-badge" aria-label={`${weekBuckets.nextWeek.length} origins`}>
+                            {weekBuckets.nextWeek.length}
+                        </span>
                     </div>
+                    {tasksLoading && <div className="empty-state">Loading tasks...</div>}
+                    {error && !tasksLoading && <div className="empty-state">{error}</div>}
+                    {!tasksLoading && !error && weekBuckets.nextWeek.length === 0 && (
+                        <div className="empty-state">No origins due next week.</div>
+                    )}
+                    {!tasksLoading && !error && weekBuckets.nextWeek.length > 0 && (
+                        <div className="origin-summary-table">
+                            <div className="origin-summary-header" role="row">
+                                <span>Origin</span>
+                                <span>Next step</span>
+                                <span>Next due</span>
+                                <span>Origin due</span>
+                                <span>Priority</span>
+                            </div>
+                            <div className="origin-summary-body">
+                                {weekBuckets.nextWeek.map((group) => {
+                                    const nextTask = group.nextTask;
+                                    const originLabel = formatOriginLabel(group.sample);
+                                    const originSubtitle = formatOriginSubtitle(group.sample);
+                                    const originTitle = group.sample?.event_title
+                                        || group.sample?.ticket_title
+                                        || group.sample?.list_title
+                                        || originLabel
+                                        || 'Task Origin';
+                                    const nextDue = nextTask?.due_at
+                                        ? format(new Date(nextTask.due_at), 'MMM d')
+                                        : '-';
+                                    const originDue = group.originDue
+                                        ? format(group.originDue, 'MMM d')
+                                        : '-';
+                                    return (
+                                        <button
+                                            key={group.key}
+                                            type="button"
+                                            className={`origin-summary-row ${group.key === selectedOriginKey ? 'active' : ''}`}
+                                            onClick={() => {
+                                                setSelectedOriginKey(group.key);
+                                                setSelectedTaskId('');
+                                            }}
+                                        >
+                                            <div className="origin-cell origin-cell-main">
+                                                <div className="origin-title">{originTitle}</div>
+                                                <div className="origin-meta">
+                                                    {originLabel}
+                                                    {originSubtitle ? ` - ${originSubtitle}` : ''}
+                                                </div>
+                                            </div>
+                                            <div className="origin-cell origin-cell-next">
+                                                {nextTask && (
+                                                    <button
+                                                        type="button"
+                                                        className="origin-summary-check"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            toggleTask(nextTask);
+                                                        }}
+                                                        aria-label="Mark next step complete"
+                                                    >
+                                                        {nextTask.completed && <FaCheck />}
+                                                    </button>
+                                                )}
+                                                <span className="origin-next-text">
+                                                    {nextTask ? nextTask.text : 'No open tasks'}
+                                                </span>
+                                            </div>
+                                            <div className="origin-cell origin-cell-date">{nextDue}</div>
+                                            <div className="origin-cell origin-cell-date">{originDue}</div>
+                                            <div className="origin-cell origin-cell-priority">
+                                                {nextTask ? (
+                                                    <span className={`priority-pill ${getPriorityClass(nextTask)}`}>
+                                                        {formatPriorityLabel(nextTask)}
+                                                    </span>
+                                                ) : (
+                                                    <span className="muted">-</span>
+                                                )}
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                    </Card>
 
-                    <div className="tasks-section">
-                        <div className="tasks-section-header">
-                            <h3>Later</h3>
-                            <span className="muted">Beyond next week</span>
+                    <Card className="tasks-list-card allow-overflow">
+                    <div className="tasks-list-header">
+                        <div>
+                            <h2>Later</h2>
+                            <p className="muted">Beyond next week</p>
                         </div>
-                        {weekBuckets.laterOrigins.length === 0 && (
-                            <div className="empty-state">No later origins scheduled.</div>
-                        )}
-                        <div className="origin-list-stack">
-                            {weekBuckets.laterOrigins.map((group) => (
-                                <button
-                                    key={group.key}
-                                    type="button"
-                                    className={`origin-row compact ${group.key === selectedOriginKey ? 'active' : ''}`}
-                                    onClick={() => {
-                                        setSelectedOriginKey(group.key);
-                                        setSelectedTaskId('');
-                                    }}
-                                >
-                                    <div>
-                                        <div className="origin-title">
-                                            {formatTaskTitle(group.nextTask || group.sample) || 'Origin'}
-                                        </div>
-                                        <div className="origin-meta">
-                                            {formatOriginLabel(group.sample)}
-                                            {formatOriginSubtitle(group.sample) ? ` - ${formatOriginSubtitle(group.sample)}` : ''}
-                                        </div>
-                                    </div>
-                                    <div className="origin-counts">
-                                        <span>{group.openCount} open</span>
-                                        {group.nextTask?.due_at && (
-                                            <span>Due {format(new Date(group.nextTask.due_at), 'MMM d')}</span>
-                                        )}
-                                    </div>
-                                </button>
-                            ))}
-                        </div>
+                        <span className="count-badge" aria-label={`${weekBuckets.later.length} origins`}>
+                            {weekBuckets.later.length}
+                        </span>
                     </div>
-
-                    <div className="tasks-section">
-                        <div className="tasks-section-header">
-                            <h3>No Due Date</h3>
-                            <span className="muted">Needs scheduling</span>
+                    {tasksLoading && <div className="empty-state">Loading tasks...</div>}
+                    {error && !tasksLoading && <div className="empty-state">{error}</div>}
+                    {!tasksLoading && !error && weekBuckets.later.length === 0 && (
+                        <div className="empty-state">No later origins scheduled.</div>
+                    )}
+                    {!tasksLoading && !error && weekBuckets.later.length > 0 && (
+                        <div className="origin-summary-table">
+                            <div className="origin-summary-header" role="row">
+                                <span>Origin</span>
+                                <span>Next step</span>
+                                <span>Next due</span>
+                                <span>Origin due</span>
+                                <span>Priority</span>
+                            </div>
+                            <div className="origin-summary-body">
+                                {weekBuckets.later.map((group) => {
+                                    const nextTask = group.nextTask;
+                                    const originLabel = formatOriginLabel(group.sample);
+                                    const originSubtitle = formatOriginSubtitle(group.sample);
+                                    const originTitle = group.sample?.event_title
+                                        || group.sample?.ticket_title
+                                        || group.sample?.list_title
+                                        || originLabel
+                                        || 'Task Origin';
+                                    const nextDue = nextTask?.due_at
+                                        ? format(new Date(nextTask.due_at), 'MMM d')
+                                        : '-';
+                                    const originDue = group.originDue
+                                        ? format(group.originDue, 'MMM d')
+                                        : '-';
+                                    return (
+                                        <button
+                                            key={group.key}
+                                            type="button"
+                                            className={`origin-summary-row ${group.key === selectedOriginKey ? 'active' : ''}`}
+                                            onClick={() => {
+                                                setSelectedOriginKey(group.key);
+                                                setSelectedTaskId('');
+                                            }}
+                                        >
+                                            <div className="origin-cell origin-cell-main">
+                                                <div className="origin-title">{originTitle}</div>
+                                                <div className="origin-meta">
+                                                    {originLabel}
+                                                    {originSubtitle ? ` - ${originSubtitle}` : ''}
+                                                </div>
+                                            </div>
+                                            <div className="origin-cell origin-cell-next">
+                                                {nextTask && (
+                                                    <button
+                                                        type="button"
+                                                        className="origin-summary-check"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            toggleTask(nextTask);
+                                                        }}
+                                                        aria-label="Mark next step complete"
+                                                    >
+                                                        {nextTask.completed && <FaCheck />}
+                                                    </button>
+                                                )}
+                                                <span className="origin-next-text">
+                                                    {nextTask ? nextTask.text : 'No open tasks'}
+                                                </span>
+                                            </div>
+                                            <div className="origin-cell origin-cell-date">{nextDue}</div>
+                                            <div className="origin-cell origin-cell-date">{originDue}</div>
+                                            <div className="origin-cell origin-cell-priority">
+                                                {nextTask ? (
+                                                    <span className={`priority-pill ${getPriorityClass(nextTask)}`}>
+                                                        {formatPriorityLabel(nextTask)}
+                                                    </span>
+                                                ) : (
+                                                    <span className="muted">-</span>
+                                                )}
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
                         </div>
-                        {weekBuckets.noDueOrigins.length === 0 && (
-                            <div className="empty-state">No undated origins.</div>
-                        )}
-                        <div className="origin-list-stack">
-                            {weekBuckets.noDueOrigins.map((group) => (
-                                <button
-                                    key={group.key}
-                                    type="button"
-                                    className={`origin-row compact ${group.key === selectedOriginKey ? 'active' : ''}`}
-                                    onClick={() => {
-                                        setSelectedOriginKey(group.key);
-                                        setSelectedTaskId('');
-                                    }}
-                                >
-                                    <div>
-                                        <div className="origin-title">
-                                            {formatTaskTitle(group.nextTask || group.sample) || 'Origin'}
-                                        </div>
-                                        <div className="origin-meta">
-                                            {formatOriginLabel(group.sample)}
-                                            {formatOriginSubtitle(group.sample) ? ` - ${formatOriginSubtitle(group.sample)}` : ''}
-                                        </div>
-                                    </div>
-                                    <div className="origin-counts">
-                                        <span>{group.openCount} open</span>
-                                        <span>No due dates</span>
-                                    </div>
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                </Card>
+                    )}
+                    </Card>
+                </div>
 
                 <Card className="tasks-detail-card">
                     <div className="tasks-list-header">
                         <div>
                             <h2>Task Details</h2>
-                            <p className="muted">Origin list first, selected task highlighted.</p>
+                            <p className="muted">Origin list first, next step highlighted.</p>
                         </div>
                     </div>
                     {!selectedOrigin && <div className="empty-state">Select a task or origin to see details.</div>}
@@ -788,9 +900,7 @@ const Todo = () => {
                                     <div className="empty-state">No tasks found.</div>
                                 )}
                                 {selectedOrigin.lists.map((list) => {
-                                    const displayTasks = showCompleted
-                                        ? list.tasks
-                                        : list.tasks.filter((task) => !task.completed);
+                                    const displayTasks = list.tasks;
                                     const hasSequence = list.mode === 'sequential'
                                         || list.tasks.some((task) => task.rank != null || task.step_order != null);
                                     const sortedTasks = hasSequence
@@ -801,9 +911,9 @@ const Todo = () => {
                                             const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : Number(a.step_order);
                                             const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : Number(b.step_order);
                                             if (orderA !== orderB) return orderA - orderB;
-                                            return compareTasks(a, b);
+                                            return compareTasksIgnoreState(a, b);
                                         })
-                                        : sortTasksByPriority(displayTasks);
+                                        : sortTasksForDetails(displayTasks);
                                     const listKey = `${selectedOrigin.key}:${list.key}`;
                                     const shouldCollapse = sortedTasks.length > LIST_COLLAPSE_THRESHOLD;
                                     const isExpanded = expandedLists[listKey] || !shouldCollapse;
@@ -840,7 +950,7 @@ const Todo = () => {
                                                     {visibleTasks.map((task) => (
                                                         <li
                                                             key={task.id}
-                                                            className={`origin-task-row ${task.completed ? 'completed' : ''} ${task.id === selectedTaskId ? 'selected' : ''}`}
+                                                            className={`origin-task-row ${task.completed ? 'completed' : ''} ${task.id === selectedTaskId ? 'selected' : ''} ${selectedOrigin?.nextTask?.id === task.id ? 'next-step' : ''}`}
                                                         >
                                                             <button
                                                                 type="button"
@@ -919,13 +1029,13 @@ const Todo = () => {
                                                             {!loading && childTasks.length === 0 && (
                                                                 <div className="empty-state">No tasks in this list.</div>
                                                             )}
-                                                            {!loading && childTasks.length > 0 && (
-                                                                <ul className="origin-task-list">
-                                                                    {childTasks.map((task) => (
-                                                                        <li
-                                                                            key={task.id}
-                                                                            className={`origin-task-row ${task.completed ? 'completed' : ''}`}
-                                                                        >
+                                    {!loading && childTasks.length > 0 && (
+                                        <ul className="origin-task-list">
+                                            {sortTasksForDetails(childTasks).map((task) => (
+                                                <li
+                                                    key={task.id}
+                                                    className={`origin-task-row ${task.completed ? 'completed' : ''} ${selectedOrigin?.nextTask?.id === task.id ? 'next-step' : ''}`}
+                                                >
                                                                             <button
                                                                                 type="button"
                                                                                 className="origin-task-check"

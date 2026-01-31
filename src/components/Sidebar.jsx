@@ -15,6 +15,7 @@ const Sidebar = () => {
         { path: '/people', label: 'People', icon: <FaUsers /> },
         { path: '/todo', label: 'To-Do List', icon: <FaList /> },
         { path: '/task-origins', label: 'Task Origins', icon: <FaProjectDiagram /> },
+        { path: '/event-templates', label: 'Event Templates', icon: <FaProjectDiagram /> },
         { path: '/settings', label: 'Settings', icon: <FaCog /> },
     ];
 

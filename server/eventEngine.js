@@ -101,12 +101,91 @@ const toSlug = (value) => String(value || '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 
+const TAG_HASH_RE = /(^|\s)#([a-z0-9][\w-]*)/gi;
+const TAG_AT_RE = /(^|\s)@([a-z0-9][\w-]*(?:\s+[a-z0-9][\w-]*)*)/gi;
+const TAG_TYPE_ALIASES = new Map([
+    ['vestry', 'meeting'],
+    ['hgk', 'volunteer'],
+    ['holy-ghost-kitchen', 'volunteer']
+]);
+
+const extractEventTags = (value) => {
+    const tags = {
+        hashtags: [],
+        locations: []
+    };
+    if (!value) return tags;
+    const content = String(value);
+    let match;
+    while ((match = TAG_HASH_RE.exec(content)) !== null) {
+        const slug = toSlug(match[2]);
+        if (slug && !tags.hashtags.includes(slug)) {
+            tags.hashtags.push(slug);
+        }
+    }
+    while ((match = TAG_AT_RE.exec(content)) !== null) {
+        const raw = match[2].trim();
+        if (!raw || raw.includes('@') || raw.includes('.')) continue;
+        const slug = toSlug(raw);
+        if (slug && !tags.locations.includes(slug)) {
+            tags.locations.push(slug);
+        }
+    }
+    return tags;
+};
+
+const getLocationContext = () => {
+    const buildings = sqlite.prepare('SELECT id, name FROM buildings').all();
+    const rooms = sqlite.prepare('SELECT id, name, building_id FROM rooms').all();
+    const buildingBySlug = new Map();
+    const roomBySlug = new Map();
+    buildings.forEach((building) => {
+        const idSlug = toSlug(building.id);
+        const nameSlug = toSlug(building.name);
+        if (idSlug) buildingBySlug.set(idSlug, building);
+        if (nameSlug) buildingBySlug.set(nameSlug, building);
+    });
+    rooms.forEach((room) => {
+        const idSlug = toSlug(room.id);
+        const nameSlug = toSlug(room.name);
+        if (idSlug) roomBySlug.set(idSlug, room);
+        if (nameSlug) roomBySlug.set(nameSlug, room);
+    });
+    return { buildings, rooms, buildingBySlug, roomBySlug };
+};
+
+const findEventTypeFromTags = (hashtags, eventTypes) => {
+    if (!hashtags?.length) return null;
+    for (const tag of hashtags) {
+        const match = eventTypes.find((type) => type.slug === tag || toSlug(type.name) === tag);
+        if (match) return match;
+        const alias = TAG_TYPE_ALIASES.get(tag);
+        if (alias) {
+            const aliasMatch = eventTypes.find((type) => type.slug === alias);
+            if (aliasMatch) return aliasMatch;
+        }
+    }
+    return null;
+};
+
+const buildCategorization = (eventType, categories) => {
+    const category = categories.find(c => c.id === eventType.category_id);
+    return {
+        type_id: eventType.id,
+        type_name: eventType.name,
+        type_slug: eventType.slug,
+        category_name: category ? category.name : 'Other',
+        color: eventType.color || (category ? category.color : '#6B7280')
+    };
+};
+
 const BUILDING_ID_ALIASES = new Map([
     ['church', 'sanctuary'],
     ['sanctuary', 'sanctuary'],
     ['chapel', 'chapel'],
     ['parish-hall', 'parish-hall'],
     ['parish hall', 'parish-hall'],
+    ['fellows-hall', 'parish-hall'],
     ['fellows hall', 'parish-hall'],
     ['office', 'office'],
     ['office-school', 'office'],
@@ -118,9 +197,13 @@ const BUILDING_ID_ALIASES = new Map([
     ['parking-south', 'parking-south']
 ]);
 
-const normalizeBuildingId = (value) => {
+const normalizeBuildingId = (value, locationContext = null) => {
     if (!value) return null;
     const slug = toSlug(value);
+    if (!slug) return null;
+    if (locationContext?.buildingBySlug?.has(slug)) {
+        return locationContext.buildingBySlug.get(slug).id;
+    }
     return BUILDING_ID_ALIASES.get(slug) || slug || null;
 };
 
@@ -135,6 +218,23 @@ const parseNotes = (value) => {
     }
 };
 
+const parseNotesWithText = (value) => {
+    if (!value) return { data: {}, rawText: '' };
+    try {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === 'object') {
+            return { data: parsed, rawText: '' };
+        }
+    } catch {
+        // fallthrough
+    }
+    return { data: {}, rawText: String(value) };
+};
+
+const tableExists = (name) => !!sqlite.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+`).get(name);
+
 const isSundayDate = (dateStr) => {
     if (!dateStr) return false;
     const date = new Date(`${dateStr}T00:00:00`);
@@ -142,8 +242,148 @@ const isSundayDate = (dateStr) => {
     return date.getDay() === 0;
 };
 
-export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence }) => {
+const resolveLocation = ({ locationTags, eventLocation, locationContext }) => {
+    if (locationTags?.length) {
+        for (const tag of locationTags) {
+            if (locationContext.roomBySlug.has(tag)) {
+                const room = locationContext.roomBySlug.get(tag);
+                const building = locationContext.buildingBySlug.get(toSlug(room.building_id));
+                return {
+                    roomId: room.id,
+                    buildingId: room.building_id || building?.id || null,
+                    source: 'tag'
+                };
+            }
+            if (locationContext.buildingBySlug.has(tag)) {
+                const building = locationContext.buildingBySlug.get(tag);
+                return { roomId: null, buildingId: building.id, source: 'tag' };
+            }
+            const alias = BUILDING_ID_ALIASES.get(tag);
+            if (alias) {
+                return { roomId: null, buildingId: alias, source: 'tag' };
+            }
+        }
+    }
+
+    if (eventLocation) {
+        const parts = String(eventLocation).split(/[,;|]/).map((part) => part.trim()).filter(Boolean);
+        for (const part of parts.length ? parts : [eventLocation]) {
+            const slug = toSlug(part);
+            if (!slug) continue;
+            if (locationContext.roomBySlug.has(slug)) {
+                const room = locationContext.roomBySlug.get(slug);
+                const building = locationContext.buildingBySlug.get(toSlug(room.building_id));
+                return {
+                    roomId: room.id,
+                    buildingId: room.building_id || building?.id || null,
+                    source: 'location'
+                };
+            }
+            if (locationContext.buildingBySlug.has(slug)) {
+                const building = locationContext.buildingBySlug.get(slug);
+                return { roomId: null, buildingId: building.id, source: 'location' };
+            }
+            const alias = BUILDING_ID_ALIASES.get(slug);
+            if (alias) {
+                return { roomId: null, buildingId: alias, source: 'location' };
+            }
+        }
+        const normalized = normalizeBuildingId(eventLocation, locationContext);
+        if (normalized) {
+            return { roomId: null, buildingId: normalized, source: 'location' };
+        }
+    }
+    return { roomId: null, buildingId: null, source: null };
+};
+
+const updateOccurrenceLinks = (occurrenceId, { buildingId, roomId, source, tag }) => {
+    if (!occurrenceId) return;
+    if (!tableExists('entity_links')) return;
+    sqlite.prepare(`
+        DELETE FROM entity_links
+        WHERE from_type = 'event_occurrence' AND from_id = ? AND role = 'location'
+    `).run(occurrenceId);
+    const now = new Date().toISOString();
+    const metaJson = JSON.stringify({
+        source,
+        tag: tag || null
+    });
+    if (roomId) {
+        sqlite.prepare(`
+            INSERT INTO entity_links (id, from_type, from_id, to_type, to_id, role, created_at, meta_json)
+            VALUES (?, 'event_occurrence', ?, 'room', ?, 'location', ?, ?)
+        `).run(`link-${hashId(`${occurrenceId}-room-${roomId}`)}`, occurrenceId, roomId, now, metaJson);
+        return;
+    }
+    if (buildingId) {
+        sqlite.prepare(`
+            INSERT INTO entity_links (id, from_type, from_id, to_type, to_id, role, created_at, meta_json)
+            VALUES (?, 'event_occurrence', ?, 'building', ?, 'location', ?, ?)
+        `).run(`link-${hashId(`${occurrenceId}-building-${buildingId}`)}`, occurrenceId, buildingId, now, metaJson);
+    }
+};
+
+const cleanupDeletedOccurrences = (occurrenceIds) => {
+    if (!occurrenceIds?.length) return;
+    const placeholders = occurrenceIds.map(() => '?').join(', ');
+    const deleteTransaction = sqlite.transaction(() => {
+        if (tableExists('entity_links')) {
+            sqlite.prepare(`
+                DELETE FROM entity_links
+                WHERE from_type = 'event_occurrence' AND from_id IN (${placeholders})
+            `).run(...occurrenceIds);
+        }
+
+        if (tableExists('task_origins') && tableExists('task_instances')) {
+            const taskRows = sqlite.prepare(`
+                SELECT o.task_instance_id, ti.task_id
+                FROM task_origins o
+                JOIN task_instances ti ON ti.id = o.task_instance_id
+                WHERE o.scope = 'instance'
+                  AND o.origin_type = 'event'
+                  AND o.origin_id IN (${placeholders})
+            `).all(...occurrenceIds);
+            if (taskRows.length) {
+                const taskInstanceIds = taskRows.map((row) => row.task_instance_id);
+                const taskIds = taskRows.map((row) => row.task_id).filter(Boolean);
+                const taskInstancePlaceholders = taskInstanceIds.map(() => '?').join(', ');
+                sqlite.prepare(`
+                    DELETE FROM task_origins
+                    WHERE task_instance_id IN (${taskInstancePlaceholders})
+                `).run(...taskInstanceIds);
+                sqlite.prepare(`
+                    DELETE FROM task_instances
+                    WHERE id IN (${taskInstancePlaceholders})
+                `).run(...taskInstanceIds);
+                if (taskIds.length && tableExists('tasks_new')) {
+                    const taskIdPlaceholders = taskIds.map(() => '?').join(', ');
+                    sqlite.prepare(`
+                        DELETE FROM tasks_new
+                        WHERE id IN (${taskIdPlaceholders})
+                    `).run(...taskIds);
+                }
+            }
+        }
+
+        sqlite.prepare(`
+            DELETE FROM event_occurrences
+            WHERE id IN (${placeholders})
+        `).run(...occurrenceIds);
+    });
+    deleteTransaction();
+};
+
+export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, syncWindow }) => {
     const { categories, eventTypes } = getEventContext();
+    const locationContext = getLocationContext();
+
+    const now = new Date();
+    const windowBackDays = Number.isFinite(syncWindow?.backDays) ? syncWindow.backDays : 30;
+    const windowForwardDays = Number.isFinite(syncWindow?.forwardDays) ? syncWindow.forwardDays : 365;
+    const windowStart = new Date(now);
+    windowStart.setDate(windowStart.getDate() - windowBackDays);
+    const windowEnd = new Date(now);
+    windowEnd.setDate(windowEnd.getDate() + windowForwardDays);
 
     // Get selected calendars
     const selectedCalendars = sqlite.prepare(`
@@ -159,46 +399,79 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence }
     const allEvents = [];
     for (const calId of calendarIds) {
         try {
-            const events = await fetchFn(tokens, calId);
-            allEvents.push(...events);
+            const events = await fetchFn(tokens, calId, { timeMin: windowStart, timeMax: windowEnd });
+            allEvents.push(...events.map((event) => ({ ...event, _calendarId: calId })));
         } catch (error) {
             console.error(`Failed to fetch calendar ${calId}:`, error);
         }
     }
 
-    // Deduplicate in memory
-    const uniqueEvents = new Map();
     const dateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' });
     const timeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit', hour12: false });
+    const seenOccurrences = new Set();
+    const canonicalEvents = new Map();
 
     for (const event of allEvents) {
-        let date, time;
+        if (event?.status === 'cancelled') {
+            continue;
+        }
+        let date, time, endTime;
         if (event.start?.dateTime) {
             const d = new Date(event.start.dateTime);
             date = dateFormatter.format(d);
             time = timeFormatter.format(d);
+            if (event.end?.dateTime) {
+                const endDate = new Date(event.end.dateTime);
+                endTime = timeFormatter.format(endDate);
+            }
         } else if (event.start?.date) {
             // All-day event: use the date string directly to avoid timezone/DST shifts
             date = event.start.date;
             time = '';
+            endTime = null;
         } else {
             continue;
         }
 
-        // Sanitize title: trim and collapse multiple spaces
-        const title = (event.summary || 'Untitled').replace(/\s+/g, ' ').trim();
-
-        // Semantic key for user-visible deduplication
-        const semanticKey = `${title.toLowerCase()}|${date}|${time}`;
-
-        // If we already have this event, keep the one we already found 
-        if (!uniqueEvents.has(semanticKey)) {
-            uniqueEvents.set(semanticKey, { event, date, time, title });
+        const canonicalKey = `${event.iCalUID || event.id || 'unknown'}|${date}|${time || 'all-day'}`;
+        const score = [
+            event.summary,
+            event.description,
+            event.location,
+            event.organizer?.email
+        ].filter(Boolean).length;
+        const existing = canonicalEvents.get(canonicalKey);
+        if (!existing || score > existing.score) {
+            canonicalEvents.set(canonicalKey, {
+                event,
+                date,
+                time,
+                endTime,
+                score
+            });
         }
     }
 
-    for (const { event, date, time, title } of uniqueEvents.values()) {
-        const categorization = categorizeGoogleEvent(event, categories, eventTypes);
+    for (const { event, date, time, endTime } of canonicalEvents.values()) {
+        const calendarId = event._calendarId || event.organizer?.email || 'primary';
+        const instanceId = event.id;
+        if (!instanceId) continue;
+
+        const title = (event.summary || 'Untitled').replace(/\s+/g, ' ').trim();
+        const description = event.description || '';
+        const tagSource = `${title}\n${description}`;
+        const tags = extractEventTags(tagSource);
+        if (!tags.hashtags.length && /\bvestry\b/i.test(title)) {
+            tags.hashtags.push('vestry');
+        }
+        if (!tags.locations.length && /\bvestry\b/i.test(title)) {
+            tags.locations.push('library');
+        }
+        const taggedType = findEventTypeFromTags(tags.hashtags, eventTypes);
+        const categorization = taggedType
+            ? buildCategorization(taggedType, categories)
+            : categorizeGoogleEvent(event, categories, eventTypes);
+
         const globalId = event.iCalUID || event.id;
         const normalizedTime = time || '';
         const isWeeklyService = categorization.type_slug === 'weekly-service';
@@ -221,10 +494,15 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence }
                     ...(baseNotes.google || {}),
                     externalId: globalId,
                     iCalUid: event.iCalUID || null,
-                    calendarId: event.organizer?.email || null
+                    calendarId
                 }
             };
-            const buildingId = normalizeBuildingId(event.location) || existing?.building_id || null;
+            const locationInfo = resolveLocation({
+                locationTags: tags.locations,
+                eventLocation: event.location,
+                locationContext
+            });
+            const buildingId = locationInfo.buildingId || existing?.building_id || null;
             const rite = normalizedTime.startsWith('08')
                 ? 'Rite I'
                 : (normalizedTime.startsWith('10') ? 'Rite II' : null);
@@ -259,11 +537,37 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence }
             continue;
         }
 
-        // Handle possible conflicts on either external_id OR semantic key
-        // SQLite doesn't support multiple ON CONFLICT targets easily, so we use a transaction or manual check
-        const eventId = `google-${hashId(globalId)}`;
-        const occurrenceId = `occ-${hashId(`${eventId}-${date}-${normalizedTime}`)}`;
+        const eventSeriesKey = `${calendarId}:${globalId}`;
+        const eventId = `google-${hashId(eventSeriesKey)}`;
+        const occurrenceKey = `${calendarId}:${instanceId}`;
+        const occurrenceId = `occ-${hashId(occurrenceKey)}`;
         const now = new Date().toISOString();
+        const locationInfo = resolveLocation({
+            locationTags: tags.locations,
+            eventLocation: event.location,
+            locationContext
+        });
+        const existingOccurrence = sqlite.prepare(`
+            SELECT id, notes FROM event_occurrences WHERE id = ?
+        `).get(occurrenceId);
+        const { data: existingNotes, rawText } = parseNotesWithText(existingOccurrence?.notes);
+        const nextNotes = {
+            ...existingNotes,
+            ...(rawText ? { text: rawText } : {}),
+            google: {
+                ...(existingNotes.google || {}),
+                instanceId,
+                iCalUid: event.iCalUID || null,
+                calendarId,
+                updated: event.updated || null,
+                status: event.status || null
+            },
+            tags: {
+                ...(existingNotes.tags || {}),
+                hashtags: tags.hashtags,
+                locations: tags.locations
+            }
+        };
 
         sqlite.prepare(`
             INSERT INTO events (id, title, description, event_type_id, source, metadata, created_at, updated_at)
@@ -277,11 +581,12 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence }
         `).run(
             eventId,
             title,
-            event.description || '',
+            description,
             categorization.type_id,
             JSON.stringify({
                 externalId: globalId,
-                calendarId: event.organizer?.email || null
+                calendarId,
+                iCalUid: event.iCalUID || null
             }),
             now,
             now
@@ -302,12 +607,19 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence }
             eventId,
             date,
             normalizedTime || null,
-            null,
-            normalizeBuildingId(event.location),
+            endTime || null,
+            locationInfo.buildingId || null,
             null,
             0,
-            null
+            JSON.stringify(nextNotes)
         );
+        updateOccurrenceLinks(occurrenceId, {
+            buildingId: locationInfo.buildingId,
+            roomId: locationInfo.roomId,
+            source: locationInfo.source,
+            tag: tags.locations[0] || null
+        });
+        seenOccurrences.add(occurrenceId);
         if (typeof onOccurrence === 'function') {
             onOccurrence({
                 occurrenceId,
@@ -318,58 +630,37 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence }
         totalSynced++;
     }
 
-    ensureHgkOccurrences(onOccurrence);
+    const windowStartKey = dateFormatter.format(windowStart);
+    const windowEndKey = dateFormatter.format(windowEnd);
+    const dbOccurrences = sqlite.prepare(`
+        SELECT o.id
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        WHERE e.source = 'google'
+          AND o.date >= ?
+          AND o.date <= ?
+    `).all(windowStartKey, windowEndKey);
+    const staleIds = dbOccurrences
+        .map((row) => row.id)
+        .filter((id) => !seenOccurrences.has(id));
+    if (staleIds.length) {
+        cleanupDeletedOccurrences(staleIds);
+    }
+
+    const orphanEvents = sqlite.prepare(`
+        SELECT e.id
+        FROM events e
+        LEFT JOIN event_occurrences o ON o.event_id = e.id
+        WHERE e.source = 'google'
+        GROUP BY e.id
+        HAVING COUNT(o.id) = 0
+    `).all();
+    if (orphanEvents.length) {
+        const orphanIds = orphanEvents.map((row) => row.id);
+        const placeholders = orphanIds.map(() => '?').join(', ');
+        sqlite.prepare(`DELETE FROM events WHERE id IN (${placeholders})`).run(...orphanIds);
+    }
+
     return totalSynced;
 };
 
-const getThirdSundayOfMonth = (referenceDate) => {
-    const year = referenceDate.getFullYear();
-    const month = referenceDate.getMonth();
-    const firstOfMonth = new Date(year, month, 1);
-    const firstDay = firstOfMonth.getDay();
-    const firstSunday = 1 + ((7 - firstDay) % 7);
-    const thirdSunday = firstSunday + 14;
-    return new Date(year, month, thirdSunday);
-};
-
-const ensureHgkOccurrences = (onOccurrence) => {
-    const volunteerType = sqlite.prepare('SELECT id FROM event_types WHERE slug = ?').get('volunteer');
-    if (!volunteerType) return;
-    const eventId = 'hgk-volunteer';
-    const now = new Date().toISOString();
-    const metadata = JSON.stringify({ identifier: '#HGK', description: 'Holy Ghost Kitchen' });
-    sqlite.prepare(`
-        INSERT INTO events (id, title, description, event_type_id, source, metadata, created_at, updated_at)
-        VALUES (?, 'Holy Ghost Kitchen', 'Volunteer meal support', ?, 'manual', ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            title = excluded.title,
-            updated_at = excluded.updated_at,
-            metadata = excluded.metadata
-    `).run(eventId, volunteerType.id, metadata, now, now);
-
-    const start = new Date();
-    const monthsAhead = 12;
-    for (let offset = 0; offset < monthsAhead; offset += 1) {
-        const targetDate = getThirdSundayOfMonth(new Date(start.getFullYear(), start.getMonth() + offset, 1));
-        const dateKey = targetDate.toISOString().slice(0, 10);
-        const occurrenceId = `hgk-${dateKey}`;
-        const exists = sqlite.prepare('SELECT id FROM event_occurrences WHERE id = ?').get(occurrenceId);
-        if (exists) continue;
-        sqlite.prepare(`
-            INSERT INTO event_occurrences (id, event_id, date, start_time, building_id, notes, is_default)
-            VALUES (?, ?, ?, '11:00', 'parish-hall', ?, 0)
-        `).run(
-            occurrenceId,
-            eventId,
-            dateKey,
-            JSON.stringify({ tags: ['#HGK'], source: 'Holy Ghost Kitchen' })
-        );
-        if (typeof onOccurrence === 'function') {
-            onOccurrence({
-                occurrenceId,
-                eventTypeId: volunteerType.id,
-                dateKey
-            });
-        }
-    }
-};
