@@ -206,7 +206,8 @@ export const taskInstances = sqliteTable('task_instances', {
     keepUntil: text('keep_until'),
     listKey: text('list_key'),
     listTitle: text('list_title'),
-    listMode: text('list_mode').default('sequential')
+    listMode: text('list_mode').default('sequential'),
+    notes: text('notes')
 });
 
 export const entityLinks = sqliteTable('entity_links', {

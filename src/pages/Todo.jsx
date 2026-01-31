@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { format, startOfWeek, endOfWeek, addWeeks, isWithinInterval, parseISO } from 'date-fns';
 import { FaPlus, FaCheck } from 'react-icons/fa';
 import Card from '../components/Card';
+import Modal from '../components/Modal';
 import { API_URL } from '../services/apiConfig';
 import './Todo.css';
 
@@ -11,6 +12,13 @@ const isMonthString = (value) => /^\d{4}-\d{2}$/.test(value || '');
 const normalizeOriginKey = (originType, originId) => `${originType || 'manual'}:${originId || 'manual'}`;
 const getListKey = (task) => task?.list_key || 'default';
 const LIST_COLLAPSE_THRESHOLD = 8;
+const PRIORITY_OPTIONS = [
+    { label: 'Critical', value: 80 },
+    { label: 'High', value: 65 },
+    { label: 'Normal', value: 50 },
+    { label: 'Low', value: 30 },
+    { label: 'Someday', value: 10 }
+];
 
 const stateOrder = {
     open: 0,
@@ -129,12 +137,33 @@ const Todo = () => {
     const [error, setError] = useState('');
     const [newTask, setNewTask] = useState('');
     const [projectName, setProjectName] = useState('Operations');
+    const [taskModalOpen, setTaskModalOpen] = useState(false);
+    const [taskDraft, setTaskDraft] = useState({
+        id: '',
+        text: '',
+        dueDate: '',
+        priorityOverride: '',
+        notes: ''
+    });
+    const [taskNotesDraft, setTaskNotesDraft] = useState('');
     const [showCompleted, setShowCompleted] = useState(false);
     const [originLinks, setOriginLinks] = useState({ parent: null, children: [] });
     const [nestedExpanded, setNestedExpanded] = useState({});
     const [nestedTasks, setNestedTasks] = useState({});
     const [nestedLoading, setNestedLoading] = useState({});
     const [expandedLists, setExpandedLists] = useState({});
+
+    const renderCountBadge = useCallback((count, label) => (
+        count === 0 ? (
+            <span className="check-badge count-badge-check" aria-label={label}>
+                ✓
+            </span>
+        ) : (
+            <span className="count-badge" aria-label={label}>
+                {count}
+            </span>
+        )
+    ), []);
 
     const loadAllTasks = useCallback(async () => {
         setTasksLoading(true);
@@ -324,14 +353,13 @@ const Todo = () => {
         const bucketed = {
             thisWeek: [],
             nextWeek: [],
-            later: [],
-            noDue: []
+            later: []
         };
 
         visibleOriginGroups.forEach((group) => {
             const due = group.originDue || (group.nextTask?.due_at ? parseDueDate(group.nextTask.due_at) : null);
             if (!due) {
-                bucketed.noDue.push(group);
+                bucketed.later.push(group);
                 return;
             }
             if (isWithinInterval(due, { start: weekStart, end: weekEnd })) {
@@ -440,6 +468,28 @@ const Todo = () => {
         return task.origin_id;
     }, []);
 
+    const buildDueDateInput = useCallback((dueAt) => {
+        if (!dueAt) return '';
+        try {
+            const parsed = parseISO(dueAt);
+            return format(parsed, 'yyyy-MM-dd');
+        } catch {
+            return '';
+        }
+    }, []);
+
+    const openTaskModal = useCallback((task) => {
+        if (!task) return;
+        setTaskDraft({
+            id: task.id,
+            text: task.text || '',
+            dueDate: buildDueDateInput(task.due_at),
+            priorityOverride: task.priority_override ?? '',
+            notes: task.notes || ''
+        });
+        setTaskModalOpen(true);
+    }, [buildDueDateInput]);
+
     const addTask = async (event) => {
         event.preventDefault();
         const trimmed = newTask.trim();
@@ -456,11 +506,52 @@ const Todo = () => {
                 })
             });
             if (!response.ok) throw new Error('Failed to create task');
+            const created = await response.json();
             setNewTask('');
             await loadAllTasks();
+            openTaskModal(created);
         } catch (err) {
             console.error('Failed to create task:', err);
             setError('Unable to add task. Please try again.');
+        }
+    };
+
+    const saveTaskDetails = async () => {
+        if (!taskDraft.id) return;
+        try {
+            const payload = {
+                text: taskDraft.text || '',
+                due_at: taskDraft.dueDate ? `${taskDraft.dueDate}T00:00:00` : null,
+                priority_override: taskDraft.priorityOverride !== '' ? Number(taskDraft.priorityOverride) : null,
+                notes: taskDraft.notes || ''
+            };
+            const response = await fetch(`${API_URL}/tasks/${taskDraft.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!response.ok) throw new Error('Failed to update task');
+            setTaskModalOpen(false);
+            await loadAllTasks();
+        } catch (err) {
+            console.error('Failed to update task:', err);
+            setError('Unable to update task. Please try again.');
+        }
+    };
+
+    const saveTaskNotes = async () => {
+        if (!selectedTask?.id) return;
+        try {
+            const response = await fetch(`${API_URL}/tasks/${selectedTask.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ notes: taskNotesDraft || '' })
+            });
+            if (!response.ok) throw new Error('Failed to update task notes');
+            await loadAllTasks();
+        } catch (err) {
+            console.error('Failed to update task notes:', err);
+            setError('Unable to update task notes. Please try again.');
         }
     };
 
@@ -479,6 +570,21 @@ const Todo = () => {
             setError('Unable to update task. Please try again.');
         }
     };
+
+    const selectedTask = useMemo(() => {
+        if (!selectedOrigin) return null;
+        const searchId = selectedTaskId || selectedOrigin?.nextTask?.id;
+        if (!searchId) return null;
+        for (const list of selectedOrigin.lists) {
+            const match = list.tasks.find((task) => task.id === searchId);
+            if (match) return match;
+        }
+        return null;
+    }, [selectedOrigin, selectedTaskId]);
+
+    useEffect(() => {
+        setTaskNotesDraft(selectedTask?.notes || '');
+    }, [selectedTask?.id]);
 
     const selectedOriginTitle = selectedOrigin?.sample
         ? (selectedOrigin.sample.event_title || formatTaskTitle(selectedOrigin.sample) || 'Task Origin')
@@ -540,16 +646,19 @@ const Todo = () => {
                                 Due {format(weekBuckets.weekStart, 'MMM d')} - {format(weekBuckets.weekEnd, 'MMM d')}
                             </p>
                         </div>
-                        <span className="count-badge" aria-label={`${weekBuckets.thisWeek.length} origins`}>
-                            {weekBuckets.thisWeek.length}
-                        </span>
+                        {renderCountBadge(
+                            weekBuckets.thisWeek.length,
+                            weekBuckets.thisWeek.length === 0
+                                ? "This week's tasks complete"
+                                : `${weekBuckets.thisWeek.length} origins`
+                        )}
                     </div>
 
                     <div className="task-list-wrapper">
                         {tasksLoading && <div className="empty-state">Loading tasks...</div>}
                         {error && !tasksLoading && <div className="empty-state">{error}</div>}
                         {!tasksLoading && !error && weekBuckets.thisWeek.length === 0 && (
-                            <div className="empty-state">No origins due this week.</div>
+                            <div className="empty-state">This week's tasks complete.</div>
                         )}
                         {!tasksLoading && !error && weekBuckets.thisWeek.length > 0 && (
                             <div className="origin-summary-table">
@@ -640,14 +749,17 @@ const Todo = () => {
                                 {format(weekBuckets.nextWeekStart, 'MMM d')} - {format(weekBuckets.nextWeekEnd, 'MMM d')}
                             </p>
                         </div>
-                        <span className="count-badge" aria-label={`${weekBuckets.nextWeek.length} origins`}>
-                            {weekBuckets.nextWeek.length}
-                        </span>
+                        {renderCountBadge(
+                            weekBuckets.nextWeek.length,
+                            weekBuckets.nextWeek.length === 0
+                                ? "Next week's tasks complete"
+                                : `${weekBuckets.nextWeek.length} origins`
+                        )}
                     </div>
                     {tasksLoading && <div className="empty-state">Loading tasks...</div>}
                     {error && !tasksLoading && <div className="empty-state">{error}</div>}
                     {!tasksLoading && !error && weekBuckets.nextWeek.length === 0 && (
-                        <div className="empty-state">No origins due next week.</div>
+                        <div className="empty-state">Next week's tasks complete.</div>
                     )}
                     {!tasksLoading && !error && weekBuckets.nextWeek.length > 0 && (
                         <div className="origin-summary-table">
@@ -734,14 +846,17 @@ const Todo = () => {
                             <h2>Later</h2>
                             <p className="muted">Beyond next week</p>
                         </div>
-                        <span className="count-badge" aria-label={`${weekBuckets.later.length} origins`}>
-                            {weekBuckets.later.length}
-                        </span>
+                        {renderCountBadge(
+                            weekBuckets.later.length,
+                            weekBuckets.later.length === 0
+                                ? 'Later tasks complete'
+                                : `${weekBuckets.later.length} origins`
+                        )}
                     </div>
                     {tasksLoading && <div className="empty-state">Loading tasks...</div>}
                     {error && !tasksLoading && <div className="empty-state">{error}</div>}
                     {!tasksLoading && !error && weekBuckets.later.length === 0 && (
-                        <div className="empty-state">No later origins scheduled.</div>
+                        <div className="empty-state">Later tasks complete.</div>
                     )}
                     {!tasksLoading && !error && weekBuckets.later.length > 0 && (
                         <div className="origin-summary-table">
@@ -829,10 +944,55 @@ const Todo = () => {
                             <h2>Task Details</h2>
                             <p className="muted">Origin list first, next step highlighted.</p>
                         </div>
+                        <button
+                            type="button"
+                            className="btn-secondary btn-compact"
+                            onClick={() => openTaskModal(selectedTask)}
+                            disabled={!selectedTask}
+                        >
+                            Edit Task
+                        </button>
                     </div>
                     {!selectedOrigin && <div className="empty-state">Select a task or origin to see details.</div>}
                     {selectedOrigin && (
                         <div className="task-detail-body">
+                            {selectedTask && (
+                                <div className="task-selected-summary">
+                                    <div className="task-selected-header">
+                                        <div>
+                                            <div className="task-selected-title">
+                                                {formatTaskTitle(selectedTask) || selectedTask.text}
+                                            </div>
+                                            <div className="task-selected-meta">
+                                                {toTitleCase(selectedTask.state || 'open')}
+                                                {selectedTask.list_title ? ` • ${selectedTask.list_title}` : ''}
+                                                {selectedTask.origin_event ? ` • ${toTitleCase(selectedTask.origin_event)}` : ''}
+                                            </div>
+                                        </div>
+                                        <span className={`priority-pill ${getPriorityClass(selectedTask)}`}>
+                                            {formatPriorityLabel(selectedTask)}
+                                        </span>
+                                    </div>
+                                    <div className="task-selected-grid">
+                                        <div>
+                                            <div className="task-selected-label">Due</div>
+                                            <div>
+                                                {selectedTask.due_at
+                                                    ? format(new Date(selectedTask.due_at), 'MMM d, yyyy')
+                                                    : 'Later'}
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div className="task-selected-label">Priority</div>
+                                            <div>{formatPriorityLabel(selectedTask)}</div>
+                                        </div>
+                                        <div>
+                                            <div className="task-selected-label">Status</div>
+                                            <div>{toTitleCase(selectedTask.state || 'open')}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                             <div className="task-origin-panel">
                                 <div className="task-origin-header">
                                     <div>
@@ -894,6 +1054,31 @@ const Todo = () => {
                                 )}
                             </div>
 
+                            {selectedTask && (
+                                <div className="task-notes-card">
+                                    <div className="task-notes-header">
+                                        <div>
+                                            <div className="task-notes-title">Notes</div>
+                                            <div className="task-notes-subtitle">Private notes for this task.</div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            className="btn-secondary btn-compact"
+                                            onClick={saveTaskNotes}
+                                        >
+                                            Save Notes
+                                        </button>
+                                    </div>
+                                    <textarea
+                                        className="task-notes-input"
+                                        rows={4}
+                                        placeholder="Add any extra details, reminders, or context."
+                                        value={taskNotesDraft}
+                                        onChange={(event) => setTaskNotesDraft(event.target.value)}
+                                    />
+                                </div>
+                            )}
+
                             <div className="task-origin-list">
                                 <div className="task-origin-title">Tasks in this origin</div>
                                 {selectedOrigin.lists.length === 0 && (
@@ -951,11 +1136,23 @@ const Todo = () => {
                                                         <li
                                                             key={task.id}
                                                             className={`origin-task-row ${task.completed ? 'completed' : ''} ${task.id === selectedTaskId ? 'selected' : ''} ${selectedOrigin?.nextTask?.id === task.id ? 'next-step' : ''}`}
+                                                            role="button"
+                                                            tabIndex={0}
+                                                            onClick={() => setSelectedTaskId(task.id)}
+                                                            onKeyDown={(event) => {
+                                                                if (event.key === 'Enter' || event.key === ' ') {
+                                                                    event.preventDefault();
+                                                                    setSelectedTaskId(task.id);
+                                                                }
+                                                            }}
                                                         >
                                                             <button
                                                                 type="button"
                                                                 className="origin-task-check"
-                                                                onClick={() => toggleTask(task)}
+                                                                onClick={(event) => {
+                                                                    event.stopPropagation();
+                                                                    toggleTask(task);
+                                                                }}
                                                                 aria-label="Toggle task"
                                                             >
                                                                 {task.completed && <FaCheck />}
@@ -1035,11 +1232,27 @@ const Todo = () => {
                                                 <li
                                                     key={task.id}
                                                     className={`origin-task-row ${task.completed ? 'completed' : ''} ${selectedOrigin?.nextTask?.id === task.id ? 'next-step' : ''}`}
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => {
+                                                        setSelectedOriginKey(childKey);
+                                                        setSelectedTaskId(task.id);
+                                                    }}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === 'Enter' || event.key === ' ') {
+                                                            event.preventDefault();
+                                                            setSelectedOriginKey(childKey);
+                                                            setSelectedTaskId(task.id);
+                                                        }
+                                                    }}
                                                 >
                                                                             <button
                                                                                 type="button"
                                                                                 className="origin-task-check"
-                                                                                onClick={() => toggleTask(task)}
+                                                                                onClick={(event) => {
+                                                                                    event.stopPropagation();
+                                                                                    toggleTask(task);
+                                                                                }}
                                                                                 aria-label="Toggle task"
                                                                             >
                                                                                 {task.completed && <FaCheck />}
@@ -1069,6 +1282,64 @@ const Todo = () => {
                     )}
                 </Card>
             </div>
+
+            <Modal
+                isOpen={taskModalOpen}
+                onClose={() => setTaskModalOpen(false)}
+                title="Add Task Details"
+            >
+                <div className="task-detail-modal">
+                    <div className="form-group">
+                        <label>Task</label>
+                        <input
+                            type="text"
+                            value={taskDraft.text}
+                            onChange={(e) => setTaskDraft((prev) => ({ ...prev, text: e.target.value }))}
+                        />
+                    </div>
+                    <div className="form-row">
+                        <div className="form-group">
+                            <label>Due date</label>
+                            <input
+                                type="date"
+                                value={taskDraft.dueDate}
+                                onChange={(e) => setTaskDraft((prev) => ({ ...prev, dueDate: e.target.value }))}
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label>Priority</label>
+                            <select
+                                value={taskDraft.priorityOverride}
+                                onChange={(e) => setTaskDraft((prev) => ({ ...prev, priorityOverride: e.target.value }))}
+                            >
+                                <option value="">Use default</option>
+                                {PRIORITY_OPTIONS.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                        {option.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                    <div className="form-group">
+                        <label>Notes</label>
+                        <textarea
+                            rows={4}
+                            value={taskDraft.notes}
+                            onChange={(e) => setTaskDraft((prev) => ({ ...prev, notes: e.target.value }))}
+                            placeholder="Add any reminders or context."
+                        />
+                    </div>
+                    <div className="form-actions">
+                        <button type="button" className="btn-secondary" onClick={() => setTaskModalOpen(false)}>
+                            Not now
+                        </button>
+                        <button type="button" className="btn-primary" onClick={saveTaskDetails} disabled={!taskDraft.text.trim()}>
+                            Save Details
+                        </button>
+                    </div>
+                </div>
+            </Modal>
         </div>
     );
 };

@@ -723,10 +723,27 @@ const ensureTasksColumns = () => {
     const columnSet = new Set(columns);
     if (!columnSet.has('completed_at')) {
         sqlite.exec('ALTER TABLE tasks ADD COLUMN completed_at TEXT');
+        columnSet.add('completed_at');
+    }
+    if (!columnSet.has('notes')) {
+        sqlite.exec('ALTER TABLE tasks ADD COLUMN notes TEXT');
     }
 };
 
 ensureTasksColumns();
+
+const ensureTaskInstanceNotes = () => {
+    const table = sqlite.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_instances'
+    `).get();
+    if (!table) return;
+    const columns = sqlite.prepare('PRAGMA table_info(task_instances)').all().map((col) => col.name);
+    if (!columns.includes('notes')) {
+        sqlite.exec('ALTER TABLE task_instances ADD COLUMN notes TEXT');
+    }
+};
+
+ensureTaskInstanceNotes();
 
 function seedTaskEngine() {
     if (!tableExists('tasks_new') || !tableExists('task_instances') || !tableExists('task_origins')) {
@@ -1364,6 +1381,7 @@ const formatTaskInstanceRow = (row) => {
         priority_tier: tier,
         step_order: row.step_order != null ? Number(row.step_order) : null,
         rank: row.rank != null ? Number(row.rank) : null,
+        notes: row.notes || '',
         archived_at: row.archived_at || null,
         archive_after_due: row.archive_after_due != null ? Number(row.archive_after_due) : 1,
         keep_until: row.keep_until || null,
@@ -3592,6 +3610,7 @@ const listTaskInstances = (whereClause = '', params = []) => {
                 ti.list_key,
                 ti.list_title,
                 ti.list_mode,
+                ti.notes,
                 src.origin_type,
                 src.origin_id,
                 src.origin_event,
@@ -3645,6 +3664,7 @@ const listTaskInstances = (whereClause = '', params = []) => {
                 t.priority_base,
                 ti.rank,
                 ti.created_at AS task_created_at,
+                ti.notes,
                 o.origin_type,
                 o.origin_id,
                 o.origin_event,
@@ -4171,7 +4191,8 @@ app.post('/api/tasks', (req, res) => {
             priority_override = null,
             due_at = null,
             rank = null,
-            state = null
+            state = null,
+            notes = null
         } = req.body || {};
         const normalizedText = normalizeName(text);
         if (!normalizedText) {
@@ -4190,8 +4211,8 @@ app.post('/api/tasks', (req, res) => {
 
         db.prepare(`
             INSERT INTO task_instances (
-                id, task_id, state, priority_override, rank, due_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                id, task_id, state, priority_override, rank, due_at, notes, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
             taskInstanceId,
             taskId,
@@ -4199,6 +4220,7 @@ app.post('/api/tasks', (req, res) => {
             priority_override,
             rank,
             due_at,
+            notes ? String(notes).trim() : null,
             now,
             now
         );
@@ -4223,7 +4245,7 @@ app.post('/api/tasks', (req, res) => {
     }
 
     if (!tableExists('task_instances') || !tableExists('tasks_new')) {
-        const { text, ticket_id = null } = req.body || {};
+        const { text, ticket_id = null, notes = null } = req.body || {};
         const normalizedText = normalizeName(text);
         if (!normalizedText) {
             return res.status(400).json({ error: 'Task text is required' });
@@ -4237,16 +4259,17 @@ app.post('/api/tasks', (req, res) => {
         const id = ensureUniqueId(`task-${Date.now()}`, 'tasks');
         const createdAt = new Date().toISOString();
         db.prepare(`
-            INSERT INTO tasks (id, ticket_id, text, completed, created_at)
-            VALUES (?, ?, ?, 0, ?)
-        `).run(id, ticket_id, normalizedText, createdAt);
+            INSERT INTO tasks (id, ticket_id, text, completed, created_at, notes)
+            VALUES (?, ?, ?, 0, ?, ?)
+        `).run(id, ticket_id, normalizedText, createdAt, notes ? String(notes).trim() : null);
         return res.status(201).json({
             id,
             ticket_id,
             text: normalizedText,
             completed: false,
             created_at: createdAt,
-            completed_at: null
+            completed_at: null,
+            notes: notes ? String(notes).trim() : ''
         });
     }
     const {
@@ -4265,7 +4288,8 @@ app.post('/api/tasks', (req, res) => {
         blocked = 0,
         list_key = null,
         list_title = null,
-        list_mode = 'sequential'
+        list_mode = 'sequential',
+        notes = null
     } = req.body || {};
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
@@ -4310,8 +4334,8 @@ app.post('/api/tasks', (req, res) => {
         INSERT INTO task_instances (
             id, task_id, state, due_at, start_at, completed_at, generated_from,
             generation_key, priority_override, rank, sla_target_at, blocked,
-            list_key, list_title, list_mode
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            list_key, list_title, list_mode, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         taskInstanceId,
         taskId,
@@ -4327,7 +4351,8 @@ app.post('/api/tasks', (req, res) => {
         Number(blocked) ? 1 : 0,
         list_key,
         list_title || list_key,
-        list_mode || 'sequential'
+        list_mode || 'sequential',
+        notes ? String(notes).trim() : null
     );
 
     const originType = source_type || (ticket_id ? 'ticket' : 'manual');
@@ -4379,7 +4404,8 @@ app.put('/api/tasks/:id', (req, res) => {
             completed = existing.state === 'done',
             priority_override = existing.priority_override,
             due_at = existing.due_at,
-            rank = existing.rank
+            rank = existing.rank,
+            notes = existing.notes
         } = req.body || {};
         const normalizedText = normalizeName(text);
         if (!normalizedText) {
@@ -4397,6 +4423,7 @@ app.put('/api/tasks/:id', (req, res) => {
                 due_at = ?,
                 priority_override = ?,
                 rank = ?,
+                notes = ?,
                 completed_at = ?,
                 updated_at = ?
             WHERE id = ?
@@ -4405,6 +4432,7 @@ app.put('/api/tasks/:id', (req, res) => {
             due_at,
             priority_override,
             rank,
+            notes != null ? String(notes).trim() : null,
             completedAt,
             new Date().toISOString(),
             id
@@ -4419,21 +4447,22 @@ app.put('/api/tasks/:id', (req, res) => {
         if (!existing) {
             return res.status(404).json({ error: 'Task not found' });
         }
-        const { text = existing.text, completed = existing.completed } = req.body || {};
+        const { text = existing.text, completed = existing.completed, notes = existing.notes } = req.body || {};
         const normalizedText = normalizeName(text);
         if (!normalizedText) {
             return res.status(400).json({ error: 'Task text is required' });
         }
         const completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
-        db.prepare('UPDATE tasks SET text = ?, completed = ?, completed_at = ? WHERE id = ?')
-            .run(normalizedText, completed ? 1 : 0, completedAt, id);
+        db.prepare('UPDATE tasks SET text = ?, completed = ?, completed_at = ?, notes = ? WHERE id = ?')
+            .run(normalizedText, completed ? 1 : 0, completedAt, notes != null ? String(notes).trim() : null, id);
         return res.json({
             id,
             ticket_id: existing.ticket_id,
             text: normalizedText,
             completed: !!completed,
             created_at: existing.created_at,
-            completed_at: completedAt
+            completed_at: completedAt,
+            notes: notes != null ? String(notes).trim() : ''
         });
     }
     const existing = db.prepare(`
@@ -4455,7 +4484,8 @@ app.put('/api/tasks/:id', (req, res) => {
         rank = existing.rank,
         blocked = existing.blocked,
         archive_after_due = existing.archive_after_due ?? 1,
-        keep_until = existing.keep_until || null
+        keep_until = existing.keep_until || null,
+        notes = existing.notes
     } = req.body || {};
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
@@ -4480,7 +4510,8 @@ app.put('/api/tasks/:id', (req, res) => {
             blocked = ?,
             completed_at = ?,
             archive_after_due = ?,
-            keep_until = ?
+            keep_until = ?,
+            notes = ?
         WHERE id = ?
     `).run(
         nextState,
@@ -4492,6 +4523,7 @@ app.put('/api/tasks/:id', (req, res) => {
         completedAt,
         Number(archive_after_due) ? 1 : 0,
         keep_until,
+        notes != null ? String(notes).trim() : null,
         id
     );
 
