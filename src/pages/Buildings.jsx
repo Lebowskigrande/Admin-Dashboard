@@ -49,6 +49,13 @@ const Buildings = () => {
         }).format(numeric);
     };
 
+    const formatSqft = (value) => {
+        if (value === null || value === undefined || value === '') return '';
+        const numeric = Number(value);
+        if (Number.isNaN(numeric) || numeric <= 0) return '';
+        return `${new Intl.NumberFormat('en-US').format(numeric)} sq ft`;
+    };
+
     // Needs Data (backed by task engine)
     const [needs, setNeeds] = useState([]);
     const [needsLoading, setNeedsLoading] = useState(true);
@@ -59,6 +66,18 @@ const Buildings = () => {
     const [vendors, setVendors] = useState([]);
     const [vendorsLoading, setVendorsLoading] = useState(true);
     const [vendorsError, setVendorsError] = useState('');
+
+    const getTaskProgressMeta = (task) => {
+        const listMode = String(task?.list_mode || '').toLowerCase();
+        if (listMode !== 'progressive') return null;
+        const steps = Array.isArray(task?.progress_steps) ? task.progress_steps : [];
+        const sorted = steps.slice().sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0));
+        if (!sorted.length) return null;
+        const currentKey = String(task?.progress_key || '');
+        const currentIndex = sorted.findIndex((step) => step.key === currentKey);
+        const nextStep = currentIndex + 1 < sorted.length ? sorted[currentIndex + 1] : null;
+        return { nextStep };
+    };
 
     const loadNeeds = async () => {
         setNeedsLoading(true);
@@ -111,10 +130,15 @@ const Buildings = () => {
     const toggleNeed = async (task) => {
         if (!task) return;
         try {
+            const progressMeta = getTaskProgressMeta(task);
             const response = await fetch(`${API_URL}/tasks/${task.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: task.text, completed: !task.completed })
+                body: JSON.stringify(
+                    progressMeta?.nextStep
+                        ? { text: task.text, progress_key: progressMeta.nextStep.key }
+                        : { text: task.text, completed: !task.completed }
+                )
             });
             if (!response.ok) throw new Error('Failed to update task');
             await loadNeeds();
@@ -390,10 +414,15 @@ const Buildings = () => {
 
     const toggleTicketTask = async (task) => {
         try {
+            const progressMeta = getTaskProgressMeta(task);
             const response = await fetch(`${API_URL}/tasks/${task.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: task.text, completed: !task.completed })
+                body: JSON.stringify(
+                    progressMeta?.nextStep
+                        ? { text: task.text, progress_key: progressMeta.nextStep.key }
+                        : { text: task.text, completed: !task.completed }
+                )
             });
             if (!response.ok) throw new Error('Failed to update task');
             const updated = await response.json();
@@ -851,6 +880,12 @@ const Buildings = () => {
                                             <div className="building-stat">
                                                 <span>Parking</span>
                                                 <strong>{activeBuilding.parking_spaces}</strong>
+                                            </div>
+                                        ) : null}
+                                        {activeBuilding.size_sqft ? (
+                                            <div className="building-stat">
+                                                <span>Square footage</span>
+                                                <strong>{formatSqft(activeBuilding.size_sqft)}</strong>
                                             </div>
                                         ) : null}
                                     </div>

@@ -673,6 +673,7 @@ const TaskAdmin = () => {
                             >
                                 <option value="sequential">Sequential</option>
                                 <option value="parallel">Parallel</option>
+                                <option value="progressive">Progressive</option>
                             </select>
                             <input
                                 type="text"
@@ -756,6 +757,7 @@ const TaskAdmin = () => {
                                     >
                                         <option value="sequential">Sequential</option>
                                         <option value="parallel">Parallel</option>
+                                        <option value="progressive">Progressive</option>
                                     </select>
                                     <input
                                         type="text"

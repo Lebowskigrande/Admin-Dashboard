@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { format, isSunday, parseISO } from 'date-fns';
 import Card from '../components/Card';
+import Modal from '../components/Modal';
 import { API_URL } from '../services/apiConfig';
 import { clearLiturgicalCache } from '../services/liturgicalService';
 import './LiturgicalSchedule.css';
@@ -17,6 +18,7 @@ const parseLocalDay = (dateStr) => {
 
 const EIGHT_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist'];
 const TEN_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist', 'lem', 'acolyte', 'usher', 'sound', 'coffeeHour', 'childcare'];
+const SERVICE_TIME_SET = new Set(['08:00', '10:00']);
 const isEightAmService = (time = '') => /^0?8:/.test(time.trim());
 const getServiceRoleKeys = (serviceTime) => (isEightAmService(serviceTime || '') ? EIGHT_AM_ROLE_KEYS : TEN_AM_ROLE_KEYS);
 const MULTI_ASSIGNMENT_ROLES = new Set(['lector', 'lem', 'acolyte', 'usher', 'sound', 'coffeeHour', 'childcare']);
@@ -87,10 +89,29 @@ const LiturgicalSchedule = () => {
     const [buildings, setBuildings] = useState([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [schedulingWeek, setSchedulingWeek] = useState('');
+    const [exportingMonths, setExportingMonths] = useState(false);
+    const [exportDialogOpen, setExportDialogOpen] = useState(false);
+    const [exportSelection, setExportSelection] = useState([]);
+    const [exportFormat, setExportFormat] = useState('pdf');
+    const [scheduling, setScheduling] = useState(false);
     const [error, setError] = useState('');
     const [openMenu, setOpenMenu] = useState(null);
     const [menuDirection, setMenuDirection] = useState('up');
-    const [openTooltipKey, setOpenTooltipKey] = useState(null);
+    const [showPast, setShowPast] = useState(false);
+
+    const refreshScheduleRows = async () => {
+        setError('');
+        try {
+            const response = await fetch(`${API_URL}/schedule-roles`);
+            if (!response.ok) throw new Error('Failed to load schedule roles');
+            const schedule = await response.json();
+            setScheduleRows(Array.isArray(schedule) ? schedule : []);
+        } catch (err) {
+            console.error(err);
+            setError('Unable to load schedule roles.');
+        }
+    };
 
     const loadData = async () => {
         setLoading(true);
@@ -127,18 +148,6 @@ const LiturgicalSchedule = () => {
 
     useEffect(() => {
         loadData();
-    }, []);
-
-    useEffect(() => {
-        const handleClick = (event) => {
-            const target = event.target;
-            if (target.closest('.person-tooltip') || target.closest('.person-chip-wrapper')) return;
-            setOpenTooltipKey(null);
-        };
-        document.addEventListener('mousedown', handleClick);
-        return () => {
-            document.removeEventListener('mousedown', handleClick);
-        };
     }, []);
 
     useEffect(() => {
@@ -189,6 +198,9 @@ const LiturgicalSchedule = () => {
                 return isSunday(date);
             })
             .map((row) => {
+                if (row.service_time && !SERVICE_TIME_SET.has(row.service_time)) {
+                    return null;
+                }
                 const liturgical = liturgicalByDate.get(row.date);
                 return {
                     ...row,
@@ -197,6 +209,7 @@ const LiturgicalSchedule = () => {
                     color: liturgical?.color || 'Green'
                 };
             })
+            .filter(Boolean)
             .sort((a, b) => a.date.localeCompare(b.date));
 
         return rows;
@@ -204,10 +217,12 @@ const LiturgicalSchedule = () => {
 
     const groupedEntries = useMemo(() => {
         const today = new Date();
+        const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
         const grouped = new Map();
         sundayEntries.forEach((entry) => {
             if (entry.dateObj && entry.dateObj < monthStart) return;
+            if (!showPast && entry.dateObj && entry.dateObj < todayStart) return;
             const monthKey = entry.dateObj ? format(entry.dateObj, 'MMMM yyyy') : 'Unknown';
             if (!grouped.has(monthKey)) grouped.set(monthKey, []);
             grouped.get(monthKey).push(entry);
@@ -233,7 +248,7 @@ const LiturgicalSchedule = () => {
             });
             return [month, dateGroups];
         });
-    }, [sundayEntries]);
+    }, [sundayEntries, showPast]);
 
     const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
     const buildingsById = useMemo(() => new Map(buildings.map((building) => [building.id, building])), [buildings]);
@@ -280,59 +295,7 @@ const LiturgicalSchedule = () => {
             .join(', ');
     };
 
-    const renderTooltipCard = (person) => {
-        if (!person) return null;
-        const tags = person.tags || [];
-        const extensionTag = tags.find((tag) => tag.startsWith('ext-'));
-        const phoneTag = tags.find((tag) => /^phone[:\-]/i.test(tag)) || tags.find((tag) => /^tel[:\-]/i.test(tag));
-        const rawPhone = phoneTag ? phoneTag.replace(/^phone[:\-]\s*/i, '').replace(/^tel[:\-]\s*/i, '').trim() : '';
-        const barePhoneTag = tags.find((tag) => !tag.startsWith('ext-') && /\d{3}[^0-9]?\d{3}[^0-9]?\d{4}/.test(tag || ''));
-        const phoneLabel = rawPhone || barePhoneTag || (extensionTag ? `Ext ${extensionTag.replace(/^ext-/, '')}` : '');
-        const titleTags = tags.filter((tag) => tag && tag !== extensionTag);
-        const metaChips = [...titleTags, ...(extensionTag ? [extensionTag] : [])];
-
-        return (
-            <Card className="person-card tooltip-person-card">
-                <div className="person-card__header">
-                    <div className="person-main">
-                        <div className="person-name">{person.displayName}</div>
-                        {person.email && (
-                            <a className="person-email" href={`mailto:${person.email}`}>
-                                {person.email}
-                            </a>
-                        )}
-                        {phoneLabel && (
-                            <div className="person-phone">{phoneLabel}</div>
-                        )}
-                        {metaChips.length > 0 && (
-                            <div className="meta-chip-row">
-                                {metaChips.map((tag) => (
-                                    <span key={tag} className="tag-chip">{tag}</span>
-                                ))}
-                            </div>
-                        )}
-                        {tags.length > metaChips.length && (
-                            <div className="tag-row">
-                                {tags.filter((tag) => !metaChips.includes(tag)).map((tag) => (
-                                    <span key={tag} className="tag-chip">{tag}</span>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </div>
-                <div className="roles">
-                    <span className="roles-label">Eligible roles</span>
-                    <div className="role-chip-row">
-                        {(person.roles || []).map((roleKey) => (
-                            <span key={roleKey} className="role-chip">{roleLabel(roleKey)}</span>
-                        ))}
-                    </div>
-                </div>
-            </Card>
-        );
-    };
-
-    const buildAssignmentChips = (value, entryKey, roleKey) => {
+    const buildAssignmentChips = (entry, value, roleKey) => {
         const ids = parseAssignments(value);
         if (ids.length === 0) return null;
         return (
@@ -341,22 +304,17 @@ const LiturgicalSchedule = () => {
                     const person = peopleById.get(id) || peopleByName.get(id.toLowerCase());
                     const displayName = person?.displayName || id;
                     const category = person?.category || 'volunteer';
-                    const tooltipKey = `${entryKey}-${roleKey}-${id}`;
                     return (
                         <span
                             key={id}
-                            className={`person-chip-wrapper ${openTooltipKey === tooltipKey ? 'tooltip-open' : ''}`}
+                            className="person-chip-wrapper"
                             onClick={(event) => {
                                 event.stopPropagation();
-                                setOpenTooltipKey((prev) => (prev === tooltipKey ? null : tooltipKey));
+                                const nextIds = ids.filter((personId) => personId !== id);
+                                updateEntryAssignments(entry, roleKey, nextIds);
                             }}
                         >
                             <span className={`person-chip person-chip-${category}`}>{displayName}</span>
-                            {person && (
-                                <span className={`person-tooltip ${openTooltipKey === tooltipKey ? 'open' : ''}`}>
-                                    {renderTooltipCard(person)}
-                                </span>
-                            )}
                         </span>
                     );
                 })}
@@ -476,6 +434,107 @@ const LiturgicalSchedule = () => {
         setOpenMenu(null);
     };
 
+    const handleExportMonthsPdf = async () => {
+        if (exportingMonths) return;
+        const months = exportSelection.filter((value) => /^\d{4}-\d{2}$/.test(value));
+        if (months.length === 0) {
+            window.alert('Please select at least one month to export.');
+            return;
+        }
+        setExportingMonths(true);
+        setError('');
+        try {
+            const endpoint = exportFormat === 'xlsx'
+                ? `${API_URL}/liturgical-schedule/xlsx-months`
+                : `${API_URL}/liturgical-schedule/pdf-months`;
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ months })
+            });
+            if (!response.ok) throw new Error('Failed to build PDF');
+            const blob = await response.blob();
+            const fileName = exportFormat === 'xlsx'
+                ? `liturgical-schedule-${months.join('-')}.xlsx`
+                : `liturgical-schedule-table-${months.join('-')}.pdf`;
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error(err);
+            setError('Unable to export schedule PDF.');
+        } finally {
+            setExportingMonths(false);
+            setExportDialogOpen(false);
+        }
+    };
+
+    const exportMonthOptions = useMemo(() => {
+        const months = Array.from(new Set(sundayEntries
+            .filter((entry) => entry?.dateObj)
+            .map((entry) => format(entry.dateObj, 'yyyy-MM'))));
+        months.sort();
+        return months.map((value) => ({
+            value,
+            label: format(new Date(`${value}-01T00:00:00`), 'MMMM yyyy')
+        }));
+    }, [sundayEntries]);
+
+    const toggleExportMonth = (value) => {
+        setExportSelection((prev) => (
+            prev.includes(value)
+                ? prev.filter((item) => item !== value)
+                : [...prev, value]
+        ));
+    };
+
+    const handleScheduleNextMonth = async () => {
+        if (scheduling) return;
+        const confirmed = window.confirm('Schedule the next month using rotation teams? This will overwrite assignments for team-based roles.');
+        if (!confirmed) return;
+        setScheduling(true);
+        setError('');
+        try {
+            const response = await fetch(`${API_URL}/schedule-roles/auto-next-month`, { method: 'POST' });
+            if (!response.ok) throw new Error('Failed to schedule next month');
+            clearLiturgicalCache();
+            await loadData();
+        } catch (err) {
+            console.error(err);
+            setError('Unable to schedule next month.');
+        } finally {
+            setScheduling(false);
+        }
+    };
+
+    const handleScheduleWeek = async (date) => {
+        if (schedulingWeek) return;
+        const confirmed = window.confirm('Populate this Sunday with the rotation for its week? This will overwrite assignments for team-based roles.');
+        if (!confirmed) return;
+        setSchedulingWeek(date);
+        setError('');
+        try {
+            const response = await fetch(`${API_URL}/schedule-roles/auto-week`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ date })
+            });
+            if (!response.ok) throw new Error('Failed to schedule week');
+            clearLiturgicalCache();
+            await refreshScheduleRows();
+        } catch (err) {
+            console.error(err);
+            setError('Unable to schedule week.');
+        } finally {
+            setSchedulingWeek('');
+        }
+    };
+
     return (
         <div className="page-liturgical">
             <header className="page-header page-header-bar">
@@ -484,6 +543,22 @@ const LiturgicalSchedule = () => {
                     <p className="page-header-subtitle">Sunday service assignments by team and role.</p>
                 </div>
                 <div className="page-header-actions">
+                    <button
+                        className="btn-secondary"
+                        onClick={() => setShowPast((prev) => !prev)}
+                    >
+                        {showPast ? 'Hide Past Sundays' : 'Show Past Sundays'}
+                    </button>
+                    <button
+                        className="btn-secondary"
+                        onClick={() => setExportDialogOpen(true)}
+                        disabled={loading || exportingMonths}
+                    >
+                        {exportingMonths ? 'Exporting...' : 'Export'}
+                    </button>
+                    <button className="btn-secondary" onClick={handleScheduleNextMonth} disabled={loading || scheduling}>
+                        {scheduling ? 'Scheduling...' : 'Schedule Next Month'}
+                    </button>
                     <button className="btn-secondary" onClick={loadData} disabled={loading}>
                         {loading ? 'Refreshing...' : 'Refresh'}
                     </button>
@@ -517,6 +592,14 @@ const LiturgicalSchedule = () => {
                                                 <span>{group.feast}</span>
                                             </div>
                                         </div>
+                                        <button
+                                            type="button"
+                                            className="btn-secondary btn-compact"
+                                            onClick={() => handleScheduleWeek(group.date)}
+                                            disabled={saving || schedulingWeek === group.date}
+                                        >
+                                            {schedulingWeek === group.date ? 'Scheduling...' : 'Apply Rotation'}
+                                        </button>
                                         <div className="schedule-feast">
                                             <span className={`liturgical-badge badge-${group.color}`}>{getSeasonLabel(group.color, group.feast)}</span>
                                         </div>
@@ -604,7 +687,7 @@ const LiturgicalSchedule = () => {
                                                                     </div>
                                                                 )}
                                                             </div>
-                                                            {buildAssignmentChips(entry[entryField], entryKey, roleKey)}
+                                                            {buildAssignmentChips(entry, entry[entryField], roleKey)}
                                                         </div>
                                                     );
                                                 })}
@@ -618,6 +701,62 @@ const LiturgicalSchedule = () => {
                 ))
             )}
 
+            <Modal
+                isOpen={exportDialogOpen}
+                onClose={() => setExportDialogOpen(false)}
+                title="Export Liturgical Schedule"
+                className="modal-large"
+            >
+                <div className="export-months">
+                    <div className="export-months__intro">Select months to include in the export.</div>
+                    <div className="export-months__format">
+                        <label>
+                            <input
+                                type="radio"
+                                name="exportFormat"
+                                value="pdf"
+                                checked={exportFormat === 'pdf'}
+                                onChange={() => setExportFormat('pdf')}
+                            />
+                            <span>PDF</span>
+                        </label>
+                        <label>
+                            <input
+                                type="radio"
+                                name="exportFormat"
+                                value="xlsx"
+                                checked={exportFormat === 'xlsx'}
+                                onChange={() => setExportFormat('xlsx')}
+                            />
+                            <span>Spreadsheet</span>
+                        </label>
+                    </div>
+                    <div className="export-months__grid">
+                        {exportMonthOptions.map((option) => (
+                            <label key={option.value} className="export-months__item">
+                                <input
+                                    type="checkbox"
+                                    checked={exportSelection.includes(option.value)}
+                                    onChange={() => toggleExportMonth(option.value)}
+                                />
+                                <span>{option.label}</span>
+                            </label>
+                        ))}
+                    </div>
+                    <div className="export-months__actions">
+                        <button className="btn-secondary" onClick={() => setExportDialogOpen(false)}>
+                            Cancel
+                        </button>
+                        <button
+                            className="btn-primary"
+                            onClick={handleExportMonthsPdf}
+                            disabled={exportingMonths || exportSelection.length === 0}
+                        >
+                            {exportingMonths ? 'Exporting...' : 'Export'}
+                        </button>
+                    </div>
+                </div>
+            </Modal>
         </div>
     );
 };

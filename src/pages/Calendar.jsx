@@ -270,13 +270,30 @@ const Calendar = () => {
         }
     };
 
+    const getTaskProgressMeta = (task) => {
+        const listMode = String(task?.list_mode || '').toLowerCase();
+        if (listMode !== 'progressive') return null;
+        const steps = Array.isArray(task?.progress_steps) ? task.progress_steps : [];
+        const sorted = steps.slice().sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0));
+        if (!sorted.length) return null;
+        const currentKey = String(task?.progress_key || '');
+        const currentIndex = sorted.findIndex((step) => step.key === currentKey);
+        const nextStep = currentIndex + 1 < sorted.length ? sorted[currentIndex + 1] : null;
+        return { nextStep };
+    };
+
     const handleTaskToggle = async (task) => {
         if (!task?.id) return;
         try {
+            const progressMeta = getTaskProgressMeta(task);
             await fetch(`${API_URL}/tasks/${task.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ completed: !task.completed })
+                body: JSON.stringify(
+                    progressMeta?.nextStep
+                        ? { progress_key: progressMeta.nextStep.key }
+                        : { completed: !task.completed }
+                )
             });
             if (selectedEvent) {
                 await loadEventDetails(selectedEvent);

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+﻿import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { format, startOfWeek, endOfWeek, addWeeks, isWithinInterval, parseISO } from 'date-fns';
-import { FaPlus, FaCheck } from 'react-icons/fa';
+import { FaPlus, FaCheck, FaExternalLinkAlt } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
 import { API_URL } from '../services/apiConfig';
@@ -27,18 +27,70 @@ const stateOrder = {
     done: 3
 };
 
+const toDateKey = (date) => {
+    if (!date) return '';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+};
+
+const getDueInfo = (task) => {
+    if (!task?.due_at) return null;
+    const due = new Date(task.due_at);
+    if (Number.isNaN(due.getTime())) return null;
+    const today = new Date();
+    const todayKey = toDateKey(today);
+    const dueKey = toDateKey(due);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+    const tomorrowKey = toDateKey(tomorrow);
+
+    if (dueKey < todayKey) {
+        return { rank: 0, label: 'Overdue', className: 'due-pill-overdue', due };
+    }
+    if (dueKey === todayKey) {
+        return { rank: 1, label: 'Today', className: 'due-pill-today', due };
+    }
+    if (dueKey === tomorrowKey) {
+        return { rank: 2, label: 'Tomorrow', className: 'due-pill-tomorrow', due };
+    }
+    return {
+        rank: 3,
+        label: `${format(due, 'MMM d')}`,
+        className: 'due-pill-future',
+        due
+    };
+};
+
+const isCriticalNoDue = (task) => {
+    if (task?.due_at) return false;
+    const tier = (task?.priority_tier || '').toLowerCase();
+    if (tier === 'critical') return true;
+    return Number(task?.priority_effective || 0) >= 80;
+};
+
 const compareTasks = (a, b) => {
     const stateA = stateOrder[a?.state] ?? 99;
     const stateB = stateOrder[b?.state] ?? 99;
     if (stateA !== stateB) return stateA - stateB;
+    const dueInfoA = getDueInfo(a);
+    const dueInfoB = getDueInfo(b);
+    const bucketA = dueInfoA
+        ? (dueInfoA.rank <= 2 ? dueInfoA.rank : 4)
+        : (isCriticalNoDue(a) ? 3 : 5);
+    const bucketB = dueInfoB
+        ? (dueInfoB.rank <= 2 ? dueInfoB.rank : 4)
+        : (isCriticalNoDue(b) ? 3 : 5);
+    if (bucketA !== bucketB) return bucketA - bucketB;
     const rankA = a?.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
     const rankB = b?.rank == null ? Number.POSITIVE_INFINITY : Number(b.rank);
     if (rankA !== rankB) return rankA - rankB;
     if (a?.priority_effective !== b?.priority_effective) {
         return (b?.priority_effective || 0) - (a?.priority_effective || 0);
     }
-    const dueA = a?.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-    const dueB = b?.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+    const dueA = dueInfoA?.due ? dueInfoA.due.getTime() : Number.POSITIVE_INFINITY;
+    const dueB = dueInfoB?.due ? dueInfoB.due.getTime() : Number.POSITIVE_INFINITY;
     if (dueA !== dueB) return dueA - dueB;
     const createdA = a?.created_at ? new Date(a.created_at).getTime() : 0;
     const createdB = b?.created_at ? new Date(b.created_at).getTime() : 0;
@@ -47,14 +99,23 @@ const compareTasks = (a, b) => {
 
 const sortTasksByPriority = (tasks) => [...tasks].sort(compareTasks);
 const compareTasksIgnoreState = (a, b) => {
+    const dueInfoA = getDueInfo(a);
+    const dueInfoB = getDueInfo(b);
+    const bucketA = dueInfoA
+        ? (dueInfoA.rank <= 2 ? dueInfoA.rank : 4)
+        : (isCriticalNoDue(a) ? 3 : 5);
+    const bucketB = dueInfoB
+        ? (dueInfoB.rank <= 2 ? dueInfoB.rank : 4)
+        : (isCriticalNoDue(b) ? 3 : 5);
+    if (bucketA !== bucketB) return bucketA - bucketB;
     const rankA = a?.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
     const rankB = b?.rank == null ? Number.POSITIVE_INFINITY : Number(b.rank);
     if (rankA !== rankB) return rankA - rankB;
     if (a?.priority_effective !== b?.priority_effective) {
         return (b?.priority_effective || 0) - (a?.priority_effective || 0);
     }
-    const dueA = a?.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-    const dueB = b?.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+    const dueA = dueInfoA?.due ? dueInfoA.due.getTime() : Number.POSITIVE_INFINITY;
+    const dueB = dueInfoB?.due ? dueInfoB.due.getTime() : Number.POSITIVE_INFINITY;
     if (dueA !== dueB) return dueA - dueB;
     const createdA = a?.created_at ? new Date(a.created_at).getTime() : 0;
     const createdB = b?.created_at ? new Date(b.created_at).getTime() : 0;
@@ -66,6 +127,100 @@ const parseDueDate = (value) => {
     const parsed = parseISO(value);
     if (Number.isNaN(parsed.getTime())) return null;
     return parsed;
+};
+
+const getListProgress = (tasks = []) => {
+    const total = tasks.length;
+    const completed = tasks.filter((task) => task.completed).length;
+    const progress = total > 0 ? completed / total : 0;
+    const todayKey = toDateKey(new Date());
+    const missed = tasks.filter((task) => {
+        if (task.completed || !task.due_at) return false;
+        const dueKey = toDateKey(new Date(task.due_at));
+        return dueKey < todayKey;
+    }).length;
+    const warning = missed >= 2 ? 'Late' : missed >= 1 ? 'Behind' : '';
+    return { total, completed, progress, warning };
+};
+
+const getSortedProgressSteps = (task) => {
+    const steps = Array.isArray(task?.progress_steps) ? task.progress_steps : [];
+    return steps.slice().sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0));
+};
+
+const getTaskProgressMeta = (task) => {
+    const listMode = String(task?.list_mode || '').toLowerCase();
+    if (listMode !== 'progressive') return null;
+    const steps = getSortedProgressSteps(task);
+    if (!steps.length) return null;
+    const currentKey = String(task?.progress_key || '');
+    const currentIndex = steps.findIndex((step) => step.key === currentKey);
+    const currentStep = currentIndex >= 0 ? steps[currentIndex] : null;
+    const nextStep = currentIndex + 1 < steps.length ? steps[currentIndex + 1] : null;
+    const prevStep = currentIndex > 0 ? steps[currentIndex - 1] : null;
+    const currentLabel = currentStep ? currentStep.title : 'Not Started';
+    const nextLabel = nextStep ? nextStep.title : 'Complete';
+    const isComplete = currentIndex >= steps.length - 1 && currentIndex >= 0;
+    return {
+        steps,
+        currentIndex,
+        currentStep,
+        prevStep,
+        nextStep,
+        currentLabel,
+        nextLabel,
+        isComplete
+    };
+};
+
+const getTaskProgressLabel = (task) => {
+    const meta = getTaskProgressMeta(task);
+    if (!meta) return task?.completed ? 'Done' : 'Open';
+    return meta.currentLabel || 'Not Started';
+};
+
+const getTaskNextStepLabel = (task) => {
+    const meta = getTaskProgressMeta(task);
+    if (!meta) return task?.text || 'Next step';
+    return meta.nextLabel || (meta.isComplete ? 'Complete' : 'Next');
+};
+
+const getListRepresentativeTask = (list) => {
+    if (!list) return null;
+    const listMode = String(list.mode || '').toLowerCase();
+    if (listMode === 'progressive') {
+        return list.tasks[0] || null;
+    }
+    return list.nextTask || list.tasks[0] || null;
+};
+
+const getTopLevelTaskTitle = (list, task) => {
+    return list?.title || task?.list_title || task?.text || 'Task';
+};
+
+    const getListProgressDisplay = (list, task) => {
+        const progressMeta = getTaskProgressMeta(task);
+        if (progressMeta) {
+            const total = progressMeta.steps.length;
+            const completed = Math.max(0, progressMeta.currentIndex + 1);
+            const progress = total > 0 ? completed / total : 0;
+            const currentLabel = progressMeta.currentLabel || 'Not Started';
+            const nextLabel = progressMeta.nextLabel || 'Complete';
+            return {
+                progress,
+                label: `${currentLabel} | Next: ${nextLabel}`,
+                warning: ''
+            };
+        }
+    const listProgress = getListProgress(list?.tasks || []);
+    const label = listProgress.total > 0
+        ? `Progress ${listProgress.completed}/${listProgress.total}`
+        : 'No steps';
+    return {
+        progress: listProgress.progress,
+        label,
+        warning: listProgress.warning || ''
+    };
 };
 
 const toTitleCase = (value) => String(value || '')
@@ -272,18 +427,39 @@ const Todo = () => {
                 .filter(Boolean)
                 .sort((a, b) => a.getTime() - b.getTime());
             const originDue = originDueDates.length ? originDueDates[0] : null;
-            const listSummaries = Array.from(group.lists.values()).map((list) => {
-                const totalCount = list.tasks.length;
-                const openTasks = list.tasks.filter((task) => !task.completed);
-                const completedCount = totalCount - openTasks.length;
-                const listMode = list.mode || 'sequential';
-                const hasSequence = listMode === 'sequential'
-                    || openTasks.some((task) => task.rank != null || task.step_order != null);
-                let nextTask = null;
-                if (openTasks.length) {
-                    if (hasSequence) {
-                        const sorted = [...openTasks].sort((a, b) => {
-                            const rankA = a.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
+        const listSummaries = Array.from(group.lists.values()).map((list) => {
+            const listMode = list.mode || 'sequential';
+            if (listMode === 'progressive') {
+                const task = list.tasks[0] || null;
+                const progressMeta = getTaskProgressMeta(task);
+                const isComplete = progressMeta?.isComplete || task?.completed;
+                const totalCount = progressMeta?.steps?.length ?? (task ? 1 : 0);
+                const completedCount = progressMeta
+                    ? Math.max(0, progressMeta.currentIndex + 1)
+                    : (task?.completed ? totalCount : 0);
+                const openCount = isComplete ? 0 : (task ? 1 : 0);
+                const nextTask = !isComplete && task
+                    ? { ...task, progress_meta: progressMeta }
+                    : null;
+                return {
+                    ...list,
+                    totalCount,
+                    openCount,
+                    completedCount,
+                    nextTask
+                };
+            }
+
+            const totalCount = list.tasks.length;
+            const openTasks = list.tasks.filter((task) => !task.completed);
+            const completedCount = totalCount - openTasks.length;
+            const hasSequence = listMode === 'sequential'
+                || openTasks.some((task) => task.rank != null || task.step_order != null);
+            let nextTask = null;
+            if (openTasks.length) {
+                if (hasSequence) {
+                    const sorted = [...openTasks].sort((a, b) => {
+                        const rankA = a.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
                             const rankB = b.rank == null ? Number.POSITIVE_INFINITY : Number(b.rank);
                             if (rankA !== rankB) return rankA - rankB;
                             const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : Number(a.step_order);
@@ -303,14 +479,14 @@ const Todo = () => {
                         nextTask = sortTasksByPriority(openTasks)[0];
                     }
                 }
-                return {
-                    ...list,
-                    totalCount,
-                    openCount: openTasks.length,
-                    completedCount,
-                    nextTask
-                };
-            });
+            return {
+                ...list,
+                totalCount,
+                openCount: openTasks.length,
+                completedCount,
+                nextTask
+            };
+        });
 
             const listNext = listSummaries.map((list) => list.nextTask).filter(Boolean);
             const nextTask = listNext.length ? sortTasksByPriority(listNext)[0] : null;
@@ -333,15 +509,52 @@ const Todo = () => {
         return [...sortedWithNext, ...withoutNext];
     }, [taskList]);
 
-    const originGroupMap = useMemo(() => {
-        const map = new Map();
-        originGroups.forEach((group) => map.set(group.key, group));
-        return map;
+    const filteredOriginGroups = useMemo(() => {
+        const today = new Date();
+        const weekStart = startOfWeek(today, { weekStartsOn: 1 });
+        const weekEnd = endOfWeek(today, { weekStartsOn: 1 });
+        return originGroups.filter((group) => {
+            if (group.origin_type !== 'sunday') return true;
+            if (!group.origin_id || !isDateString(group.origin_id)) return false;
+            const sundayDate = parseISO(`${group.origin_id}T00:00:00`);
+            if (Number.isNaN(sundayDate.getTime())) return false;
+            return isWithinInterval(sundayDate, { start: weekStart, end: weekEnd });
+        });
     }, [originGroups]);
 
+    const originGroupMap = useMemo(() => {
+        const map = new Map();
+        filteredOriginGroups.forEach((group) => map.set(group.key, group));
+        return map;
+    }, [filteredOriginGroups]);
+
     const visibleOriginGroups = useMemo(() => (
-        showCompleted ? originGroups : originGroups.filter((group) => group.openCount > 0)
-    ), [originGroups, showCompleted]);
+        showCompleted ? filteredOriginGroups : filteredOriginGroups.filter((group) => group.openCount > 0)
+    ), [filteredOriginGroups, showCompleted]);
+
+    const topLevelRows = useMemo(() => {
+        const rows = [];
+        visibleOriginGroups.forEach((group) => {
+            group.lists.forEach((list) => {
+                const task = getListRepresentativeTask(list);
+                if (!task) return;
+                const progressMeta = getTaskProgressMeta(task);
+                const isComplete = progressMeta?.isComplete || task.completed;
+                rows.push({
+                    originKey: group.key,
+                    origin: group,
+                    list,
+                    task,
+                    isComplete
+                });
+            });
+        });
+        return rows;
+    }, [visibleOriginGroups]);
+
+    const visibleTaskRows = useMemo(() => (
+        showCompleted ? topLevelRows : topLevelRows.filter((row) => !row.isComplete)
+    ), [topLevelRows, showCompleted]);
 
     const weekBuckets = useMemo(() => {
         const today = new Date();
@@ -356,18 +569,18 @@ const Todo = () => {
             later: []
         };
 
-        visibleOriginGroups.forEach((group) => {
-            const due = group.originDue || (group.nextTask?.due_at ? parseDueDate(group.nextTask.due_at) : null);
+        visibleTaskRows.forEach((row) => {
+            const due = row.task?.due_at ? parseDueDate(row.task.due_at) : null;
             if (!due) {
-                bucketed.later.push(group);
+                bucketed.later.push(row);
                 return;
             }
             if (isWithinInterval(due, { start: weekStart, end: weekEnd })) {
-                bucketed.thisWeek.push(group);
+                bucketed.thisWeek.push(row);
             } else if (isWithinInterval(due, { start: nextWeekStart, end: nextWeekEnd })) {
-                bucketed.nextWeek.push(group);
+                bucketed.nextWeek.push(row);
             } else {
-                bucketed.later.push(group);
+                bucketed.later.push(row);
             }
         });
 
@@ -378,26 +591,28 @@ const Todo = () => {
             nextWeekEnd,
             ...bucketed
         };
-    }, [visibleOriginGroups]);
+    }, [visibleTaskRows]);
 
     useEffect(() => {
-        if (originGroups.length === 0) {
+        if (filteredOriginGroups.length === 0 || visibleTaskRows.length === 0) {
             setSelectedOriginKey('');
             setSelectedTaskId('');
             return;
         }
-        if (!selectedOriginKey || !originGroups.find((group) => group.key === selectedOriginKey)) {
-            const fallback = visibleOriginGroups[0] || originGroups[0];
+        const hasOrigin = selectedOriginKey
+            && filteredOriginGroups.some((group) => group.key === selectedOriginKey);
+        if (!hasOrigin) {
+            const fallback = visibleTaskRows[0];
             if (fallback) {
-                setSelectedOriginKey(fallback.key);
+                setSelectedOriginKey(fallback.originKey);
             }
-            setSelectedTaskId('');
+            return;
         }
-    }, [originGroups, selectedOriginKey, visibleOriginGroups]);
+    }, [filteredOriginGroups, selectedOriginKey, visibleTaskRows]);
 
     const selectedOrigin = useMemo(() => (
-        originGroups.find((group) => group.key === selectedOriginKey) || null
-    ), [originGroups, selectedOriginKey]);
+        filteredOriginGroups.find((group) => group.key === selectedOriginKey) || null
+    ), [filteredOriginGroups, selectedOriginKey]);
 
     useEffect(() => {
         if (!selectedOrigin) {
@@ -414,6 +629,21 @@ const Todo = () => {
         setExpandedLists({});
     }, [loadOriginLinks, selectedOrigin]);
 
+    useEffect(() => {
+        const handleOutsideClick = (event) => {
+            const target = event.target;
+            if (target.closest('.tasks-detail-card')) return;
+            if (target.closest('.origin-summary-row')) return;
+            if (target.closest('.task-detail-task')) return;
+            if (target.closest('.origin-task-row')) return;
+            setSelectedTaskId('');
+        };
+        document.addEventListener('mousedown', handleOutsideClick);
+        return () => {
+            document.removeEventListener('mousedown', handleOutsideClick);
+        };
+    }, []);
+
     const formatPriorityLabel = useCallback((task) => {
         const tier = task?.priority_tier || 'Normal';
         return tier;
@@ -428,11 +658,22 @@ const Todo = () => {
         return 'priority-normal';
     }, []);
 
+    const getDisplayLabel = useCallback((task) => {
+        const dueInfo = getDueInfo(task);
+        return dueInfo?.label || formatPriorityLabel(task);
+    }, [formatPriorityLabel]);
+
+    const getDisplayClass = useCallback((task) => {
+        const dueInfo = getDueInfo(task);
+        if (dueInfo?.className) return dueInfo.className;
+        return getPriorityClass(task);
+    }, [getPriorityClass]);
+
     const formatOriginLabel = useCallback((task) => {
         const rawType = task?.origin_type;
         if (!rawType) return 'Task Origin';
         const type = rawType.toLowerCase();
-        if (type.includes('sunday')) return 'Sunday Planner';
+        if (type.includes('sunday')) return 'Sunday Planning';
         if (type.includes('vestry')) return 'Vestry';
         if (type.includes('event')) return 'Event';
         if (type.includes('operation')) return 'Operations';
@@ -440,6 +681,15 @@ const Todo = () => {
         if (type.includes('project')) return 'Project';
         if (type.includes('general')) return 'General Operations';
         return rawType;
+    }, []);
+
+    const getOriginColorClass = useCallback((originType) => {
+        const type = String(originType || '').toLowerCase();
+        if (type === 'sunday') return 'origin-color-sunday';
+        if (type === 'operations') return 'origin-color-operations';
+        if (type === 'event') return 'origin-color-event';
+        if (type === 'ticket') return 'origin-color-ticket';
+        return '';
     }, []);
 
     const formatOriginSubtitle = useCallback((task) => {
@@ -450,17 +700,36 @@ const Todo = () => {
             const typeLabel = task.event_type_name ? `${task.event_type_name} - ` : '';
             return `${typeLabel}${dateLabel}${timeLabel}`;
         }
+
+        const today = new Date();
+        if (task.origin_type === 'sunday' && isDateString(task.origin_id)) {
+            const day = today.getDay();
+            const daysUntilSunday = (7 - day) % 7;
+            const sunday = new Date(today);
+            sunday.setDate(today.getDate() + daysUntilSunday);
+            const sundayKey = sunday.toISOString().slice(0, 10);
+            if (task.origin_id === sundayKey) {
+                return 'This Sunday';
+            }
+        }
+
+        if (task.origin_id.startsWith('weekly-')) {
+            const dateKey = task.origin_id.replace('weekly-', '');
+            if (isDateString(dateKey)) {
+                const weekStart = startOfWeek(today, { weekStartsOn: 1 });
+                const weekKey = weekStart.toISOString().slice(0, 10);
+                if (dateKey === weekKey) {
+                    return 'This Week';
+                }
+                return `Week of ${format(new Date(`${dateKey}T00:00:00`), 'MMM d, yyyy')}`;
+            }
+        }
+
         if (isDateString(task.origin_id)) {
             return format(new Date(`${task.origin_id}T00:00:00`), 'MMM d, yyyy');
         }
         if (isMonthString(task.origin_id)) {
             return format(new Date(`${task.origin_id}-01T00:00:00`), 'MMM yyyy');
-        }
-        if (task.origin_id.startsWith('weekly-')) {
-            const dateKey = task.origin_id.replace('weekly-', '');
-            if (isDateString(dateKey)) {
-                return `Week of ${format(new Date(`${dateKey}T00:00:00`), 'MMM d, yyyy')}`;
-            }
         }
         if (task.origin_id.startsWith('timesheets-')) {
             return `Timesheets ${task.origin_id.replace('timesheets-', '')}`;
@@ -555,8 +824,29 @@ const Todo = () => {
         }
     };
 
+    const updateTaskProgress = async (task, nextKey) => {
+        if (!task) return;
+        try {
+            const response = await fetch(`${API_URL}/tasks/${task.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: task.text, progress_key: nextKey })
+            });
+            if (!response.ok) throw new Error('Failed to update task');
+            await loadAllTasks();
+        } catch (err) {
+            console.error('Failed to update task progress:', err);
+            setError('Unable to update task. Please try again.');
+        }
+    };
+
     const toggleTask = async (task) => {
         if (!task) return;
+        const progressMeta = getTaskProgressMeta(task);
+        if (progressMeta?.nextStep) {
+            await updateTaskProgress(task, progressMeta.nextStep.key);
+            return;
+        }
         try {
             const response = await fetch(`${API_URL}/tasks/${task.id}`, {
                 method: 'PUT',
@@ -572,24 +862,41 @@ const Todo = () => {
     };
 
     const selectedTask = useMemo(() => {
-        if (!selectedOrigin) return null;
-        const searchId = selectedTaskId || selectedOrigin?.nextTask?.id;
-        if (!searchId) return null;
-        for (const list of selectedOrigin.lists) {
-            const match = list.tasks.find((task) => task.id === searchId);
-            if (match) return match;
-        }
-        return null;
+        if (!selectedOrigin || !selectedTaskId) return null;
+        const representativeTasks = selectedOrigin.lists
+            .map((list) => getListRepresentativeTask(list))
+            .filter(Boolean);
+        if (!representativeTasks.length) return null;
+        return representativeTasks.find((task) => task.id === selectedTaskId) || null;
     }, [selectedOrigin, selectedTaskId]);
 
     useEffect(() => {
         setTaskNotesDraft(selectedTask?.notes || '');
     }, [selectedTask?.id]);
 
-    const selectedOriginTitle = selectedOrigin?.sample
-        ? (selectedOrigin.sample.event_title || formatTaskTitle(selectedOrigin.sample) || 'Task Origin')
-        : 'Task Origin';
+    const selectedTaskKey = selectedTask?.id || selectedTaskId || '';
+
     const selectedOriginSubtitle = selectedOrigin?.sample ? formatOriginSubtitle(selectedOrigin.sample) : '';
+    const selectedOriginTitle = selectedOrigin?.sample
+        ? formatOriginLabel(selectedOrigin.sample)
+        : 'Task Origin';
+
+    const getOriginLink = useCallback((origin) => {
+        if (!origin) return '';
+        if (origin.origin_type === 'sunday') {
+            const dateParam = origin.origin_id ? `date=${encodeURIComponent(origin.origin_id)}` : '';
+            const extra = selectedTask?.id ? `&task=${encodeURIComponent(selectedTask.id)}` : '';
+            return `/sunday${dateParam ? `?${dateParam}${extra}` : ''}`;
+        }
+        if (origin.origin_type === 'vestry') return '/vestry';
+        if (origin.origin_type === 'event') return '/calendar';
+        if (origin.origin_type === 'ticket') {
+            const ticketParam = origin.origin_id ? `ticket=${encodeURIComponent(origin.origin_id)}` : '';
+            return `/buildings${ticketParam ? `?${ticketParam}` : ''}`;
+        }
+        if (origin.origin_type === 'operations') return '/tasks';
+        return '';
+    }, [selectedTask?.id]);
 
     const parentOriginKey = originLinks.parent
         ? normalizeOriginKey(originLinks.parent.origin_type, originLinks.parent.origin_id)
@@ -646,12 +953,12 @@ const Todo = () => {
                                 Due {format(weekBuckets.weekStart, 'MMM d')} - {format(weekBuckets.weekEnd, 'MMM d')}
                             </p>
                         </div>
-                        {renderCountBadge(
-                            weekBuckets.thisWeek.length,
-                            weekBuckets.thisWeek.length === 0
-                                ? "This week's tasks complete"
-                                : `${weekBuckets.thisWeek.length} origins`
-                        )}
+                    {renderCountBadge(
+                        weekBuckets.thisWeek.length,
+                        weekBuckets.thisWeek.length === 0
+                            ? "This week's tasks complete"
+                            : `${weekBuckets.thisWeek.length} tasks`
+                    )}
                     </div>
 
                     <div className="task-list-wrapper">
@@ -662,81 +969,81 @@ const Todo = () => {
                         )}
                         {!tasksLoading && !error && weekBuckets.thisWeek.length > 0 && (
                             <div className="origin-summary-table">
-                                <div className="origin-summary-header" role="row">
-                                    <span>Origin</span>
-                                    <span>Next step</span>
-                                    <span>Next due</span>
-                                    <span>Origin due</span>
-                                    <span>Priority</span>
-                                </div>
-                                <div className="origin-summary-body">
-                                    {weekBuckets.thisWeek.map((group) => {
-                                        const nextTask = group.nextTask;
-                                        const originLabel = formatOriginLabel(group.sample);
-                                        const originSubtitle = formatOriginSubtitle(group.sample);
-                                        const originTitle = group.sample?.event_title
-                                            || group.sample?.ticket_title
-                                            || group.sample?.list_title
-                                            || originLabel
-                                            || 'Task Origin';
-                                        const nextDue = nextTask?.due_at
-                                            ? format(new Date(nextTask.due_at), 'MMM d')
-                                            : '-';
-                                        const originDue = group.originDue
-                                            ? format(group.originDue, 'MMM d')
-                                            : '-';
-                                        return (
-                                            <button
-                                                key={group.key}
-                                                type="button"
-                                                className={`origin-summary-row ${group.key === selectedOriginKey ? 'active' : ''}`}
-                                                onClick={() => {
-                                                    setSelectedOriginKey(group.key);
-                                                    setSelectedTaskId('');
-                                                }}
-                                            >
-                                                <div className="origin-cell origin-cell-main">
-                                                    <div className="origin-title">{originTitle}</div>
-                                                    <div className="origin-meta">
-                                                        {originLabel}
-                                                        {originSubtitle ? ` - ${originSubtitle}` : ''}
-                                                    </div>
-                                                </div>
-                                                <div className="origin-cell origin-cell-next">
-                                                    {nextTask && (
-                                                        <button
-                                                            type="button"
-                                                            className="origin-summary-check"
-                                                            onClick={(event) => {
-                                                                event.stopPropagation();
-                                                                toggleTask(nextTask);
-                                                            }}
-                                                            aria-label="Mark next step complete"
-                                                        >
-                                                            {nextTask.completed && <FaCheck />}
-                                                        </button>
-                                                    )}
-                                                    <span className="origin-next-text">
-                                                        {nextTask ? nextTask.text : 'No open tasks'}
-                                                    </span>
-                                                </div>
-                                                <div className="origin-cell origin-cell-date">{nextDue}</div>
-                                                <div className="origin-cell origin-cell-date">{originDue}</div>
-                                                <div className="origin-cell origin-cell-priority">
-                                                    {nextTask ? (
-                                                        <span className={`priority-pill ${getPriorityClass(nextTask)}`}>
-                                                            {formatPriorityLabel(nextTask)}
-                                                        </span>
-                                                    ) : (
-                                                        <span className="muted">-</span>
-                                                    )}
-                                                </div>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
+                            <div className="origin-summary-header" role="row">
+                                <span>Task</span>
+                                <span>Next step</span>
+                                <span>Due Date</span>
                             </div>
-                        )}
+                            <div className="origin-summary-body">
+                                {weekBuckets.thisWeek.map((row) => {
+                                    const task = row.task;
+                                    const list = row.list;
+                                    const origin = row.origin;
+                                    const originLabel = formatOriginLabel(origin.sample);
+                                    const originSubtitle = formatOriginSubtitle(origin.sample);
+                                    const taskTitle = getTopLevelTaskTitle(list, task);
+                                    const progressMeta = getTaskProgressMeta(task);
+                                    const colorClass = getOriginColorClass(origin.sample?.origin_type);
+                                    const isActive = row.originKey === selectedOriginKey && task?.id === selectedTaskId;
+                                    return (
+                                        <div
+                                            key={`${row.originKey}:${task?.id || list.key}`}
+                                            role="button"
+                                            tabIndex={0}
+                                            className={`origin-summary-row ${colorClass} ${isActive ? 'active' : ''}`}
+                                            onClick={() => {
+                                                setSelectedOriginKey(row.originKey);
+                                                setSelectedTaskId(task?.id || '');
+                                            }}
+                                            onKeyDown={(event) => {
+                                                if (event.key === 'Enter' || event.key === ' ') {
+                                                    event.preventDefault();
+                                                    setSelectedOriginKey(row.originKey);
+                                                    setSelectedTaskId(task?.id || '');
+                                                }
+                                            }}
+                                        >
+                                            <div className="origin-cell origin-cell-main">
+                                                <div className="origin-title">{taskTitle}</div>
+                                                <div className="origin-meta">
+                                                    {originLabel}
+                                                    {originSubtitle ? ` - ${originSubtitle}` : ''}
+                                                </div>
+                                            </div>
+                                            <div className="origin-cell origin-cell-next">
+                                                {task && (
+                                                    <button
+                                                        type="button"
+                                                        className="origin-summary-check"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            toggleTask(task);
+                                                        }}
+                                                        disabled={progressMeta ? !progressMeta.nextStep : false}
+                                                        aria-label="Mark next step complete"
+                                                    >
+                                                        {task.completed && <FaCheck />}
+                                                    </button>
+                                                )}
+                                                <span className="origin-next-text">
+                                                    {task ? getTaskNextStepLabel(task) : 'No open tasks'}
+                                                </span>
+                                            </div>
+                                            <div className="origin-cell origin-cell-priority">
+                                                {task ? (
+                                                    <span className={`priority-pill ${getDisplayClass(task)}`}>
+                                                        {getDisplayLabel(task)}
+                                                    </span>
+                                                ) : (
+                                                    <span className="muted">-</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
                     </div>
 
                     </Card>
@@ -753,7 +1060,7 @@ const Todo = () => {
                             weekBuckets.nextWeek.length,
                             weekBuckets.nextWeek.length === 0
                                 ? "Next week's tasks complete"
-                                : `${weekBuckets.nextWeek.length} origins`
+                                : `${weekBuckets.nextWeek.length} tasks`
                         )}
                     </div>
                     {tasksLoading && <div className="empty-state">Loading tasks...</div>}
@@ -764,75 +1071,75 @@ const Todo = () => {
                     {!tasksLoading && !error && weekBuckets.nextWeek.length > 0 && (
                         <div className="origin-summary-table">
                             <div className="origin-summary-header" role="row">
-                                <span>Origin</span>
+                                <span>Task</span>
                                 <span>Next step</span>
-                                <span>Next due</span>
-                                <span>Origin due</span>
-                                <span>Priority</span>
+                                <span>Due Date</span>
                             </div>
                             <div className="origin-summary-body">
-                                {weekBuckets.nextWeek.map((group) => {
-                                    const nextTask = group.nextTask;
-                                    const originLabel = formatOriginLabel(group.sample);
-                                    const originSubtitle = formatOriginSubtitle(group.sample);
-                                    const originTitle = group.sample?.event_title
-                                        || group.sample?.ticket_title
-                                        || group.sample?.list_title
-                                        || originLabel
-                                        || 'Task Origin';
-                                    const nextDue = nextTask?.due_at
-                                        ? format(new Date(nextTask.due_at), 'MMM d')
-                                        : '-';
-                                    const originDue = group.originDue
-                                        ? format(group.originDue, 'MMM d')
-                                        : '-';
+                                {weekBuckets.nextWeek.map((row) => {
+                                    const task = row.task;
+                                    const list = row.list;
+                                    const origin = row.origin;
+                                    const originLabel = formatOriginLabel(origin.sample);
+                                    const originSubtitle = formatOriginSubtitle(origin.sample);
+                                    const taskTitle = getTopLevelTaskTitle(list, task);
+                                    const progressMeta = getTaskProgressMeta(task);
+                                    const colorClass = getOriginColorClass(origin.sample?.origin_type);
+                                    const isActive = row.originKey === selectedOriginKey && task?.id === selectedTaskId;
                                     return (
-                                        <button
-                                            key={group.key}
-                                            type="button"
-                                            className={`origin-summary-row ${group.key === selectedOriginKey ? 'active' : ''}`}
+                                        <div
+                                            key={`${row.originKey}:${task?.id || list.key}`}
+                                            role="button"
+                                            tabIndex={0}
+                                            className={`origin-summary-row ${colorClass} ${isActive ? 'active' : ''}`}
                                             onClick={() => {
-                                                setSelectedOriginKey(group.key);
-                                                setSelectedTaskId('');
+                                                setSelectedOriginKey(row.originKey);
+                                                setSelectedTaskId(task?.id || '');
+                                            }}
+                                            onKeyDown={(event) => {
+                                                if (event.key === 'Enter' || event.key === ' ') {
+                                                    event.preventDefault();
+                                                    setSelectedOriginKey(row.originKey);
+                                                    setSelectedTaskId(task?.id || '');
+                                                }
                                             }}
                                         >
                                             <div className="origin-cell origin-cell-main">
-                                                <div className="origin-title">{originTitle}</div>
+                                                <div className="origin-title">{taskTitle}</div>
                                                 <div className="origin-meta">
                                                     {originLabel}
                                                     {originSubtitle ? ` - ${originSubtitle}` : ''}
                                                 </div>
                                             </div>
                                             <div className="origin-cell origin-cell-next">
-                                                {nextTask && (
+                                                {task && (
                                                     <button
                                                         type="button"
                                                         className="origin-summary-check"
                                                         onClick={(event) => {
                                                             event.stopPropagation();
-                                                            toggleTask(nextTask);
+                                                            toggleTask(task);
                                                         }}
+                                                        disabled={progressMeta ? !progressMeta.nextStep : false}
                                                         aria-label="Mark next step complete"
                                                     >
-                                                        {nextTask.completed && <FaCheck />}
+                                                        {task.completed && <FaCheck />}
                                                     </button>
                                                 )}
                                                 <span className="origin-next-text">
-                                                    {nextTask ? nextTask.text : 'No open tasks'}
+                                                    {task ? getTaskNextStepLabel(task) : 'No open tasks'}
                                                 </span>
                                             </div>
-                                            <div className="origin-cell origin-cell-date">{nextDue}</div>
-                                            <div className="origin-cell origin-cell-date">{originDue}</div>
                                             <div className="origin-cell origin-cell-priority">
-                                                {nextTask ? (
-                                                    <span className={`priority-pill ${getPriorityClass(nextTask)}`}>
-                                                        {formatPriorityLabel(nextTask)}
+                                                {task ? (
+                                                    <span className={`priority-pill ${getDisplayClass(task)}`}>
+                                                        {getDisplayLabel(task)}
                                                     </span>
                                                 ) : (
                                                     <span className="muted">-</span>
                                                 )}
                                             </div>
-                                        </button>
+                                        </div>
                                     );
                                 })}
                             </div>
@@ -850,7 +1157,7 @@ const Todo = () => {
                             weekBuckets.later.length,
                             weekBuckets.later.length === 0
                                 ? 'Later tasks complete'
-                                : `${weekBuckets.later.length} origins`
+                                : `${weekBuckets.later.length} tasks`
                         )}
                     </div>
                     {tasksLoading && <div className="empty-state">Loading tasks...</div>}
@@ -861,75 +1168,75 @@ const Todo = () => {
                     {!tasksLoading && !error && weekBuckets.later.length > 0 && (
                         <div className="origin-summary-table">
                             <div className="origin-summary-header" role="row">
-                                <span>Origin</span>
+                                <span>Task</span>
                                 <span>Next step</span>
-                                <span>Next due</span>
-                                <span>Origin due</span>
-                                <span>Priority</span>
+                                <span>Due Date</span>
                             </div>
                             <div className="origin-summary-body">
-                                {weekBuckets.later.map((group) => {
-                                    const nextTask = group.nextTask;
-                                    const originLabel = formatOriginLabel(group.sample);
-                                    const originSubtitle = formatOriginSubtitle(group.sample);
-                                    const originTitle = group.sample?.event_title
-                                        || group.sample?.ticket_title
-                                        || group.sample?.list_title
-                                        || originLabel
-                                        || 'Task Origin';
-                                    const nextDue = nextTask?.due_at
-                                        ? format(new Date(nextTask.due_at), 'MMM d')
-                                        : '-';
-                                    const originDue = group.originDue
-                                        ? format(group.originDue, 'MMM d')
-                                        : '-';
+                                {weekBuckets.later.map((row) => {
+                                    const task = row.task;
+                                    const list = row.list;
+                                    const origin = row.origin;
+                                    const originLabel = formatOriginLabel(origin.sample);
+                                    const originSubtitle = formatOriginSubtitle(origin.sample);
+                                    const taskTitle = getTopLevelTaskTitle(list, task);
+                                    const progressMeta = getTaskProgressMeta(task);
+                                    const colorClass = getOriginColorClass(origin.sample?.origin_type);
+                                    const isActive = row.originKey === selectedOriginKey && task?.id === selectedTaskId;
                                     return (
-                                        <button
-                                            key={group.key}
-                                            type="button"
-                                            className={`origin-summary-row ${group.key === selectedOriginKey ? 'active' : ''}`}
+                                        <div
+                                            key={`${row.originKey}:${task?.id || list.key}`}
+                                            role="button"
+                                            tabIndex={0}
+                                            className={`origin-summary-row ${colorClass} ${isActive ? 'active' : ''}`}
                                             onClick={() => {
-                                                setSelectedOriginKey(group.key);
-                                                setSelectedTaskId('');
+                                                setSelectedOriginKey(row.originKey);
+                                                setSelectedTaskId(task?.id || '');
+                                            }}
+                                            onKeyDown={(event) => {
+                                                if (event.key === 'Enter' || event.key === ' ') {
+                                                    event.preventDefault();
+                                                    setSelectedOriginKey(row.originKey);
+                                                    setSelectedTaskId(task?.id || '');
+                                                }
                                             }}
                                         >
                                             <div className="origin-cell origin-cell-main">
-                                                <div className="origin-title">{originTitle}</div>
+                                                <div className="origin-title">{taskTitle}</div>
                                                 <div className="origin-meta">
                                                     {originLabel}
                                                     {originSubtitle ? ` - ${originSubtitle}` : ''}
                                                 </div>
                                             </div>
                                             <div className="origin-cell origin-cell-next">
-                                                {nextTask && (
+                                                {task && (
                                                     <button
                                                         type="button"
                                                         className="origin-summary-check"
                                                         onClick={(event) => {
                                                             event.stopPropagation();
-                                                            toggleTask(nextTask);
+                                                            toggleTask(task);
                                                         }}
+                                                        disabled={progressMeta ? !progressMeta.nextStep : false}
                                                         aria-label="Mark next step complete"
                                                     >
-                                                        {nextTask.completed && <FaCheck />}
+                                                        {task.completed && <FaCheck />}
                                                     </button>
                                                 )}
                                                 <span className="origin-next-text">
-                                                    {nextTask ? nextTask.text : 'No open tasks'}
+                                                    {task ? getTaskNextStepLabel(task) : 'No open tasks'}
                                                 </span>
                                             </div>
-                                            <div className="origin-cell origin-cell-date">{nextDue}</div>
-                                            <div className="origin-cell origin-cell-date">{originDue}</div>
                                             <div className="origin-cell origin-cell-priority">
-                                                {nextTask ? (
-                                                    <span className={`priority-pill ${getPriorityClass(nextTask)}`}>
-                                                        {formatPriorityLabel(nextTask)}
+                                                {task ? (
+                                                    <span className={`priority-pill ${getDisplayClass(task)}`}>
+                                                        {getDisplayLabel(task)}
                                                     </span>
                                                 ) : (
                                                     <span className="muted">-</span>
                                                 )}
                                             </div>
-                                        </button>
+                                        </div>
                                     );
                                 })}
                             </div>
@@ -938,243 +1245,149 @@ const Todo = () => {
                     </Card>
                 </div>
 
-                <Card className="tasks-detail-card">
-                    <div className="tasks-list-header">
+                <Card className={`tasks-detail-card ${selectedOrigin ? getOriginColorClass(selectedOrigin.origin_type) : ''}`}>
+                    <div className="tasks-list-header task-detail-header">
                         <div>
-                            <h2>Task Details</h2>
-                            <p className="muted">Origin list first, next step highlighted.</p>
+                            <div className="task-detail-header-title">
+                                <h2>{selectedOrigin ? selectedOriginTitle : 'Task Details'}</h2>
+                                {selectedOrigin && (
+                                    <button
+                                        type="button"
+                                        className="btn-icon btn-icon-ghost origin-open-link"
+                                        onClick={() => {
+                                            const link = getOriginLink(selectedOrigin);
+                                            if (link) navigate(link);
+                                        }}
+                                        aria-label="Open task origin"
+                                        title="Open task origin"
+                                    >
+                                        <FaExternalLinkAlt />
+                                    </button>
+                                )}
+                            </div>
+                            <p className="muted">
+                                {selectedOrigin
+                                    ? `${selectedOriginSubtitle ? `${selectedOriginSubtitle} · ` : ''}All tasks in this origin.`
+                                    : 'Select a task to see details.'}
+                            </p>
                         </div>
-                        <button
-                            type="button"
-                            className="btn-secondary btn-compact"
-                            onClick={() => openTaskModal(selectedTask)}
-                            disabled={!selectedTask}
-                        >
-                            Edit Task
-                        </button>
                     </div>
                     {!selectedOrigin && <div className="empty-state">Select a task or origin to see details.</div>}
                     {selectedOrigin && (
                         <div className="task-detail-body">
-                            {selectedTask && (
-                                <div className="task-selected-summary">
-                                    <div className="task-selected-header">
-                                        <div>
-                                            <div className="task-selected-title">
-                                                {formatTaskTitle(selectedTask) || selectedTask.text}
-                                            </div>
-                                            <div className="task-selected-meta">
-                                                {toTitleCase(selectedTask.state || 'open')}
-                                                {selectedTask.list_title ? ` • ${selectedTask.list_title}` : ''}
-                                                {selectedTask.origin_event ? ` • ${toTitleCase(selectedTask.origin_event)}` : ''}
-                                            </div>
-                                        </div>
-                                        <span className={`priority-pill ${getPriorityClass(selectedTask)}`}>
-                                            {formatPriorityLabel(selectedTask)}
-                                        </span>
-                                    </div>
-                                    <div className="task-selected-grid">
-                                        <div>
-                                            <div className="task-selected-label">Due</div>
-                                            <div>
-                                                {selectedTask.due_at
-                                                    ? format(new Date(selectedTask.due_at), 'MMM d, yyyy')
-                                                    : 'Later'}
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <div className="task-selected-label">Priority</div>
-                                            <div>{formatPriorityLabel(selectedTask)}</div>
-                                        </div>
-                                        <div>
-                                            <div className="task-selected-label">Status</div>
-                                            <div>{toTitleCase(selectedTask.state || 'open')}</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-                            <div className="task-origin-panel">
-                                <div className="task-origin-header">
-                                    <div>
-                                        <h3>{selectedOriginTitle}</h3>
-                                        <div className="origin-meta">
-                                            {formatOriginLabel(selectedOrigin.sample)}
-                                            {selectedOriginSubtitle ? ` - ${selectedOriginSubtitle}` : ''}
-                                        </div>
-                                    </div>
-                                    {selectedOrigin.origin_type === 'sunday' && (
-                                        <button
-                                            className="btn-secondary btn-compact"
-                                            type="button"
-                                            onClick={() => navigate(`/sunday?date=${selectedOrigin.origin_id}`)}
-                                        >
-                                            Open
-                                        </button>
-                                    )}
-                                    {selectedOrigin.origin_type === 'vestry' && (
-                                        <button
-                                            className="btn-secondary btn-compact"
-                                            type="button"
-                                            onClick={() => navigate('/vestry')}
-                                        >
-                                            Open
-                                        </button>
-                                    )}
-                                    {selectedOrigin.origin_type === 'event' && (
-                                        <button
-                                            className="btn-secondary btn-compact"
-                                            type="button"
-                                            onClick={() => navigate('/calendar')}
-                                        >
-                                            Open
-                                        </button>
-                                    )}
-                                    {selectedOrigin.origin_type === 'ticket' && (
-                                        <button
-                                            className="btn-secondary btn-compact"
-                                            type="button"
-                                            onClick={() => navigate(`/buildings?ticket=${selectedOrigin.origin_id}`)}
-                                        >
-                                            Open
-                                        </button>
-                                    )}
-                                </div>
-                                {originLinks.parent && (
-                                    <button
-                                        type="button"
-                                        className="origin-link-note"
-                                        onClick={() => {
-                                            if (!parentOriginKey) return;
-                                            setSelectedOriginKey(parentOriginKey);
-                                            setSelectedTaskId('');
-                                        }}
-                                    >
-                                        Part of {parentOriginLabel || 'another origin'} - view list
-                                    </button>
-                                )}
-                            </div>
-
-                            {selectedTask && (
-                                <div className="task-notes-card">
-                                    <div className="task-notes-header">
-                                        <div>
-                                            <div className="task-notes-title">Notes</div>
-                                            <div className="task-notes-subtitle">Private notes for this task.</div>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            className="btn-secondary btn-compact"
-                                            onClick={saveTaskNotes}
-                                        >
-                                            Save Notes
-                                        </button>
-                                    </div>
-                                    <textarea
-                                        className="task-notes-input"
-                                        rows={4}
-                                        placeholder="Add any extra details, reminders, or context."
-                                        value={taskNotesDraft}
-                                        onChange={(event) => setTaskNotesDraft(event.target.value)}
-                                    />
-                                </div>
-                            )}
-
-                            <div className="task-origin-list">
-                                <div className="task-origin-title">Tasks in this origin</div>
+                            <div className="task-detail-list">
                                 {selectedOrigin.lists.length === 0 && (
                                     <div className="empty-state">No tasks found.</div>
                                 )}
-                                {selectedOrigin.lists.map((list) => {
-                                    const displayTasks = list.tasks;
-                                    const hasSequence = list.mode === 'sequential'
-                                        || list.tasks.some((task) => task.rank != null || task.step_order != null);
-                                    const sortedTasks = hasSequence
-                                        ? [...displayTasks].sort((a, b) => {
-                                            const rankA = a.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
-                                            const rankB = b.rank == null ? Number.POSITIVE_INFINITY : Number(b.rank);
-                                            if (rankA !== rankB) return rankA - rankB;
-                                            const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : Number(a.step_order);
-                                            const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : Number(b.step_order);
-                                            if (orderA !== orderB) return orderA - orderB;
-                                            return compareTasksIgnoreState(a, b);
-                                        })
-                                        : sortTasksForDetails(displayTasks);
-                                    const listKey = `${selectedOrigin.key}:${list.key}`;
-                                    const shouldCollapse = sortedTasks.length > LIST_COLLAPSE_THRESHOLD;
-                                    const isExpanded = expandedLists[listKey] || !shouldCollapse;
-                                    const visibleTasks = isExpanded
-                                        ? sortedTasks
-                                        : sortedTasks.slice(0, LIST_COLLAPSE_THRESHOLD);
-                                    return (
-                                        <div key={list.key} className="origin-list-card">
-                                            <div className="origin-list-header">
-                                                <div>
-                                                    <div className="origin-list-title">{list.title || 'Tasks'}</div>
-                                                    <div className="origin-list-meta">
-                                                        {list.mode === 'parallel' ? 'Parallel' : 'Sequential'} - {list.openCount} open / {list.totalCount} total
-                                                    </div>
-                                                </div>
-                                                {shouldCollapse && (
-                                                    <button
-                                                        type="button"
-                                                        className="btn-secondary btn-compact"
-                                                        onClick={() => setExpandedLists((prev) => ({
-                                                            ...prev,
-                                                            [listKey]: !prev[listKey]
-                                                        }))}
+                                {selectedOrigin.lists.length > 0 && (
+                                    <div className="task-detail-task-list">
+                                        {selectedOrigin.lists.map((list) => {
+                                            const task = getListRepresentativeTask(list);
+                                            if (!task) return null;
+                                            const isSelected = task.id === selectedTaskKey;
+                                            const dueLabel = task.due_at ? format(new Date(task.due_at), 'MMM d') : 'Later';
+                                            const progressMeta = getTaskProgressMeta(task);
+                                            const title = getTopLevelTaskTitle(list, task);
+                                            const progressDisplay = getListProgressDisplay(list, task);
+                                            return (
+                                                <div key={task.id} className={`task-detail-task ${isSelected ? 'selected' : ''} ${task.completed ? 'completed' : ''}`}>
+                                                    <div
+                                                        className="task-detail-task-row"
+                                                        role="button"
+                                                        tabIndex={0}
+                                                        onClick={() => setSelectedTaskId(task.id)}
+                                                        onKeyDown={(event) => {
+                                                            if (event.key === 'Enter' || event.key === ' ') {
+                                                                event.preventDefault();
+                                                                setSelectedTaskId(task.id);
+                                                            }
+                                                        }}
                                                     >
-                                                        {isExpanded ? 'Collapse' : `Show ${sortedTasks.length}`}
-                                                    </button>
-                                                )}
-                                            </div>
-                                            {sortedTasks.length === 0 && (
-                                                <div className="empty-state">No tasks in this list.</div>
-                                            )}
-                                            {sortedTasks.length > 0 && (
-                                                <ul className="origin-task-list">
-                                                    {visibleTasks.map((task) => (
-                                                        <li
-                                                            key={task.id}
-                                                            className={`origin-task-row ${task.completed ? 'completed' : ''} ${task.id === selectedTaskId ? 'selected' : ''} ${selectedOrigin?.nextTask?.id === task.id ? 'next-step' : ''}`}
-                                                            role="button"
-                                                            tabIndex={0}
-                                                            onClick={() => setSelectedTaskId(task.id)}
-                                                            onKeyDown={(event) => {
-                                                                if (event.key === 'Enter' || event.key === ' ') {
-                                                                    event.preventDefault();
-                                                                    setSelectedTaskId(task.id);
-                                                                }
-                                                            }}
-                                                        >
-                                                            <button
-                                                                type="button"
-                                                                className="origin-task-check"
-                                                                onClick={(event) => {
-                                                                    event.stopPropagation();
-                                                                    toggleTask(task);
-                                                                }}
-                                                                aria-label="Toggle task"
-                                                            >
-                                                                {task.completed && <FaCheck />}
-                                                            </button>
-                                                            <div className="origin-task-text">
-                                                                <div className="origin-task-title">{formatTaskTitle(task)}</div>
-                                                                <div className="origin-task-meta">
-                                                                    {task.due_at && `Due ${format(new Date(task.due_at), 'MMM d')}`}
-                                                                    {task.step_order != null && ` - Step ${task.step_order}`}
-                                                                    {task.rank != null && ` - Rank ${task.rank}`}
-                                                                </div>
+                                                        <div className="task-detail-task-main">
+                                                            <div className="task-detail-task-title">{title}</div>
+                                                            <div className="task-detail-task-meta">
+                                                                Due {dueLabel}
                                                             </div>
-                                                            <span className={`priority-pill ${getPriorityClass(task)}`}>
-                                                                {formatPriorityLabel(task)}
-                                                            </span>
-                                                        </li>
-                                                    ))}
-                                                </ul>
-                                            )}
-                                        </div>
-                                    );
-                                })}
+                                                        </div>
+                                                    </div>
+                                                    <div className="milestone-inline">
+                                                        <div className="milestone-inline-actions">
+                                                            <div className="milestone-inline-next">
+                                                                {progressDisplay.label}
+                                                            </div>
+                                                            <div className="milestone-inline-buttons">
+                                                                <button
+                                                                    type="button"
+                                                                    className="milestone-back-btn"
+                                                                    title="Go Back"
+                                                                    aria-label="Go Back"
+                                                                    disabled={!progressMeta?.prevStep}
+                                                                    onClick={() => {
+                                                                        if (!progressMeta) return;
+                                                                        if (progressMeta.prevStep) {
+                                                                            updateTaskProgress(task, progressMeta.prevStep.key);
+                                                                            return;
+                                                                        }
+                                                                        updateTaskProgress(task, '');
+                                                                    }}
+                                                                >
+                                                                    &lt;
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    className="milestone-complete-btn"
+                                                                    title="Mark Complete"
+                                                                    aria-label="Mark Complete"
+                                                                    disabled={!progressMeta?.nextStep}
+                                                                    onClick={() => {
+                                                                        if (!progressMeta?.nextStep) return;
+                                                                        updateTaskProgress(task, progressMeta.nextStep.key);
+                                                                    }}
+                                                                >
+                                                                    &#10003;
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                        <div className="milestone-bar">
+                                                            <div
+                                                                className="milestone-bar-fill"
+                                                                style={{ width: `${Math.round(progressDisplay.progress * 100)}%` }}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                    {isSelected && (
+                                                        <div className="task-detail-task-expanded">
+                                                            <div className="task-detail-notes">
+                                                                <div className="task-detail-notes-title">Notes</div>
+                                                                {selectedTask?.notes ? (
+                                                                    <div className="task-detail-notes-body">{selectedTask.notes}</div>
+                                                                ) : (
+                                                                    <div className="task-detail-notes-body empty">No notes yet.</div>
+                                                                )}
+                                                            </div>
+                                                            <div className="task-detail-notes-editor">
+                                                                <textarea
+                                                                    className="task-notes-input"
+                                                                    rows={4}
+                                                                    placeholder="Add any extra details, reminders, or context."
+                                                                    value={taskNotesDraft}
+                                                                    onChange={(event) => setTaskNotesDraft(event.target.value)}
+                                                                />
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn-secondary btn-compact"
+                                                                    onClick={saveTaskNotes}
+                                                                >
+                                                                    Save Notes
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
                             </div>
 
                             {originLinks.children.length > 0 && (
@@ -1228,48 +1441,54 @@ const Todo = () => {
                                                             )}
                                     {!loading && childTasks.length > 0 && (
                                         <ul className="origin-task-list">
-                                            {sortTasksForDetails(childTasks).map((task) => (
-                                                <li
-                                                    key={task.id}
-                                                    className={`origin-task-row ${task.completed ? 'completed' : ''} ${selectedOrigin?.nextTask?.id === task.id ? 'next-step' : ''}`}
-                                                    role="button"
-                                                    tabIndex={0}
-                                                    onClick={() => {
-                                                        setSelectedOriginKey(childKey);
-                                                        setSelectedTaskId(task.id);
-                                                    }}
-                                                    onKeyDown={(event) => {
-                                                        if (event.key === 'Enter' || event.key === ' ') {
-                                                            event.preventDefault();
+                                            {sortTasksForDetails(childTasks).map((task) => {
+                                                const progressMeta = getTaskProgressMeta(task);
+                                                const dueLabel = task.due_at ? format(new Date(task.due_at), 'MMM d') : 'Later';
+                                                return (
+                                                    <li
+                                                        key={task.id}
+                                                        className={`origin-task-row ${task.completed ? 'completed' : ''} ${selectedOrigin?.nextTask?.id === task.id ? 'next-step' : ''}`}
+                                                        role="button"
+                                                        tabIndex={0}
+                                                        onClick={() => {
                                                             setSelectedOriginKey(childKey);
                                                             setSelectedTaskId(task.id);
-                                                        }
-                                                    }}
-                                                >
-                                                                            <button
-                                                                                type="button"
-                                                                                className="origin-task-check"
-                                                                                onClick={(event) => {
-                                                                                    event.stopPropagation();
-                                                                                    toggleTask(task);
-                                                                                }}
-                                                                                aria-label="Toggle task"
-                                                                            >
-                                                                                {task.completed && <FaCheck />}
-                                                                            </button>
-                                                                            <div className="origin-task-text">
-                                                                                <div className="origin-task-title">{formatTaskTitle(task)}</div>
-                                                                                <div className="origin-task-meta">
-                                                                                    {task.due_at && `Due ${format(new Date(task.due_at), 'MMM d')}`}
-                                                                                </div>
-                                                                            </div>
-                                                                            <span className={`priority-pill ${getPriorityClass(task)}`}>
-                                                                                {formatPriorityLabel(task)}
-                                                                            </span>
-                                                                        </li>
-                                                                    ))}
-                                                                </ul>
-                                                            )}
+                                                        }}
+                                                        onKeyDown={(event) => {
+                                                            if (event.key === 'Enter' || event.key === ' ') {
+                                                                event.preventDefault();
+                                                                setSelectedOriginKey(childKey);
+                                                                setSelectedTaskId(task.id);
+                                                            }
+                                                        }}
+                                                    >
+                                                        <button
+                                                            type="button"
+                                                            className="origin-task-check"
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                toggleTask(task);
+                                                            }}
+                                                            disabled={progressMeta ? !progressMeta.nextStep : false}
+                                                            aria-label="Toggle task"
+                                                        >
+                                                            {task.completed && <FaCheck />}
+                                                        </button>
+                                                        <div className="origin-task-text">
+                                                            <div className="origin-task-title">{formatTaskTitle(task)}</div>
+                                                            <div className="origin-task-meta">
+                                                                {progressMeta ? `${progressMeta.currentLabel} | ` : ''}
+                                                                Due {dueLabel}
+                                                            </div>
+                                                        </div>
+                                                        <span className={`priority-pill ${getDisplayClass(task)}`}>
+                                                            {getDisplayLabel(task)}
+                                                        </span>
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    )}
                                                         </>
                                                     )}
                                                 </div>
@@ -1345,3 +1564,4 @@ const Todo = () => {
 };
 
 export default Todo;
+

@@ -46,6 +46,11 @@
     color: var(--person-volunteer-text);
 }
 
+.person-chip-parishioner {
+    background: var(--person-parishioner-bg);
+    color: var(--person-parishioner-text);
+}
+
 .person-tooltip {
     position: absolute;
     top: calc(100% + 8px);

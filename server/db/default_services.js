@@ -36,11 +36,13 @@ const parseJsonObject = (value) => {
     }
 };
 
-const getWeekOfMonth = (dateStr) => {
+const getSundayIndex = (dateStr) => {
     const date = new Date(`${dateStr}T00:00:00`);
     const firstOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-    const offset = firstOfMonth.getDay();
-    return Math.floor((date.getDate() + offset - 1) / 7) + 1;
+    const firstDow = firstOfMonth.getDay();
+    const firstSunday = 1 + ((7 - firstDow) % 7);
+    const index = Math.floor((date.getDate() - firstSunday) / 7) + 1;
+    return index;
 };
 
 const ensureSundayServiceEvent = () => {
@@ -92,8 +94,8 @@ const insertAssignment = (occurrenceId, roleKey, personId) => {
 
 const getTeamAssignmentsForDate = (dateStr) => {
     if (!hasTable('people')) return {};
-    const teamNumber = getWeekOfMonth(dateStr);
-    if (teamNumber > 4) return {};
+    const teamNumber = getSundayIndex(dateStr);
+    if (teamNumber > 4 || teamNumber < 1) return {};
     const rows = sqlite.prepare('SELECT id, roles, teams FROM people').all();
     const output = { lem: [], acolyte: [], usher: [] };
 
@@ -112,7 +114,7 @@ const getTeamAssignmentsForDate = (dateStr) => {
     return output;
 };
 
-export const applyDefaultSundayAssignments = (occurrenceId, date, time, { forceOrganist = false } = {}) => {
+export const applyDefaultSundayAssignments = (occurrenceId, date, time, { forceOrganist = false, skipTeams = false } = {}) => {
     ensurePerson(DEFAULT_ORGANIST_ID, 'Rob Hovencamp');
     if (forceOrganist) {
         sqlite.prepare('DELETE FROM assignments WHERE occurrence_id = ? AND role_key = ?')
@@ -123,6 +125,7 @@ export const applyDefaultSundayAssignments = (occurrenceId, date, time, { forceO
     }
 
     if (time !== '10:00') return;
+    if (skipTeams) return;
     const teamAssignments = getTeamAssignmentsForDate(date);
     Object.entries(teamAssignments).forEach(([roleKey, people]) => {
         if (!people.length) return;

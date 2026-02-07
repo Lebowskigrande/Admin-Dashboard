@@ -418,6 +418,7 @@ const EventTemplates = () => {
                                             >
                                                 <option value="sequential">Sequential</option>
                                                 <option value="parallel">Parallel</option>
+                                                <option value="progressive">Progressive</option>
                                             </select>
                                             <button type="button" className="btn-secondary" onClick={() => addTask(group.listKey)}>
                                                 Add Task

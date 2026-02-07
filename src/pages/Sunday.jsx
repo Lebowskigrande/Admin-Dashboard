@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { format, isSameDay, parseISO } from 'date-fns';
+import { addDays, format, isSameDay, parseISO } from 'date-fns';
 import Card from '../components/Card';
 import { API_URL } from '../services/apiConfig';
 import { ROLE_DEFINITIONS } from '../models/roles';
 import { clearLiturgicalCache, getFollowingSunday, getLiturgicalDay, getNextSunday, getPreviousSunday, getServicesByDate } from '../services/liturgicalService';
 import { getSundayDetails, saveSundayDetails } from '../services/sundayDetails';
 import { useEvents } from '../context/EventsContext';
-import { FaFolderOpen, FaYoutube, FaUpload, FaPrint } from 'react-icons/fa';
+import { FaFolderOpen, FaYoutube, FaUpload, FaPrint, FaSyncAlt } from 'react-icons/fa';
 import './Sunday.css';
 import './People.css';
 
 const serializeDate = (date) => date.toISOString().slice(0, 10);
+const toDateKey = (date) => (date ? date.toISOString().slice(0, 10) : '');
 
 const bulletinOptions = ['Not Started', 'draft', 'review', 'ready', 'printed'];
 const insertOptions = ['Not Started', 'draft', 'review', 'ready', 'printed', 'stuffed'];
@@ -189,6 +190,11 @@ const Sunday = () => {
     const [livestreamUrl, setLivestreamUrl] = useState('');
     const [livestreamError, setLivestreamError] = useState('');
     const [docsLoading, setDocsLoading] = useState(false);
+    const [docRefreshLoading, setDocRefreshLoading] = useState({
+        bulletin10: false,
+        bulletin8: false,
+        insert: false
+    });
     const [uploadingBulletin, setUploadingBulletin] = useState(false);
     const [uploadError, setUploadError] = useState('');
     const [bulletinDoc, setBulletinDoc] = useState({ exists: false, preview: '', path: '', name: '' });
@@ -196,7 +202,7 @@ const Sunday = () => {
     const [insertDoc, setInsertDoc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [statusDrafts, setStatusDrafts] = useState({});
     const [statusExpandedKey, setStatusExpandedKey] = useState(null);
-    const [bulletinPrintCopies, setBulletinPrintCopies] = useState({ bulletin10: 1, bulletin8: 1 });
+    const [bulletinPrintCopies, setBulletinPrintCopies] = useState({ bulletin10: 1, bulletin8: 1, insert: 1 });
     const [selectedEventId, setSelectedEventId] = useState(null);
     const [hgkItemNames, setHgkItemNames] = useState([]);
     const [hgkRawSupplies, setHgkRawSupplies] = useState([]);
@@ -211,6 +217,8 @@ const Sunday = () => {
     const [hgkEmailInput, setHgkEmailInput] = useState('');
     const [hgkEmailBusy, setHgkEmailBusy] = useState(false);
     const [hgkSearchBusy, setHgkSearchBusy] = useState(false);
+    const [sundayTemplates, setSundayTemplates] = useState([]);
+    const [sundayTasks, setSundayTasks] = useState([]);
 
     const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
     const peopleByName = useMemo(() => {
@@ -272,6 +280,212 @@ const Sunday = () => {
             setLoading(false);
         }
     }, [peopleById, peopleByName]);
+
+    const loadSundayTasks = useCallback(async (date) => {
+        if (!date) return;
+        try {
+            const dateStr = serializeDate(date);
+            const params = new URLSearchParams({
+                origin_type: 'sunday',
+                origin_id: dateStr
+            });
+            const response = await fetch(`${API_URL}/tasks?${params.toString()}`);
+            if (!response.ok) throw new Error('Failed to load Sunday tasks');
+            const data = await response.json();
+            setSundayTasks(Array.isArray(data) ? data : []);
+        } catch (err) {
+            console.error(err);
+            setSundayTasks([]);
+        }
+    }, []);
+
+    useEffect(() => {
+        let active = true;
+        const loadTemplates = async () => {
+            try {
+                const response = await fetch(`${API_URL}/recurring-templates?origin_type=sunday`);
+                if (!response.ok) throw new Error('Failed to load templates');
+                const data = await response.json();
+                if (active) setSundayTemplates(Array.isArray(data) ? data : []);
+            } catch (err) {
+                console.error(err);
+                if (active) setSundayTemplates([]);
+            }
+        };
+        loadTemplates();
+        return () => {
+            active = false;
+        };
+    }, []);
+
+    const milestoneLists = useMemo(() => {
+        if (!sundayTemplates.length) return [];
+        const grouped = new Map();
+        sundayTemplates.forEach((template) => {
+            if (template.list_key === 'special-events') return;
+            const key = template.list_key || template.id;
+            if (!key) return;
+            if (!grouped.has(key)) {
+                grouped.set(key, {
+                    key,
+                    title: template.list_title || key,
+                    steps: []
+                });
+            }
+            grouped.get(key).steps.push(template);
+        });
+        return Array.from(grouped.values()).map((list) => ({
+            ...list,
+            steps: list.steps
+                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                .map((step) => ({
+                    key: step.step_key,
+                    title: step.title,
+                    dueOffset: step.due_offset_days
+                }))
+        }));
+    }, [sundayTemplates]);
+
+    const milestoneListsWithDates = useMemo(() => {
+        if (!currentDate) return milestoneLists;
+        return milestoneLists.map((list) => ({
+            ...list,
+            steps: list.steps.map((step) => ({
+                ...step,
+                dueDate: typeof step.dueOffset === 'number'
+                    ? addDays(currentDate, step.dueOffset)
+                    : null
+            }))
+        }));
+    }, [milestoneLists, currentDate]);
+
+    const ensureBulletinDocTasks = useCallback(async () => {
+        if (!currentDate) return;
+        const bulletinList = milestoneListsWithDates.find((list) => list.key === 'bulletins');
+        if (!bulletinList) return;
+        const existingKeys = new Set(sundayTasks.map((task) => String(task?.list_key || '').toLowerCase()));
+        const targets = [
+            { key: 'bulletins-10am', label: 'Bulletins (10am)' },
+            { key: 'bulletins-8am', label: 'Bulletins (8am)' }
+        ];
+        const missing = targets.filter((target) => !existingKeys.has(target.key));
+        if (!missing.length) return;
+
+        const steps = bulletinList.steps.map((step, index) => ({
+            key: step.key,
+            title: step.title,
+            sort_order: index + 1,
+            due_offset_days: step.dueOffset ?? null
+        }));
+        const maxOffset = steps.reduce((max, step) => (
+            Number.isFinite(Number(step.due_offset_days))
+                ? Math.max(max, Number(step.due_offset_days))
+                : max
+        ), 0);
+        const dueAt = addDays(currentDate, maxOffset || 0).toISOString().slice(0, 10);
+        const dateStr = serializeDate(currentDate);
+
+        await Promise.all(missing.map((target) => (
+            fetch(`${API_URL}/tasks`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: target.label,
+                    source_type: 'sunday',
+                    source_id: dateStr,
+                    source_event: target.key,
+                    task_type: 'sunday',
+                    due_at: dueAt,
+                    list_key: target.key,
+                    list_title: target.label,
+                    list_mode: 'progressive',
+                    progress_steps: steps
+                })
+            })
+        )));
+
+        await loadSundayTasks(currentDate);
+    }, [currentDate, milestoneListsWithDates, sundayTasks, loadSundayTasks]);
+
+    const sundayTaskMap = useMemo(() => {
+        const map = new Map();
+        sundayTasks.forEach((task) => {
+            const key = String(task?.list_key || '').trim();
+            if (!key) return;
+            if (!map.has(key)) {
+                map.set(key, task);
+                return;
+            }
+            const existing = map.get(key);
+            const existingProg = String(existing?.list_mode || '').toLowerCase() === 'progressive';
+            const nextProg = String(task?.list_mode || '').toLowerCase() === 'progressive';
+            if (!existingProg && nextProg) {
+                map.set(key, task);
+            }
+        });
+        return map;
+    }, [sundayTasks]);
+
+    const resolveMilestoneListKey = useCallback((listKey, statusKey) => {
+        const rawStatus = String(statusKey || '').toLowerCase();
+        if (rawStatus === 'bulletins-10am' || rawStatus === 'bulletins-8am') {
+            return rawStatus;
+        }
+        if (rawStatus.startsWith('bulletins')) return 'bulletins';
+        return listKey || statusKey || '';
+    }, []);
+
+    const getMilestoneTask = useCallback((list, statusKey) => {
+        const key = resolveMilestoneListKey(list?.key, statusKey);
+        if (!key) return null;
+        return sundayTaskMap.get(key) || null;
+    }, [resolveMilestoneListKey, sundayTaskMap]);
+
+    const updateMilestoneTask = useCallback(async (taskId, stepKey) => {
+        if (!taskId) return;
+        try {
+            const response = await fetch(`${API_URL}/tasks/${taskId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ progress_key: stepKey || '' })
+            });
+            if (!response.ok) throw new Error('Failed to update task progress');
+            const updated = await response.json();
+            setSundayTasks((prev) => prev.map((task) => (task.id === updated.id ? updated : task)));
+        } catch (err) {
+            console.error(err);
+        }
+    }, []);
+
+    const setMilestoneStatus = (listKey, stepKey, statusKey = listKey) => {
+        const task = getMilestoneTask({ key: listKey }, statusKey);
+        if (!task) return;
+        updateMilestoneTask(task.id, stepKey);
+    };
+
+    const clearMilestoneStatus = (listKey, statusKey = listKey) => {
+        const task = getMilestoneTask({ key: listKey }, statusKey);
+        if (!task) return;
+        updateMilestoneTask(task.id, '');
+    };
+
+    const statusToStepKey = (status) => {
+        const normalized = String(status || '').toLowerCase().trim();
+        if (!normalized || normalized === 'not started' || normalized === 'not_started') return '';
+        if (normalized === 'draft') return 'draft';
+        if (normalized === 'review') return 'review';
+        if (normalized === 'ready' || normalized === 'final' || normalized === 'finalize') return 'finalize';
+        if (normalized === 'printed' || normalized === 'print') return 'print';
+        if (normalized === 'stuffed' || normalized === 'stuff') return 'stuff';
+        return '';
+    };
+
+    const syncMilestoneFromStatus = useCallback((listKey, statusKey, statusValue) => {
+        const stepKey = statusToStepKey(statusValue);
+        const task = getMilestoneTask({ key: listKey }, statusKey);
+        if (!task) return;
+        updateMilestoneTask(task.id, stepKey);
+    }, [getMilestoneTask, updateMilestoneTask]);
 
     const updateDateParam = useCallback((date) => {
         navigate(`/sunday?date=${serializeDate(date)}`);
@@ -404,6 +618,16 @@ const Sunday = () => {
 
     useEffect(() => {
         if (!currentDate) return;
+        loadSundayTasks(currentDate);
+    }, [currentDate, loadSundayTasks]);
+
+    useEffect(() => {
+        if (!currentDate || sundayTasks.length === 0 || milestoneListsWithDates.length === 0) return;
+        ensureBulletinDocTasks();
+    }, [currentDate, sundayTasks.length, milestoneListsWithDates, ensureBulletinDocTasks]);
+
+    useEffect(() => {
+        if (!currentDate) return;
         const loadLivestream = async () => {
             try {
                 const dateStr = serializeDate(currentDate);
@@ -467,22 +691,9 @@ const Sunday = () => {
                     : ''
             }));
 
-            const nextBulletin10Status = bulletin10Exists
-                ? normalizeStatusLabel(data?.bulletin10?.status || cachedDetails.bulletinStatus10 || 'Not Started')
-                : 'Not Started';
-            const nextBulletin8Status = bulletin8Exists
-                ? normalizeStatusLabel(data?.bulletin8?.status || cachedDetails.bulletinStatus8 || 'Not Started')
-                : 'Not Started';
-            const nextInsertStatus = insertExists
-                ? normalizeStatusLabel(data?.insert?.status || cachedDetails.bulletinInsertStatus || 'Not Started')
-                : 'Not Started';
-
             setDetails((prev) => {
                 const next = {
                     ...prev,
-                    bulletinStatus10: nextBulletin10Status,
-                    bulletinStatus8: nextBulletin8Status,
-                    bulletinInsertStatus: nextInsertStatus,
                     bulletinPreview10: bulletin10Exists ? (cachedDetails.bulletinPreview10 || prev.bulletinPreview10 || '') : '',
                     bulletinPreview8: bulletin8Exists ? (cachedDetails.bulletinPreview8 || prev.bulletinPreview8 || '') : '',
                     insertPreview: insertExists ? (cachedDetails.insertPreview || prev.insertPreview || '') : ''
@@ -539,7 +750,82 @@ const Sunday = () => {
         } finally {
             setDocsLoading(false);
         }
+    }, [currentDate, liturgicalInfo?.feast, liturgicalInfo?.name, syncMilestoneFromStatus]);
+
+    const refreshDocPreviews = useCallback(async (docKey) => {
+        if (!currentDate) return;
+        if (docKey) {
+            setDocRefreshLoading((prev) => ({ ...prev, [docKey]: true }));
+        } else {
+            setDocsLoading(true);
+        }
+        try {
+            const dateStr = serializeDate(currentDate);
+            const name = liturgicalInfo?.name || liturgicalInfo?.feast || '';
+            const docParam = docKey ? `&doc=${encodeURIComponent(docKey)}` : '';
+            const previewResponse = await fetch(`${API_URL}/sunday/documents?date=${dateStr}&name=${encodeURIComponent(name)}&preview=1&forcePreview=1${docParam}`);
+            if (!previewResponse.ok) throw new Error('Failed to refresh document previews');
+            const previewData = await previewResponse.json();
+            if (previewData?.bulletin10) {
+                const nextBulletin10Preview = previewData?.bulletin10?.exists
+                    ? (previewData?.bulletin10?.preview || '')
+                    : '';
+                setBulletinDoc((prev) => ({ ...prev, preview: nextBulletin10Preview }));
+                setDetails((prev) => {
+                    const next = {
+                        ...prev,
+                        bulletinPreview10: nextBulletin10Preview || prev.bulletinPreview10 || ''
+                    };
+                    if (currentDate) {
+                        saveSundayDetails(currentDate, next);
+                    }
+                    return next;
+                });
+            }
+            if (previewData?.bulletin8) {
+                const nextBulletin8Preview = previewData?.bulletin8?.exists
+                    ? (previewData?.bulletin8?.preview || '')
+                    : '';
+                setBulletin8Doc((prev) => ({ ...prev, preview: nextBulletin8Preview }));
+                setDetails((prev) => {
+                    const next = {
+                        ...prev,
+                        bulletinPreview8: nextBulletin8Preview || prev.bulletinPreview8 || ''
+                    };
+                    if (currentDate) {
+                        saveSundayDetails(currentDate, next);
+                    }
+                    return next;
+                });
+            }
+            if (previewData?.insert) {
+                const nextInsertPreview = previewData?.insert?.exists
+                    ? (previewData?.insert?.preview || '')
+                    : '';
+                setInsertDoc((prev) => ({ ...prev, preview: nextInsertPreview }));
+                setDetails((prev) => {
+                    const next = {
+                        ...prev,
+                        insertPreview: nextInsertPreview || prev.insertPreview || ''
+                    };
+                    if (currentDate) {
+                        saveSundayDetails(currentDate, next);
+                    }
+                    return next;
+                });
+            }
+        } catch (err) {
+            console.error(err);
+        } finally {
+            if (docKey) {
+                setDocRefreshLoading((prev) => ({ ...prev, [docKey]: false }));
+            } else {
+                setDocsLoading(false);
+            }
+        }
     }, [currentDate, liturgicalInfo?.feast, liturgicalInfo?.name]);
+
+    const getPreviewLoading = (key) => docsLoading || docRefreshLoading[key];
 
     useEffect(() => {
         loadDocs();
@@ -566,6 +852,32 @@ const Sunday = () => {
 
     const updateDetailField = (field, value) => {
         setDetails((prev) => ({ ...prev, [field]: value }));
+        if (field === 'bulletinStatus10') {
+            syncMilestoneFromStatus('bulletins', 'bulletins-10am', value);
+        }
+        if (field === 'bulletinStatus8') {
+            syncMilestoneFromStatus('bulletins', 'bulletins-8am', value);
+        }
+        if (field === 'bulletinInsertStatus') {
+            syncMilestoneFromStatus('insert', 'insert', value);
+        }
+    };
+
+    const stepKeyToStatus = (stepKey) => {
+        const normalized = String(stepKey || '').toLowerCase().trim();
+        if (!normalized) return 'Not Started';
+        if (normalized === 'draft') return 'draft';
+        if (normalized === 'review') return 'review';
+        if (normalized === 'finalize' || normalized === 'final') return 'ready';
+        if (normalized === 'print' || normalized === 'printed') return 'printed';
+        if (normalized === 'stuff' || normalized === 'stuffed') return 'stuffed';
+        return normalized;
+    };
+
+    const getTaskStatusLabel = (listKey, statusKey, fallback) => {
+        const task = getMilestoneTask({ key: listKey }, statusKey);
+        if (!task) return fallback;
+        return stepKeyToStatus(task.progress_key);
     };
 
     const updateRoleDraft = (serviceTime, roleKey, value) => {
@@ -790,34 +1102,50 @@ const Sunday = () => {
         );
     };
 
-    const bulletin10Status = bulletinDoc?.exists
+    const bulletin10Fallback = bulletinDoc?.exists
         ? normalizeStatusLabel(bulletinDoc.status || details.bulletinStatus10 || 'draft')
         : 'Not Started';
-    const bulletin8Status = bulletin8Doc?.exists
+    const bulletin8Fallback = bulletin8Doc?.exists
         ? normalizeStatusLabel(bulletin8Doc.status || details.bulletinStatus8 || 'draft')
         : 'Not Started';
-    const insertStatus = insertDoc.exists
+    const insertFallback = insertDoc.exists
         ? normalizeStatusLabel(insertDoc.status || details.bulletinInsertStatus || 'Not Started')
         : 'Not Started';
+    const bulletin10Status = getTaskStatusLabel('bulletins', 'bulletins-10am', bulletin10Fallback);
+    const bulletin8Status = getTaskStatusLabel('bulletins', 'bulletins-8am', bulletin8Fallback);
+    const insertStatus = getTaskStatusLabel('insert', 'insert', insertFallback);
     const bulletin10Display = bulletinDoc?.exists ? bulletin10Status : 'Not Started';
     const bulletin8Display = bulletin8Doc?.exists ? bulletin8Status : 'Not Started';
     const insertDisplay = insertDoc.exists ? insertStatus : 'Not Started';
-    const isBulletin10Complete = (statusDrafts.bulletin10 || bulletin10Status) === 'printed';
-    const isBulletin8Complete = (statusDrafts.bulletin8 || bulletin8Status) === 'printed';
-    const isInsertComplete = (statusDrafts.insert || insertStatus) === 'stuffed';
-
     const getBulletinDefaultCopies = (status, readyCopies) => (
         String(status || '').toLowerCase() === 'ready' ? readyCopies : 1
     );
+    const getInsertDefaultCopies = (status, milestoneList, milestoneStep) => {
+        const normalized = String(status || '').toLowerCase();
+        if (normalized === 'print' || normalized === 'printed') return 110;
+        const stepKey = String(milestoneStep || '').toLowerCase();
+        if (stepKey === 'print' || stepKey === 'printed') return 110;
+        if (milestoneList?.steps?.length) {
+            const step = milestoneList.steps.find((item) => item.key === milestoneStep);
+            const title = String(step?.title || '').toLowerCase();
+            if (title.includes('print')) return 110;
+        }
+        return 1;
+    };
 
     const isReadyStatus = (status) => String(status || '').toLowerCase() === 'ready';
 
     useEffect(() => {
+        const insertMilestoneList = milestoneListsWithDates.find((list) => list.key === 'insert');
+        const insertMilestoneKey = insertMilestoneList?.key || 'insert';
+        const insertMilestoneTask = insertMilestoneList ? getMilestoneTask(insertMilestoneList, insertMilestoneKey) : null;
+        const insertMilestoneStep = insertMilestoneTask?.progress_key || '';
         setBulletinPrintCopies({
             bulletin10: getBulletinDefaultCopies(bulletin10Display, 90),
-            bulletin8: getBulletinDefaultCopies(bulletin8Display, 20)
+            bulletin8: getBulletinDefaultCopies(bulletin8Display, 20),
+            insert: getInsertDefaultCopies(insertDisplay, insertMilestoneList, insertMilestoneStep)
         });
-    }, [bulletin10Display, bulletin8Display]);
+    }, [bulletin10Display, bulletin8Display, insertDisplay, milestoneListsWithDates, getMilestoneTask]);
 
     const toggleEmailChecklistItem = (field) => {
         updateDetailField(field, !details[field]);
@@ -1258,6 +1586,175 @@ const Sunday = () => {
         return '';
     })();
 
+    const getMilestoneStatus = (list, statusKey) => {
+        const todayKey = toDateKey(new Date());
+        const steps = list.steps || [];
+        const task = getMilestoneTask(list, statusKey);
+        const currentKey = task?.progress_key || '';
+        const currentIndex = steps.findIndex((step) => step.key === currentKey);
+        let missed = 0;
+        steps.forEach((step, index) => {
+            if (index <= currentIndex) return;
+            if (step.dueDate && toDateKey(step.dueDate) < todayKey) missed += 1;
+        });
+        const warning = missed >= 2 ? 'Late' : missed >= 1 ? 'Behind' : '';
+        const progress = steps.length > 0 ? Math.max(0, currentIndex + 1) / steps.length : 0;
+        return { currentIndex, warning, progress };
+    };
+
+    const isMilestoneComplete = (list, statusKey) => {
+        if (!list?.steps?.length) return false;
+        const status = getMilestoneStatus(list, statusKey);
+        return status.currentIndex >= list.steps.length - 1;
+    };
+
+    const milestoneLookup = useMemo(() => {
+        const map = new Map();
+        milestoneListsWithDates.forEach((list) => map.set(list.key, list));
+        const find = (keys = [], titleHints = []) => {
+            for (const key of keys) {
+                if (map.has(key)) return map.get(key);
+            }
+            const loweredHints = titleHints.map((hint) => String(hint || '').toLowerCase()).filter(Boolean);
+            if (loweredHints.length === 0) return null;
+            for (const list of map.values()) {
+                const title = String(list.title || '').toLowerCase();
+                if (loweredHints.some((hint) => title.includes(hint))) return list;
+            }
+            return null;
+        };
+        return { map, find };
+    }, [milestoneListsWithDates]);
+
+    const bulletinMilestone = milestoneLookup.find(['bulletins', 'bulletin'], ['bulletin']);
+    const insertMilestone = milestoneLookup.find(['insert'], ['insert']);
+    const emailMilestone = milestoneLookup.find(['email', 'livestream-email', 'livestream'], ['email']);
+
+    const roleProgress = useMemo(() => {
+        if (!services.length) return null;
+        const optionalRoles = new Set(['childcare']);
+        const isAssigned = (value) => {
+            if (Array.isArray(value)) return value.filter(Boolean).length > 0;
+            return !!value;
+        };
+        const roleSteps = ROLE_DEFINITIONS
+            .filter((role) => apiRoleKeys.has(role.key))
+            .map((role) => {
+                const relevantServices = services.filter((service) => getServiceRoleKeys(service).includes(role.key));
+                if (relevantServices.length === 0) return null;
+                const filled = relevantServices.every((service) => {
+                    const draftValue = roleDrafts?.[service.time]?.[role.key];
+                    if (draftValue !== undefined) return isAssigned(draftValue);
+                    const rosterPeople = service?.roster?.[role.key]?.people || [];
+                    return rosterPeople.length > 0;
+                });
+                return {
+                    key: role.key,
+                    title: role.label,
+                    filled,
+                    optional: optionalRoles.has(role.key)
+                };
+            })
+            .filter(Boolean);
+        const requiredSteps = roleSteps.filter((step) => !step.optional);
+        const completedRequired = requiredSteps.filter((step) => step.filled).length;
+        const progress = requiredSteps.length > 0 ? completedRequired / requiredSteps.length : 0;
+        return {
+            steps: roleSteps,
+            completedRequired,
+            requiredCount: requiredSteps.length,
+            progress
+        };
+    }, [roleDrafts, services]);
+
+    const renderMilestoneInline = (title, list, statusKey = list?.key) => {
+        if (!list) return null;
+        const status = getMilestoneStatus(list, statusKey);
+        const currentStep = status.currentIndex >= 0 ? list.steps[status.currentIndex] : null;
+        const nextStep = status.currentIndex + 1 < list.steps.length ? list.steps[status.currentIndex + 1] : null;
+        const prevStep = status.currentIndex > 0 ? list.steps[status.currentIndex - 1] : null;
+        const currentLabel = currentStep ? currentStep.title : 'Not Started';
+        const nextLabel = nextStep ? `Next: ${nextStep.title}` : 'Complete';
+        return (
+            <div className="milestone-inline">
+                <div className="milestone-item-header">
+                    <div>
+                        <div className="milestone-title">{title}</div>
+                    </div>
+                    {status.warning && (
+                        <span className={`pill milestone-warning ${status.warning === 'Late' ? 'status-closed' : 'status-reviewed'}`}>
+                            {status.warning}
+                        </span>
+                    )}
+                </div>
+                <div className="milestone-inline-actions">
+                    <div className="milestone-inline-next">{`${currentLabel} | ${nextLabel}`}</div>
+                    <div className="milestone-inline-buttons">
+                        <button
+                            type="button"
+                            className="milestone-back-btn"
+                            title="Go Back"
+                            aria-label="Go Back"
+                            disabled={status.currentIndex < 0}
+                            onClick={() => {
+                                if (status.currentIndex <= 0) {
+                                    clearMilestoneStatus(list.key, statusKey);
+                                    return;
+                                }
+                                if (prevStep) setMilestoneStatus(list.key, prevStep.key, statusKey);
+                            }}
+                        >
+                            &lt;
+                        </button>
+                        <button
+                            type="button"
+                            className="milestone-complete-btn"
+                            title="Mark Complete"
+                            aria-label="Mark Complete"
+                            disabled={!nextStep}
+                            onClick={() => setMilestoneStatus(list.key, nextStep.key, statusKey)}
+                        >
+                            ✓
+                        </button>
+                    </div>
+                </div>
+                <div className="milestone-bar">
+                    <div
+                        className="milestone-bar-fill"
+                        style={{ width: `${Math.round(status.progress * 100)}%` }}
+                    />
+                </div>
+            </div>
+        );
+    };
+
+    const renderRoleProgress = () => {
+        if (!roleProgress) return null;
+        return (
+            <div className="milestone-inline role-progress">
+                <div className="milestone-item-header">
+                    <div>
+                        <div className="milestone-title">Fill Liturgical Roles</div>
+                        <div className="milestone-current">
+                            {roleProgress.completedRequired}/{roleProgress.requiredCount} roles filled
+                        </div>
+                    </div>
+                </div>
+                <div className="milestone-bar">
+                    <div
+                        className="milestone-bar-fill"
+                        style={{ width: `${Math.round(roleProgress.progress * 100)}%` }}
+                    />
+                </div>
+                <div className="milestone-inline-next">
+                    {roleProgress.completedRequired === roleProgress.requiredCount
+                        ? 'All required roles filled'
+                        : `${roleProgress.requiredCount - roleProgress.completedRequired} required roles remaining`}
+                </div>
+            </div>
+        );
+    };
+
     if (loading) {
         return (
             <div className="page-sunday">
@@ -1299,73 +1796,80 @@ const Sunday = () => {
                     id="bulletin-10am"
                     className={`sunday-panel bulletin-card ${(statusDrafts.bulletin10 || bulletin10Status) === 'printed' ? 'panel-complete' : ''}`}
                 >
-                    {isBulletin10Complete && <span className="check-badge panel-check" aria-hidden="true">✓</span>}
-                    <div className="panel-header">
-                        <h3>10am Bulletin</h3>
-                        <div className="panel-actions">
-                            <button
-                                type="button"
-                                className="btn-icon btn-icon-ghost"
-                                onClick={() => openFileLocation(bulletinDoc?.path)}
-                                disabled={!bulletinDoc?.exists}
-                                aria-label="Open 10am bulletin folder"
-                                title="Open File Location"
-                            >
-                                <FaFolderOpen />
-                            </button>
-                            <input
-                                type="number"
-                                min="1"
-                                className="print-copies-input"
-                                value={bulletinPrintCopies.bulletin10}
-                                onChange={(event) => {
-                                    const next = Math.max(1, Number(event.target.value) || 1);
-                                    setBulletinPrintCopies((prev) => ({ ...prev, bulletin10: next }));
-                                }}
-                                aria-label="10am bulletin copies"
-                            />
-                            <button
-                                type="button"
-                                className="btn-icon btn-icon-ghost"
-                                onClick={async () => {
-                                    const ok = await printFile(bulletinDoc?.path, {
-                                        printer: 'SHARP-BULLETIN',
-                                        copies: bulletinPrintCopies.bulletin10
-                                    });
-                                    const expectedCopies = getBulletinDefaultCopies(bulletin10Display, 90);
-                                    if (ok && isReadyStatus(bulletin10Display) && bulletinPrintCopies.bulletin10 === expectedCopies) {
-                                        updateDetailField('bulletinStatus10', 'printed');
-                                    }
-                                }}
-                                disabled={!bulletinDoc?.exists}
-                                aria-label="Print 10am bulletin"
-                                title="Print"
-                            >
-                                <FaPrint />
-                            </button>
-                            <button
-                                type="button"
-                                className="btn-icon btn-icon-ghost"
-                                onClick={handleUploadBulletin}
-                                disabled={!bulletinDoc?.exists || uploadingBulletin}
-                                aria-label="Upload 10am bulletin"
-                                title="Upload to WordPress"
-                            >
-                                {uploadingBulletin ? <span className="btn-icon-loading" aria-hidden="true" /> : <FaUpload />}
-                            </button>
-                        </div>
-                    </div>
+                    {renderMilestoneInline('10am Bulletin', bulletinMilestone, 'bulletins-10am')}
+                    {isMilestoneComplete(bulletinMilestone, 'bulletins-10am') && (
+                        <span className="check-badge panel-check" aria-hidden="true">✓</span>
+                    )}
+                    
                     <div className="doc-preview">
-                        {docsLoading && <span className="doc-spinner" aria-hidden="true" />}
+                        <button
+                            type="button"
+                            className="doc-preview-refresh"
+                            onClick={() => refreshDocPreviews('bulletin10')}
+                            disabled={getPreviewLoading('bulletin10')}
+                            aria-label="Refresh preview"
+                            title="Refresh preview"
+                        >
+                            <FaSyncAlt />
+                        </button>
+                        {getPreviewLoading('bulletin10') && <span className="doc-spinner" aria-hidden="true" />}
                         {bulletinDoc?.preview ? (
                             <img src={bulletinDoc.preview} alt="10am bulletin preview" />
                         ) : docsLoading ? null : (
                             <div className="doc-preview-empty">No bulletin preview</div>
                         )}
                     </div>
-                    <div className="status-row">
-                        <span className="status-label">Status</span>
-                        <span className={`pill ${getStatusPillClass(bulletin10Display)}`}>{bulletin10Display}</span>
+                    <div className="panel-actions panel-actions-bottom">
+                        <button
+                            type="button"
+                            className="btn-icon btn-icon-ghost"
+                            onClick={() => openFileLocation(bulletinDoc?.path)}
+                            disabled={!bulletinDoc?.exists}
+                            aria-label="Open 10am bulletin folder"
+                            title="Open File Location"
+                        >
+                            <FaFolderOpen />
+                        </button>
+                        <input
+                            type="number"
+                            min="1"
+                            className="print-copies-input"
+                            value={bulletinPrintCopies.bulletin10}
+                            onChange={(event) => {
+                                const next = Math.max(1, Number(event.target.value) || 1);
+                                setBulletinPrintCopies((prev) => ({ ...prev, bulletin10: next }));
+                            }}
+                            aria-label="10am bulletin copies"
+                        />
+                        <button
+                            type="button"
+                            className="btn-icon btn-icon-ghost"
+                            onClick={async () => {
+                                const ok = await printFile(bulletinDoc?.path, {
+                                    printer: 'SHARP-BULLETIN',
+                                    copies: bulletinPrintCopies.bulletin10
+                                });
+                                const expectedCopies = getBulletinDefaultCopies(bulletin10Display, 90);
+                                if (ok && isReadyStatus(bulletin10Display) && bulletinPrintCopies.bulletin10 === expectedCopies) {
+                                    updateDetailField('bulletinStatus10', 'printed');
+                                }
+                            }}
+                            disabled={!bulletinDoc?.exists}
+                            aria-label="Print 10am bulletin"
+                            title="Print"
+                        >
+                            <FaPrint />
+                        </button>
+                        <button
+                            type="button"
+                            className="btn-icon btn-icon-ghost"
+                            onClick={handleUploadBulletin}
+                            disabled={!bulletinDoc?.exists || uploadingBulletin}
+                            aria-label="Upload 10am bulletin"
+                            title="Upload to WordPress"
+                        >
+                            {uploadingBulletin ? <span className="btn-icon-loading" aria-hidden="true" /> : <FaUpload />}
+                        </button>
                     </div>
                     {uploadError && <div className="text-muted">{uploadError}</div>}
                 </Card>
@@ -1373,112 +1877,139 @@ const Sunday = () => {
                     id="bulletin-8am"
                     className={`sunday-panel bulletin-card ${(statusDrafts.bulletin8 || bulletin8Status) === 'printed' ? 'panel-complete' : ''}`}
                 >
-                    {isBulletin8Complete && <span className="check-badge panel-check" aria-hidden="true">✓</span>}
-                    <div className="panel-header">
-                        <h3>8am Bulletin</h3>
-                        <div className="panel-actions">
-                            <button
-                                type="button"
-                                className="btn-icon btn-icon-ghost"
-                                onClick={() => openFileLocation(bulletin8Doc?.path)}
-                                disabled={!bulletin8Doc?.exists}
-                                aria-label="Open 8am bulletin folder"
-                                title="Open File Location"
-                            >
-                                <FaFolderOpen />
-                            </button>
-                            <input
-                                type="number"
-                                min="1"
-                                className="print-copies-input"
-                                value={bulletinPrintCopies.bulletin8}
-                                onChange={(event) => {
-                                    const next = Math.max(1, Number(event.target.value) || 1);
-                                    setBulletinPrintCopies((prev) => ({ ...prev, bulletin8: next }));
-                                }}
-                                aria-label="8am bulletin copies"
-                            />
-                            <button
-                                type="button"
-                                className="btn-icon btn-icon-ghost"
-                                onClick={async () => {
-                                    const ok = await printFile(bulletin8Doc?.path, {
-                                        printer: 'SHARP-BULLETIN',
-                                        copies: bulletinPrintCopies.bulletin8
-                                    });
-                                    const expectedCopies = getBulletinDefaultCopies(bulletin8Display, 20);
-                                    if (ok && isReadyStatus(bulletin8Display) && bulletinPrintCopies.bulletin8 === expectedCopies) {
-                                        updateDetailField('bulletinStatus8', 'printed');
-                                    }
-                                }}
-                                disabled={!bulletin8Doc?.exists}
-                                aria-label="Print 8am bulletin"
-                                title="Print"
-                            >
-                                <FaPrint />
-                            </button>
-                        </div>
-                    </div>
+                    {renderMilestoneInline('8am Bulletin', bulletinMilestone, 'bulletins-8am')}
+                    {isMilestoneComplete(bulletinMilestone, 'bulletins-8am') && (
+                        <span className="check-badge panel-check" aria-hidden="true">✓</span>
+                    )}
+                    
                     <div className="doc-preview">
-                        {docsLoading && <span className="doc-spinner" aria-hidden="true" />}
+                        <button
+                            type="button"
+                            className="doc-preview-refresh"
+                            onClick={() => refreshDocPreviews('bulletin8')}
+                            disabled={getPreviewLoading('bulletin8')}
+                            aria-label="Refresh preview"
+                            title="Refresh preview"
+                        >
+                            <FaSyncAlt />
+                        </button>
+                        {getPreviewLoading('bulletin8') && <span className="doc-spinner" aria-hidden="true" />}
                         {bulletin8Doc?.preview ? (
                             <img src={bulletin8Doc.preview} alt="8am bulletin preview" />
                         ) : docsLoading ? null : (
                             <div className="doc-preview-empty">No bulletin preview</div>
                         )}
                     </div>
-                    <div className="status-row">
-                        <span className="status-label">Status</span>
-                        <span className={`pill ${getStatusPillClass(bulletin8Display)}`}>{bulletin8Display}</span>
+                    <div className="panel-actions panel-actions-bottom">
+                        <button
+                            type="button"
+                            className="btn-icon btn-icon-ghost"
+                            onClick={() => openFileLocation(bulletin8Doc?.path)}
+                            disabled={!bulletin8Doc?.exists}
+                            aria-label="Open 8am bulletin folder"
+                            title="Open File Location"
+                        >
+                            <FaFolderOpen />
+                        </button>
+                        <input
+                            type="number"
+                            min="1"
+                            className="print-copies-input"
+                            value={bulletinPrintCopies.bulletin8}
+                            onChange={(event) => {
+                                const next = Math.max(1, Number(event.target.value) || 1);
+                                setBulletinPrintCopies((prev) => ({ ...prev, bulletin8: next }));
+                            }}
+                            aria-label="8am bulletin copies"
+                        />
+                        <button
+                            type="button"
+                            className="btn-icon btn-icon-ghost"
+                            onClick={async () => {
+                                const ok = await printFile(bulletin8Doc?.path, {
+                                    printer: 'SHARP-BULLETIN',
+                                    copies: bulletinPrintCopies.bulletin8
+                                });
+                                const expectedCopies = getBulletinDefaultCopies(bulletin8Display, 20);
+                                if (ok && isReadyStatus(bulletin8Display) && bulletinPrintCopies.bulletin8 === expectedCopies) {
+                                    updateDetailField('bulletinStatus8', 'printed');
+                                }
+                            }}
+                            disabled={!bulletin8Doc?.exists}
+                            aria-label="Print 8am bulletin"
+                            title="Print"
+                        >
+                            <FaPrint />
+                        </button>
                     </div>
                 </Card>
                 <Card
                     className={`sunday-panel insert-card ${(statusDrafts.insert || insertStatus) === 'stuffed' ? 'panel-complete' : ''}`}
                 >
-                    {isInsertComplete && <span className="check-badge panel-check" aria-hidden="true">✓</span>}
-                    <div className="panel-header">
-                        <h3>Insert</h3>
-                        <div className="panel-actions">
-                            <button
-                                type="button"
-                                className="btn-icon btn-icon-ghost"
-                                onClick={() => openFileLocation(insertDoc.path)}
-                                disabled={!insertDoc.exists}
-                                aria-label="Open insert folder"
-                                title="Open File Location"
-                            >
-                                <FaFolderOpen />
-                            </button>
-                            <button
-                                type="button"
-                                className="btn-icon btn-icon-ghost"
-                                onClick={() => printFile(insertDoc.path)}
-                                disabled={!insertDoc.exists}
-                                aria-label="Print insert"
-                                title="Print"
-                            >
-                                <FaPrint />
-                            </button>
-                        </div>
-                    </div>
+                    {renderMilestoneInline('Insert', insertMilestone)}
+                    {isMilestoneComplete(insertMilestone, insertMilestone?.key || 'insert') && (
+                        <span className="check-badge panel-check" aria-hidden="true">✓</span>
+                    )}
+                    
                     <div className="doc-preview">
-                        {docsLoading && <span className="doc-spinner" aria-hidden="true" />}
+                        <button
+                            type="button"
+                            className="doc-preview-refresh"
+                            onClick={() => refreshDocPreviews('insert')}
+                            disabled={getPreviewLoading('insert')}
+                            aria-label="Refresh preview"
+                            title="Refresh preview"
+                        >
+                            <FaSyncAlt />
+                        </button>
+                        {getPreviewLoading('insert') && <span className="doc-spinner" aria-hidden="true" />}
                         {insertDoc.preview ? (
                             <img src={insertDoc.preview} alt="Insert preview" />
                         ) : docsLoading ? null : (
                             <div className="doc-preview-empty">No insert preview</div>
                         )}
                     </div>
-                    <div className="status-row">
-                        <span className="status-label">Status</span>
-                        <span className={`pill ${getStatusPillClass(insertDisplay)}`}>{insertDisplay}</span>
+                    <div className="panel-actions panel-actions-bottom">
+                        <button
+                            type="button"
+                            className="btn-icon btn-icon-ghost"
+                            onClick={() => openFileLocation(insertDoc.path)}
+                            disabled={!insertDoc.exists}
+                            aria-label="Open insert folder"
+                            title="Open File Location"
+                        >
+                            <FaFolderOpen />
+                        </button>
+                        <input
+                            type="number"
+                            min="1"
+                            className="print-copies-input"
+                            value={bulletinPrintCopies.insert}
+                            onChange={(event) => {
+                                const next = Math.max(1, Number(event.target.value) || 1);
+                                setBulletinPrintCopies((prev) => ({ ...prev, insert: next }));
+                            }}
+                            aria-label="Insert copies"
+                        />
+                        <button
+                            type="button"
+                            className="btn-icon btn-icon-ghost"
+                            onClick={() => printFile(insertDoc.path, { copies: bulletinPrintCopies.insert })}
+                            disabled={!insertDoc.exists}
+                            aria-label="Print insert"
+                            title="Print"
+                        >
+                            <FaPrint />
+                        </button>
                     </div>
                 </Card>
                 <Card className={`sunday-panel livestream-card ${isEmailChecklistComplete ? 'panel-complete' : ''}`}>
-                    {isEmailChecklistComplete && <span className="check-badge panel-check" aria-hidden="true">✓</span>}
-                    <div className="panel-header">
-                        <h3>Livestream Email</h3>
-                    </div>
+                    {renderMilestoneInline('Livestream Email', emailMilestone)}
+
+                    {isMilestoneComplete(emailMilestone, emailMilestone?.key || 'email') && (
+                        <span className="check-badge panel-check" aria-hidden="true">✓</span>
+                    )}
+                    
                     <div className="email-checklist-wrapper">
                         <div className="email-checklist">
                             <div className={`check-item ${livestreamUrl ? 'done' : ''}`}>
@@ -1724,6 +2255,7 @@ const Sunday = () => {
                     <h2>Service Roles</h2>
                     <span className="text-muted">Every role for each service is listed below.</span>
                 </div>
+                {renderRoleProgress()}
                 {servicePanels.length > 0 ? servicePanels : (
                     <Card className="empty-card">No service assignments available for this Sunday.</Card>
                 )}
@@ -1734,3 +2266,7 @@ const Sunday = () => {
 };
 
 export default Sunday;
+
+
+
+

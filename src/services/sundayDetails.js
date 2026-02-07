@@ -15,6 +15,7 @@ const defaultDetails = {
     emailCreated: false,
     emailScheduled: false,
     emailSent: false,
+    sundayMilestones: {},
     staffHours: [],
     notes: '',
     livestreamEmailStatus: 'Not Started',

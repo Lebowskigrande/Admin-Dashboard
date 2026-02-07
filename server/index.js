@@ -2,17 +2,18 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
-import { addMonths, format } from 'date-fns';
+import { addMonths, format, isSunday, parseISO } from 'date-fns';
 import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib';
 import { access, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'fs/promises';
 import { join, dirname, resolve, basename, extname } from 'path';
 import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { createHash, randomUUID } from 'crypto';
 import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
+import xlsx from 'xlsx';
 import { sqlite } from './db.js';
 import { runMigrations } from './db/migrate.js';
 import { seedNormalized } from './db/seedNormalized.js';
@@ -554,6 +555,10 @@ const eventDocUpload = multer({ dest: join(tmpdir(), 'event-doc-uploads') });
 app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
 app.use(express.json({ limit: '25mb' }));
 
+app.get('/api/health', (_req, res) => {
+    res.json({ ok: true });
+});
+
 const SESSION_COOKIE = 'dashboard_session';
 const SESSION_TTL_DAYS = 30;
 const CC_STATE_COOKIE = 'cc_oauth_state';
@@ -741,6 +746,12 @@ const ensureTaskInstanceNotes = () => {
     if (!columns.includes('notes')) {
         sqlite.exec('ALTER TABLE task_instances ADD COLUMN notes TEXT');
     }
+    if (!columns.includes('progress_key')) {
+        sqlite.exec('ALTER TABLE task_instances ADD COLUMN progress_key TEXT');
+    }
+    if (!columns.includes('progress_steps')) {
+        sqlite.exec('ALTER TABLE task_instances ADD COLUMN progress_steps TEXT');
+    }
 };
 
 ensureTaskInstanceNotes();
@@ -843,24 +854,30 @@ const isAfterDate = (left, right) => {
     return leftKey > rightKey;
 };
 
+const CRITICAL_PRIORITY = 80;
+
 const applyTaskArchiving = () => {
     if (!tableExists('task_instances')) return;
     if (!tableHasColumn('task_instances', 'archived_at')) return;
     const todayKey = new Date().toISOString().slice(0, 10);
     const rows = db.prepare(`
-        SELECT id, due_at, completed_at, archive_after_due, keep_until
+        SELECT id, due_at, completed_at, archive_after_due, keep_until, priority_override
         FROM task_instances
         WHERE archived_at IS NULL
     `).all();
-    const markArchived = db.prepare('UPDATE task_instances SET archived_at = ? WHERE id = ?');
+    const bumpPriority = db.prepare('UPDATE task_instances SET priority_override = ? WHERE id = ?');
     rows.forEach((row) => {
-        if (!row.archive_after_due) return;
         const dueKey = normalizeDateKey(row.due_at);
         if (!dueKey) return;
+        if (row.completed_at) return;
         const keepUntil = normalizeDateKey(row.keep_until);
         const threshold = keepUntil || dueKey;
         if (threshold <= todayKey) {
-            markArchived.run(new Date().toISOString(), row.id);
+            const current = Number.isFinite(Number(row.priority_override))
+                ? Number(row.priority_override)
+                : null;
+            const next = clampPriority(Math.max(current ?? 0, CRITICAL_PRIORITY));
+            bumpPriority.run(next, row.id);
         }
     });
 };
@@ -922,6 +939,627 @@ const listRecurringTemplates = (originType, originId = null) => {
     return rows;
 };
 
+const normalizeListKey = (value) => String(value || '').trim().toLowerCase();
+const isSpecialEventsList = (listKey) => normalizeListKey(listKey) === 'special-events';
+
+const ensureProgressiveTemplateModes = () => {
+    if (!tableExists('recurring_task_templates')) return;
+    sqlite.prepare(`
+        UPDATE recurring_task_templates
+        SET list_mode = 'progressive'
+        WHERE list_key IS NOT NULL
+          AND TRIM(list_key) != ''
+          AND LOWER(list_key) != 'special-events'
+    `).run();
+};
+
+const buildProgressStepsFromTemplates = (templates = []) => (
+    templates
+        .slice()
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+        .map((template) => ({
+            key: template.step_key,
+            title: template.title,
+            sort_order: template.sort_order ?? 0,
+            due_offset_days: template.due_offset_days ?? null
+        }))
+);
+
+const buildProgressStepsFromTasks = (tasks = []) => (
+    tasks
+        .slice()
+        .sort((a, b) => {
+            const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
+            const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+            if (dueA !== dueB) return dueA - dueB;
+            return String(a.text || '').localeCompare(String(b.text || ''));
+        })
+        .map((task, index) => ({
+            key: task.origin_event || task.id || `step-${index + 1}`,
+            title: task.text || `Step ${index + 1}`,
+            sort_order: index + 1,
+            due_offset_days: null
+        }))
+);
+
+const migrateTaskListsToProgressive = () => {
+    if (!tableExists('task_instances') || !tableExists('tasks_new') || !tableExists('task_origins')) return;
+    if (!tableHasColumn('task_instances', 'list_mode')) return;
+    if (!tableHasColumn('task_instances', 'progress_steps')) return;
+
+    ensureProgressiveTemplateModes();
+
+    const removeTaskInstance = (taskInstanceId) => {
+        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
+        if (!row) return;
+        db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
+        db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
+        db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
+        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
+        if (!remaining) {
+            db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
+            db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
+        }
+    };
+
+    const templates = tableExists('recurring_task_templates')
+        ? sqlite.prepare('SELECT * FROM recurring_task_templates WHERE active = 1').all()
+        : [];
+    const templateIndex = new Map();
+    const sundayListKeys = new Set();
+    const sundayListTitles = new Set();
+    const sundayStepKeys = new Map();
+    templates.forEach((template) => {
+        if (!template.list_key || isSpecialEventsList(template.list_key)) return;
+        if (template.origin_type === 'sunday') {
+            sundayListKeys.add(template.list_key);
+            if (template.list_title) sundayListTitles.add(String(template.list_title).trim().toLowerCase());
+            if (!sundayStepKeys.has(template.list_key)) sundayStepKeys.set(template.list_key, new Set());
+            sundayStepKeys.get(template.list_key).add(template.step_key);
+        }
+        const key = `${template.origin_type || ''}::${template.origin_id || ''}::${template.list_key}`;
+        if (!templateIndex.has(key)) templateIndex.set(key, []);
+        templateIndex.get(key).push(template);
+    });
+    const findTemplateSteps = (originType, originId, listKey) => {
+        if (!listKey) return [];
+        const exactKey = `${originType || ''}::${originId || ''}::${listKey}`;
+        const fallbackKey = `${originType || ''}::${''}::${listKey}`;
+        if (templateIndex.has(exactKey)) {
+            return buildProgressStepsFromTemplates(templateIndex.get(exactKey));
+        }
+        if (templateIndex.has(fallbackKey)) {
+            return buildProgressStepsFromTemplates(templateIndex.get(fallbackKey));
+        }
+        return [];
+    };
+
+    const hasArchived = tableHasColumn('task_instances', 'archived_at');
+    const whereArchived = hasArchived ? 'AND (ti.archived_at IS NULL OR ti.archived_at = \'\')' : '';
+    if (sundayListKeys.size > 0) {
+        const listKeys = Array.from(sundayListKeys);
+        const placeholders = listKeys.map(() => '?').join(', ');
+        const orphaned = db.prepare(`
+            SELECT ti.id, ti.list_key, src.origin_type, src.origin_id, src.origin_event, t.task_type
+            FROM task_instances ti
+            JOIN tasks_new t ON t.id = ti.task_id
+            LEFT JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+            WHERE ti.list_key IN (${placeholders})
+              AND (src.origin_type IS NULL OR src.origin_type = '' OR src.origin_type = 'manual')
+              AND (src.origin_id IS NULL OR src.origin_id = '' OR src.origin_id = 'manual')
+              ${whereArchived}
+        `).all(...listKeys);
+        orphaned.forEach((row) => {
+            const stepSet = sundayStepKeys.get(row.list_key);
+            if (stepSet && row.origin_event && !stepSet.has(row.origin_event)) return;
+            removeTaskInstance(row.id);
+        });
+
+        const mismatched = db.prepare(`
+            SELECT ti.id, ti.list_key, src.origin_type, src.origin_id, src.origin_event
+            FROM task_instances ti
+            JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+            WHERE ti.list_key IN (${placeholders})
+              AND src.origin_type != 'sunday'
+              ${whereArchived}
+        `).all(...listKeys);
+        mismatched.forEach((row) => {
+            const stepSet = sundayStepKeys.get(row.list_key);
+            if (stepSet && row.origin_event && !stepSet.has(row.origin_event)) return;
+            removeTaskInstance(row.id);
+        });
+
+        if (sundayListTitles.size > 0) {
+            const titlePlaceholders = Array.from(sundayListTitles).map(() => '?').join(', ');
+            const titleRows = db.prepare(`
+                SELECT ti.id, ti.list_key, ti.list_title, src.origin_type, src.origin_id
+                FROM task_instances ti
+                JOIN tasks_new t ON t.id = ti.task_id
+                LEFT JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+                WHERE (ti.list_key IS NULL OR TRIM(ti.list_key) = '' OR ti.list_key NOT IN (${placeholders}))
+                  AND LOWER(COALESCE(ti.list_title, t.title, '')) IN (${titlePlaceholders})
+                  AND (src.origin_type IS NULL OR src.origin_type = '' OR src.origin_type = 'manual')
+                  ${whereArchived}
+            `).all(...listKeys, ...Array.from(sundayListTitles));
+            titleRows.forEach((row) => removeTaskInstance(row.id));
+        }
+
+        const cleanupOriginTypes = new Set();
+        listKeys.forEach((key) => {
+            cleanupOriginTypes.add(key);
+            cleanupOriginTypes.add(key.replace(/s$/, ''));
+        });
+        cleanupOriginTypes.add('bulletin');
+        cleanupOriginTypes.add('bulletins');
+        cleanupOriginTypes.add('schedule email');
+        cleanupOriginTypes.add('schedule-email');
+        cleanupOriginTypes.add('schedule_email');
+        cleanupOriginTypes.add('email');
+        cleanupOriginTypes.add('insert');
+
+        const originTypePlaceholders = Array.from(cleanupOriginTypes).map(() => '?').join(', ');
+        const stray = db.prepare(`
+            SELECT ti.id, ti.list_key, src.origin_type, src.origin_id, src.origin_event
+            FROM task_instances ti
+            JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+            WHERE ti.list_key IN (${placeholders})
+              AND LOWER(src.origin_type) IN (${originTypePlaceholders})
+              AND src.origin_type != 'sunday'
+              ${whereArchived}
+        `).all(...listKeys, ...Array.from(cleanupOriginTypes));
+        stray.forEach((row) => removeTaskInstance(row.id));
+    }
+    const rows = db.prepare(`
+        SELECT
+            ti.id,
+            ti.list_key,
+            ti.list_title,
+            ti.list_mode,
+            ti.state,
+            ti.completed_at,
+            ti.due_at,
+            t.priority_base,
+            t.task_type,
+            t.title AS task_title,
+            src.origin_type,
+            src.origin_id,
+            src.origin_event
+        FROM task_instances ti
+        JOIN tasks_new t ON t.id = ti.task_id
+        JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+        WHERE ti.list_key IS NOT NULL
+          AND TRIM(ti.list_key) != ''
+          AND (ti.list_mode IS NULL OR ti.list_mode != 'progressive')
+          ${whereArchived}
+    `).all();
+
+    const grouped = rows.reduce((acc, row) => {
+        if (!row.list_key || isSpecialEventsList(row.list_key)) return acc;
+        const key = `${row.origin_type || ''}::${row.origin_id || ''}::${row.list_key}`;
+        if (!acc.has(key)) acc.set(key, []);
+        acc.get(key).push(row);
+        return acc;
+    }, new Map());
+
+    grouped.forEach((tasks, key) => {
+        if (!tasks.length) return;
+        const sample = tasks[0];
+        const originType = sample.origin_type;
+        const originId = sample.origin_id;
+        const listKey = sample.list_key;
+        const listTitle = sample.list_title || listKey;
+
+        const existingProgressive = db.prepare(`
+            SELECT ti.id, ti.progress_steps
+            FROM task_instances ti
+            JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+            WHERE ti.list_key = ?
+              AND ti.list_mode = 'progressive'
+              AND src.origin_type = ?
+              AND src.origin_id = ?
+            LIMIT 1
+        `).get(listKey, originType, originId);
+
+        const templateSteps = findTemplateSteps(originType, originId, listKey);
+        const steps = templateSteps.length ? templateSteps : buildProgressStepsFromTasks(tasks);
+        if (!steps.length) return;
+
+        if (existingProgressive?.id) {
+            if (!existingProgressive.progress_steps) {
+                db.prepare('UPDATE task_instances SET progress_steps = ? WHERE id = ?')
+                    .run(JSON.stringify(steps), existingProgressive.id);
+            }
+            tasks.forEach((task) => removeTaskInstance(task.id));
+            return;
+        }
+
+        const taskType = sample.task_type || originType || null;
+        const priorityBase = Math.max(
+            ...tasks.map((task) => Number.isFinite(Number(task.priority_base)) ? Number(task.priority_base) : 0),
+            getDefaultPriorityBase(taskType)
+        );
+        const dueAt = tasks
+            .map((task) => task.due_at ? new Date(task.due_at).getTime() : null)
+            .filter((value) => value != null && !Number.isNaN(value))
+            .sort((a, b) => b - a)[0];
+        const dueAtValue = dueAt != null ? new Date(dueAt).toISOString().slice(0, 10) : null;
+
+        const stepLookup = new Map(tasks.map((task) => [task.origin_event, task]));
+        let lastCompletedIndex = -1;
+        steps.forEach((step, index) => {
+            const task = stepLookup.get(step.key);
+            if (!task) return;
+            if (task.state === 'done' || task.completed_at) {
+                lastCompletedIndex = Math.max(lastCompletedIndex, index);
+            }
+        });
+        const progressKey = lastCompletedIndex >= 0 ? steps[lastCompletedIndex].key : '';
+
+        const taskInstanceId = createTaskInstance({
+            title: listTitle || listKey || 'Task',
+            taskType,
+            priorityBase,
+            dueAt: dueAtValue,
+            originType,
+            originId,
+            originEvent: listKey || 'progressive',
+            generationKey: `migrate:${originType}:${originId}:${listKey}`,
+            listKey,
+            listTitle,
+            listMode: 'progressive',
+            progressKey,
+            progressSteps: steps
+        });
+
+        if (taskInstanceId) {
+            const completedAt = steps.length && progressKey && steps[steps.length - 1]?.key === progressKey
+                ? (tasks.map((task) => task.completed_at).filter(Boolean).sort().pop() || new Date().toISOString())
+                : null;
+            if (completedAt) {
+                db.prepare('UPDATE task_instances SET state = ?, completed_at = ? WHERE id = ?')
+                    .run('done', completedAt, taskInstanceId);
+            }
+        }
+
+        tasks.forEach((task) => removeTaskInstance(task.id));
+    });
+};
+
+const auditAndCleanupOrphanTasks = () => {
+    if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
+
+    const removeTaskInstance = (taskInstanceId) => {
+        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
+        if (!row) return;
+        db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
+        if (tableExists('task_origins')) {
+            db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
+        }
+        if (tableExists('entity_links')) {
+            db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
+        }
+        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
+        if (!remaining) {
+            if (tableExists('task_origins')) {
+                db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
+            }
+            db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
+        }
+    };
+
+    if (!tableExists('recurring_task_templates')) return;
+    const templates = sqlite.prepare('SELECT * FROM recurring_task_templates WHERE active = 1').all();
+    const listKeys = Array.from(new Set(templates.map((row) => row.list_key).filter(Boolean)));
+    const listTitles = Array.from(new Set(
+        templates.map((row) => row.list_title).filter(Boolean).map((value) => String(value).trim().toLowerCase())
+    ));
+    if (listKeys.length === 0 && listTitles.length === 0) return;
+
+    const keyPlaceholders = listKeys.map(() => '?').join(', ');
+    const titlePlaceholders = listTitles.map(() => '?').join(', ');
+    const hasArchived = tableHasColumn('task_instances', 'archived_at');
+    const whereArchived = hasArchived ? 'AND (ti.archived_at IS NULL OR ti.archived_at = \'\')' : '';
+
+    if (tableExists('task_origins')) {
+        const orphaned = db.prepare(`
+            SELECT ti.id
+            FROM task_instances ti
+            LEFT JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+            JOIN tasks_new t ON t.id = ti.task_id
+            WHERE (src.task_instance_id IS NULL OR src.origin_type IS NULL OR src.origin_id IS NULL OR TRIM(src.origin_type) = '' OR TRIM(src.origin_id) = '')
+              AND (
+                  (${listKeys.length ? `ti.list_key IN (${keyPlaceholders})` : '0'})
+                  OR (${listTitles.length ? `LOWER(COALESCE(ti.list_title, t.title, '')) IN (${titlePlaceholders})` : '0'})
+              )
+              ${whereArchived}
+        `).all(...listKeys, ...listTitles);
+        orphaned.forEach((row) => removeTaskInstance(row.id));
+
+        if (listKeys.length) {
+            const sundayPlaceholders = listKeys.map(() => '?').join(', ');
+            const sundayOrphans = db.prepare(`
+                SELECT ti.id
+                FROM task_instances ti
+                JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+                WHERE ti.list_key IN (${sundayPlaceholders})
+                  AND (src.origin_type IS NULL OR src.origin_type = '' OR src.origin_type = 'manual')
+                  ${whereArchived}
+            `).all(...listKeys);
+            sundayOrphans.forEach((row) => removeTaskInstance(row.id));
+        }
+
+        const badOriginTypes = new Set(listKeys.map((value) => String(value).trim().toLowerCase()));
+        listTitles.forEach((value) => badOriginTypes.add(value));
+        const originTypePlaceholders = Array.from(badOriginTypes).map(() => '?').join(', ');
+        if (originTypePlaceholders) {
+            const badOrigins = db.prepare(`
+                SELECT ti.id
+                FROM task_instances ti
+                JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+                WHERE LOWER(src.origin_type) IN (${originTypePlaceholders})
+                  AND (src.origin_type != 'sunday')
+                  ${whereArchived}
+            `).all(...Array.from(badOriginTypes));
+            badOrigins.forEach((row) => removeTaskInstance(row.id));
+        }
+    }
+};
+
+const repairMissingOrigins = () => {
+    if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
+    if (!tableExists('task_origins')) return;
+
+    const templates = sqlite.prepare('SELECT origin_type, list_key FROM recurring_task_templates WHERE active = 1').all();
+    const templateKeys = templates.reduce((acc, row) => {
+        const key = String(row.list_key || '').trim();
+        if (!key) return acc;
+        if (!acc[row.origin_type]) acc[row.origin_type] = new Set();
+        acc[row.origin_type].add(key);
+        return acc;
+    }, {});
+    const sundayKeys = templateKeys.sunday ? Array.from(templateKeys.sunday) : [];
+    const operationsKeys = templateKeys.operations ? Array.from(templateKeys.operations) : [];
+    const vestryKeys = templateKeys.vestry ? Array.from(templateKeys.vestry) : [];
+    const allTemplateKeys = new Set([...sundayKeys, ...operationsKeys, ...vestryKeys]);
+
+    const removeTaskInstance = (taskInstanceId) => {
+        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
+        if (!row) return;
+        db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
+        db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
+        db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
+        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
+        if (!remaining) {
+            db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
+            db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
+        }
+    };
+
+    const orphanRows = db.prepare(`
+        SELECT ti.id, t.title, ti.list_key
+        FROM task_instances ti
+        JOIN tasks_new t ON t.id = ti.task_id
+        LEFT JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+        WHERE src.task_instance_id IS NULL
+           OR src.origin_type IS NULL
+           OR src.origin_id IS NULL
+           OR TRIM(src.origin_type) = ''
+           OR TRIM(src.origin_id) = ''
+    `).all();
+
+    const attachManual = db.prepare(`
+        INSERT INTO task_origins (
+            id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
+        ) VALUES (?, 'instance', ?, ?, 'manual', 'manual', 'created', ?)
+    `);
+
+    orphanRows.forEach((row) => {
+        const listKey = String(row.list_key || '').trim();
+        if (listKey && allTemplateKeys.has(listKey)) {
+            removeTaskInstance(row.id);
+            return;
+        }
+        const taskRow = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(row.id);
+        if (!taskRow?.task_id) return;
+        const originId = `origin-${row.id}`;
+        try {
+            attachManual.run(originId, taskRow.task_id, row.id, new Date().toISOString());
+        } catch {
+            // ignore duplicate origin rows
+        }
+    });
+};
+
+const purgeTemplateOrphanTasks = () => {
+    if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
+    const templateKeys = tableExists('recurring_task_templates')
+        ? sqlite.prepare('SELECT list_key FROM recurring_task_templates WHERE active = 1').all()
+            .map((row) => String(row.list_key || '').trim())
+            .filter(Boolean)
+        : [];
+    const extraKeys = ['bulletins', 'bulletins-10am', 'bulletins-8am', 'insert', 'email', 'roles', 'ops-weekly'];
+    const listKeys = Array.from(new Set([...templateKeys, ...extraKeys]));
+    if (!listKeys.length) return;
+    const placeholders = listKeys.map(() => '?').join(', ');
+
+    const removeTaskInstance = (taskInstanceId) => {
+        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
+        if (!row) return;
+        db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
+        db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
+        db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
+        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
+        if (!remaining) {
+            db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
+            db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
+        }
+    };
+
+    const orphanRows = db.prepare(`
+        SELECT ti.id
+        FROM task_instances ti
+        JOIN tasks_new t ON t.id = ti.task_id
+        LEFT JOIN view_task_source src ON src.task_instance_id = ti.id
+        WHERE ti.list_key IN (${placeholders})
+          AND (src.origin_type IS NULL OR src.origin_id IS NULL OR TRIM(src.origin_type) = '' OR TRIM(src.origin_id) = '')
+    `).all(...listKeys);
+    orphanRows.forEach((row) => removeTaskInstance(row.id));
+};
+
+const normalizeOperationsOrigins = () => {
+    if (!tableExists('task_origins')) return;
+    const rows = db.prepare(`
+        SELECT id, origin_id, scope, origin_event, task_instance_id
+        FROM task_origins
+        WHERE origin_type = 'operations'
+          AND origin_id IS NOT NULL
+          AND (
+              origin_id LIKE 'weekly-%'
+              OR origin_id LIKE 'timesheets-%'
+              OR origin_id LIKE 'monthly-%'
+              OR origin_id LIKE 'yearly-%'
+          )
+    `).all();
+    if (!rows.length) return;
+    const updateOrigin = db.prepare(`
+        UPDATE task_origins
+        SET origin_id = 'operations'
+        WHERE id = ?
+    `);
+    const existsOrigin = db.prepare(`
+        SELECT 1 FROM task_origins
+        WHERE scope = ?
+          AND origin_type = 'operations'
+          AND origin_id = 'operations'
+          AND origin_event = ?
+        LIMIT 1
+    `);
+    const deleteOrigin = db.prepare(`DELETE FROM task_origins WHERE id = ?`);
+    const removeTaskInstance = (taskInstanceId) => {
+        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
+        if (!row) return;
+        db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
+        db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
+        db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
+        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
+        if (!remaining) {
+            db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
+            db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
+        }
+    };
+    const grouped = new Map();
+    rows.forEach((row) => {
+        const key = `${row.scope || ''}::${row.origin_event || ''}`;
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(row);
+    });
+    grouped.forEach((group) => {
+        if (!group.length) return;
+        const sample = group[0];
+        const duplicate = existsOrigin.get(sample.scope, sample.origin_event);
+        if (duplicate) {
+            group.forEach((row) => {
+                if (row.task_instance_id) {
+                    removeTaskInstance(row.task_instance_id);
+                } else {
+                    deleteOrigin.run(row.id);
+                }
+            });
+            return;
+        }
+        const keep = group[0];
+        updateOrigin.run(keep.id);
+        group.slice(1).forEach((row) => {
+            if (row.task_instance_id) {
+                removeTaskInstance(row.task_instance_id);
+            } else {
+                deleteOrigin.run(row.id);
+            }
+        });
+    });
+
+    if (tableExists('entity_links')) {
+        const linkRows = db.prepare(`
+            SELECT id, to_id
+            FROM entity_links
+            WHERE to_type = 'operations'
+              AND (
+                  to_id LIKE 'weekly-%'
+                  OR to_id LIKE 'timesheets-%'
+                  OR to_id LIKE 'monthly-%'
+                  OR to_id LIKE 'yearly-%'
+              )
+        `).all();
+        if (linkRows.length) {
+            const updateLink = db.prepare(`
+                UPDATE entity_links
+                SET to_id = 'operations'
+                WHERE id = ?
+            `);
+            linkRows.forEach((row) => updateLink.run(row.id));
+        }
+    }
+};
+
+const collapseOperationsRecurringTasks = () => {
+    if (!tableExists('task_instances') || !tableExists('task_origins')) return;
+    const rows = db.prepare(`
+        SELECT ti.id, ti.list_key, ti.due_at, ti.completed_at
+        FROM task_instances ti
+        JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+        WHERE src.origin_type = 'operations'
+          AND src.origin_id = 'operations'
+          AND ti.list_key IS NOT NULL
+          AND TRIM(ti.list_key) != ''
+    `).all();
+    if (!rows.length) return;
+
+    const removeTaskInstance = (taskInstanceId) => {
+        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
+        if (!row) return;
+        db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
+        db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
+        db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
+        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
+        if (!remaining) {
+            db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
+            db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
+        }
+    };
+
+    rows
+        .filter((row) => row.list_key === 'ops-weekly')
+        .forEach((row) => removeTaskInstance(row.id));
+
+    const byList = rows.reduce((acc, row) => {
+        if (row.list_key === 'ops-weekly') return acc;
+        if (!acc.has(row.list_key)) acc.set(row.list_key, []);
+        acc.get(row.list_key).push(row);
+        return acc;
+    }, new Map());
+
+    const pickKeep = (items) => {
+        const sorted = items.slice().sort((a, b) => {
+            const dueA = a.due_at ? new Date(a.due_at).getTime() : 0;
+            const dueB = b.due_at ? new Date(b.due_at).getTime() : 0;
+            if (dueA !== dueB) return dueB - dueA;
+            const compA = a.completed_at ? new Date(a.completed_at).getTime() : 0;
+            const compB = b.completed_at ? new Date(b.completed_at).getTime() : 0;
+            return compB - compA;
+        });
+        const incomplete = sorted.find((row) => !row.completed_at);
+        return incomplete || sorted[0];
+    };
+
+    byList.forEach((items) => {
+        if (items.length <= 1) return;
+        const keep = pickKeep(items);
+        items.forEach((row) => {
+            if (row.id !== keep.id) removeTaskInstance(row.id);
+        });
+    });
+};
+
 const addDaysIso = (dateKey, offsetDays) => {
     const base = new Date(`${dateKey}T00:00:00`);
     const next = new Date(base.getTime() + offsetDays * 86400000);
@@ -944,28 +1582,93 @@ const seedSundayTasksFromTemplates = () => {
         ORDER BY date
         LIMIT 6
     `).all().map((row) => row.date);
+    const grouped = templates.reduce((acc, template) => {
+        const listKey = template.list_key || 'list';
+        const listMode = template.list_mode || 'sequential';
+        const groupKey = `${listKey}:${listMode}`;
+        if (!acc[groupKey]) acc[groupKey] = [];
+        acc[groupKey].push(template);
+        return acc;
+    }, {});
     upcomingSundays.forEach((dateKey) => {
-        templates.forEach((template) => {
-            const dueOffset = Number.isFinite(Number(template.due_offset_days))
-                ? Number(template.due_offset_days)
-                : null;
-            const dueAt = dueOffset != null
-                ? addDaysIso(dateKey, dueOffset)
-                : dateKey;
-            createTaskInstance({
-                title: template.title,
-                taskType: 'sunday',
-                priorityBase: Number.isFinite(Number(template.priority_base))
-                    ? Number(template.priority_base)
-                    : getDefaultPriorityBase('sunday'),
-                dueAt,
-                originType: 'sunday',
-                originId: dateKey,
-                originEvent: template.step_key,
-                generationKey: `sunday:${dateKey}:${template.list_key || 'list'}:${template.step_key}`,
-                listKey: template.list_key || null,
-                listTitle: template.list_title || null,
-                listMode: template.list_mode || 'sequential'
+        Object.values(grouped).forEach((groupTemplates) => {
+            const listKey = groupTemplates[0]?.list_key || null;
+            const listTitle = groupTemplates[0]?.list_title || null;
+            const listMode = groupTemplates[0]?.list_mode || 'sequential';
+            if (listMode === 'progressive') {
+                const steps = groupTemplates
+                    .slice()
+                    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                    .map((template) => ({
+                        key: template.step_key,
+                        title: template.title,
+                        sort_order: template.sort_order ?? 0,
+                        due_offset_days: template.due_offset_days ?? null
+                    }));
+                const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
+                const dueAt = addDaysIso(dateKey, maxOffset);
+                if (listKey === 'bulletins') {
+                    ['bulletins-10am', 'bulletins-8am'].forEach((docKey) => {
+                        const label = docKey.endsWith('10am') ? 'Bulletins (10am)' : 'Bulletins (8am)';
+                        createTaskInstance({
+                            title: label,
+                            taskType: 'sunday',
+                            priorityBase: Number.isFinite(Number(groupTemplates[0]?.priority_base))
+                                ? Number(groupTemplates[0].priority_base)
+                                : getDefaultPriorityBase('sunday'),
+                            dueAt,
+                            originType: 'sunday',
+                            originId: dateKey,
+                            originEvent: docKey,
+                            generationKey: `sunday:${dateKey}:${docKey}:progressive`,
+                            listKey: docKey,
+                            listTitle: label,
+                            listMode: 'progressive',
+                            progressSteps: steps
+                        });
+                    });
+                } else {
+                    createTaskInstance({
+                        title: listTitle || listKey || 'Task',
+                        taskType: 'sunday',
+                        priorityBase: Number.isFinite(Number(groupTemplates[0]?.priority_base))
+                            ? Number(groupTemplates[0].priority_base)
+                            : getDefaultPriorityBase('sunday'),
+                        dueAt,
+                        originType: 'sunday',
+                        originId: dateKey,
+                        originEvent: listKey || 'progressive',
+                        generationKey: `sunday:${dateKey}:${listKey || 'list'}:progressive`,
+                        listKey,
+                        listTitle,
+                        listMode: 'progressive',
+                        progressSteps: steps
+                    });
+                }
+                return;
+            }
+            groupTemplates.forEach((template) => {
+                const dueOffset = Number.isFinite(Number(template.due_offset_days))
+                    ? Number(template.due_offset_days)
+                    : null;
+                const dueAt = dueOffset != null
+                    ? addDaysIso(dateKey, dueOffset)
+                    : dateKey;
+                createTaskInstance({
+                    title: template.title,
+                    taskType: 'sunday',
+                    priorityBase: Number.isFinite(Number(template.priority_base))
+                        ? Number(template.priority_base)
+                        : getDefaultPriorityBase('sunday'),
+                    dueAt,
+                    originType: 'sunday',
+                    originId: dateKey,
+                    originEvent: template.step_key,
+                    generationKey: `sunday:${dateKey}:${template.list_key || 'list'}:${template.step_key}`,
+                    listKey: template.list_key || null,
+                    listTitle: template.list_title || null,
+                    listMode: template.list_mode || 'sequential'
+                });
             });
         });
     });
@@ -977,27 +1680,70 @@ const seedVestryTasksFromTemplates = () => {
     if (!templates.length) return;
     const now = new Date();
     const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    templates.forEach((template) => {
-        const dueOffset = Number.isFinite(Number(template.due_offset_days))
-            ? Number(template.due_offset_days)
-            : null;
-        const dueAt = dueOffset != null
-            ? addDaysIso(`${monthKey}-01`, dueOffset)
-            : getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
-        createTaskInstance({
-            title: template.title,
-            taskType: 'vestry',
-            priorityBase: Number.isFinite(Number(template.priority_base))
-                ? Number(template.priority_base)
-                : getDefaultPriorityBase('vestry'),
-            dueAt,
-            originType: 'vestry',
-            originId: monthKey,
-            originEvent: template.step_key,
-            generationKey: `vestry:${monthKey}:${template.list_key || 'list'}:${template.step_key}`,
-            listKey: template.list_key || null,
-            listTitle: template.list_title || null,
-            listMode: template.list_mode || 'sequential'
+    const grouped = templates.reduce((acc, template) => {
+        const listKey = template.list_key || 'list';
+        const listMode = template.list_mode || 'sequential';
+        const groupKey = `${listKey}:${listMode}`;
+        if (!acc[groupKey]) acc[groupKey] = [];
+        acc[groupKey].push(template);
+        return acc;
+    }, {});
+    Object.values(grouped).forEach((groupTemplates) => {
+        const listKey = groupTemplates[0]?.list_key || null;
+        const listTitle = groupTemplates[0]?.list_title || null;
+        const listMode = groupTemplates[0]?.list_mode || 'sequential';
+        if (listMode === 'progressive') {
+            const steps = groupTemplates
+                .slice()
+                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                .map((template) => ({
+                    key: template.step_key,
+                    title: template.title,
+                    sort_order: template.sort_order ?? 0,
+                    due_offset_days: template.due_offset_days ?? null
+                }));
+            const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
+            const dueAt = addDaysIso(`${monthKey}-01`, maxOffset);
+            createTaskInstance({
+                title: listTitle || listKey || 'Task',
+                taskType: 'vestry',
+                priorityBase: Number.isFinite(Number(groupTemplates[0]?.priority_base))
+                    ? Number(groupTemplates[0].priority_base)
+                    : getDefaultPriorityBase('vestry'),
+                dueAt,
+                originType: 'vestry',
+                originId: monthKey,
+                originEvent: listKey || 'progressive',
+                generationKey: `vestry:${monthKey}:${listKey || 'list'}:progressive`,
+                listKey,
+                listTitle,
+                listMode: 'progressive',
+                progressSteps: steps
+            });
+            return;
+        }
+        groupTemplates.forEach((template) => {
+            const dueOffset = Number.isFinite(Number(template.due_offset_days))
+                ? Number(template.due_offset_days)
+                : null;
+            const dueAt = dueOffset != null
+                ? addDaysIso(`${monthKey}-01`, dueOffset)
+                : getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
+            createTaskInstance({
+                title: template.title,
+                taskType: 'vestry',
+                priorityBase: Number.isFinite(Number(template.priority_base))
+                    ? Number(template.priority_base)
+                    : getDefaultPriorityBase('vestry'),
+                dueAt,
+                originType: 'vestry',
+                originId: monthKey,
+                originEvent: template.step_key,
+                generationKey: `vestry:${monthKey}:${template.list_key || 'list'}:${template.step_key}`,
+                listKey: template.list_key || null,
+                listTitle: template.list_title || null,
+                listMode: template.list_mode || 'sequential'
+            });
         });
     });
 };
@@ -1006,66 +1752,308 @@ const seedOperationsTasksFromTemplates = () => {
     if (!tableExists('recurring_task_templates')) return;
     const weeklyTemplates = listRecurringTemplates('operations', 'weekly');
     const timesheetTemplates = listRecurringTemplates('operations', 'timesheets');
+    const monthlyTemplates = listRecurringTemplates('operations', 'monthly');
+    const yearlyTemplates = listRecurringTemplates('operations', 'yearly');
     const now = new Date();
     const day = now.getDay();
     const mondayOffset = (day + 6) % 7;
     const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
     const weekKey = monday.toISOString().slice(0, 10);
-    weeklyTemplates.forEach((template) => {
-        const dueOffset = Number.isFinite(Number(template.due_offset_days))
-            ? Number(template.due_offset_days)
-            : null;
-        const baseKey = weekKey;
-        const dueAt = dueOffset != null
-            ? addDaysIso(baseKey, dueOffset)
-            : addDaysIso(baseKey, 6);
+    const groupedWeekly = weeklyTemplates.reduce((acc, template) => {
+        const listKey = template.list_key || 'list';
+        const listMode = template.list_mode || 'sequential';
+        const groupKey = `${listKey}:${listMode}`;
+        if (!acc[groupKey]) acc[groupKey] = [];
+        acc[groupKey].push(template);
+        return acc;
+    }, {});
+
+    const upsertOperationsProgressive = ({ listKey, listTitle, steps, dueAt }) => {
+        if (!listKey) return;
+        const existing = db.prepare(`
+            SELECT ti.id
+            FROM task_instances ti
+            JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+            WHERE src.origin_type = 'operations'
+              AND src.origin_id = 'operations'
+              AND ti.list_key = ?
+              AND ti.list_mode = 'progressive'
+            LIMIT 1
+        `).get(listKey);
+        if (existing?.id) {
+            db.prepare(`
+                UPDATE task_instances
+                SET due_at = ?,
+                    list_title = ?,
+                    progress_steps = ?
+                WHERE id = ?
+            `).run(
+                dueAt,
+                listTitle || listKey,
+                JSON.stringify(steps),
+                existing.id
+            );
+            return;
+        }
+
         createTaskInstance({
-            title: template.title,
+            title: listTitle || listKey || 'Task',
             taskType: 'operations',
-            priorityBase: Number.isFinite(Number(template.priority_base))
-                ? Number(template.priority_base)
-                : getDefaultPriorityBase('operations'),
+            priorityBase: getDefaultPriorityBase('operations'),
             dueAt,
             originType: 'operations',
-            originId: `weekly-${weekKey}`,
-            originEvent: template.step_key,
-            generationKey: `operations:weekly-${weekKey}:${template.list_key || 'list'}:${template.step_key}`,
-            listKey: template.list_key || null,
-            listTitle: template.list_title || null,
-            listMode: template.list_mode || 'sequential'
+            originId: 'operations',
+            originEvent: listKey || 'progressive',
+            generationKey: `operations:${listKey || 'list'}:progressive`,
+            listKey,
+            listTitle,
+            listMode: 'progressive',
+            progressSteps: steps
+        });
+    };
+
+    const upsertOperationsTask = ({ title, listKey, dueAt, originEvent }) => {
+        if (!title || !listKey) return;
+        const existing = db.prepare(`
+            SELECT ti.id
+            FROM task_instances ti
+            JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+            WHERE src.origin_type = 'operations'
+              AND src.origin_id = 'operations'
+              AND ti.list_key = ?
+              AND (ti.list_mode IS NULL OR ti.list_mode = 'sequential')
+            LIMIT 1
+        `).get(listKey);
+        if (existing?.id) {
+            db.prepare(`
+                UPDATE task_instances
+                SET due_at = ?,
+                    list_title = ?
+                WHERE id = ?
+            `).run(
+                dueAt,
+                title,
+                existing.id
+            );
+            db.prepare(`
+                UPDATE tasks_new
+                SET title = ?, updated_at = ?
+                WHERE id = (SELECT task_id FROM task_instances WHERE id = ?)
+            `).run(title, new Date().toISOString(), existing.id);
+            return;
+        }
+        const generationKey = `operations:${listKey}`;
+        createTaskInstance({
+            title,
+            taskType: 'operations',
+            priorityBase: getDefaultPriorityBase('operations'),
+            dueAt,
+            originType: 'operations',
+            originId: 'operations',
+            originEvent: originEvent || listKey,
+            generationKey,
+            listKey,
+            listTitle: title,
+            listMode: 'sequential'
+        });
+    };
+
+    const getNextWeekdayDate = (baseDate, weekday) => {
+        const next = new Date(baseDate);
+        const day = next.getDay();
+        const delta = (weekday - day + 7) % 7;
+        next.setDate(next.getDate() + delta);
+        return next;
+    };
+
+    const fridayDate = getNextWeekdayDate(now, 5);
+    const fridayKey = fridayDate.toISOString().slice(0, 10);
+    const mailWeekdays = [
+        { key: 'mon', day: 1, label: 'Mon' },
+        { key: 'wed', day: 3, label: 'Wed' },
+        { key: 'fri', day: 5, label: 'Fri' }
+    ];
+
+    Object.values(groupedWeekly).forEach((groupTemplates) => {
+        const listKey = groupTemplates[0]?.list_key || null;
+        const listTitle = groupTemplates[0]?.list_title || null;
+        const isWeeklyOps = listKey === 'ops-weekly';
+        if (isWeeklyOps) {
+            groupTemplates.forEach((template) => {
+                const title = template.title;
+                if (!title) return;
+                const lowered = title.toLowerCase();
+                if (lowered.includes('mail')) {
+                    mailWeekdays.forEach((entry) => {
+                        const nextDate = getNextWeekdayDate(now, entry.day);
+                        const dueAt = nextDate.toISOString().slice(0, 10);
+                        upsertOperationsTask({
+                            title,
+                            listKey: `mail-${entry.key}`,
+                            dueAt,
+                            originEvent: `mail-${entry.key}`
+                        });
+                    });
+                    return;
+                }
+                upsertOperationsTask({
+                    title,
+                    listKey: template.step_key || normalizeListKey(title),
+                    dueAt: fridayKey,
+                    originEvent: template.step_key || 'weekly'
+                });
+            });
+            return;
+        }
+
+        if (groupTemplates.length > 1 && String(groupTemplates[0]?.list_mode || '').toLowerCase() === 'progressive') {
+            const steps = groupTemplates
+                .slice()
+                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                .map((template) => ({
+                    key: template.step_key,
+                    title: template.title,
+                    sort_order: template.sort_order ?? 0,
+                    due_offset_days: template.due_offset_days ?? null
+                }));
+            const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
+            const dueAt = addDaysIso(weekKey, maxOffset || 6);
+            upsertOperationsProgressive({
+                listKey,
+                listTitle,
+                steps,
+                dueAt
+            });
+            return;
+        }
+
+        groupTemplates.forEach((template) => {
+            const title = template.title;
+            if (!title) return;
+            upsertOperationsTask({
+                title,
+                listKey: template.step_key || normalizeListKey(title),
+                dueAt: fridayKey,
+                originEvent: template.step_key || 'weekly'
+            });
         });
     });
 
     const dayOfMonth = now.getDate();
     const half = dayOfMonth <= 15 ? 'a' : 'b';
     const timesheetKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${half}`;
-    timesheetTemplates.forEach((template) => {
-        const dueOffset = Number.isFinite(Number(template.due_offset_days))
-            ? Number(template.due_offset_days)
-            : null;
+    const groupedTimesheets = timesheetTemplates.reduce((acc, template) => {
+        const listKey = template.list_key || 'list';
+        const listMode = template.list_mode || 'sequential';
+        const groupKey = `${listKey}:${listMode}`;
+        if (!acc[groupKey]) acc[groupKey] = [];
+        acc[groupKey].push(template);
+        return acc;
+    }, {});
+    Object.values(groupedTimesheets).forEach((groupTemplates) => {
+        const listKey = groupTemplates[0]?.list_key || null;
+        const listTitle = groupTemplates[0]?.list_title || null;
         const monthStartKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
         const halfDue = half === 'a'
             ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-15`
             : getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
-        const dueAt = dueOffset != null
-            ? addDaysIso(monthStartKey, dueOffset)
-            : halfDue;
-        createTaskInstance({
-            title: template.title,
-            taskType: 'operations',
-            priorityBase: Number.isFinite(Number(template.priority_base))
-                ? Number(template.priority_base)
-                : getDefaultPriorityBase('operations'),
-            dueAt,
-            originType: 'operations',
-            originId: `timesheets-${timesheetKey}`,
-            originEvent: template.step_key,
-            generationKey: `operations:timesheets-${timesheetKey}:${template.list_key || 'list'}:${template.step_key}`,
-            listKey: template.list_key || null,
-            listTitle: template.list_title || null,
-            listMode: template.list_mode || 'sequential'
+        if (groupTemplates.length > 1 && String(groupTemplates[0]?.list_mode || '').toLowerCase() === 'progressive') {
+            const steps = groupTemplates
+                .slice()
+                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                .map((template) => ({
+                    key: template.step_key,
+                    title: template.title,
+                    sort_order: template.sort_order ?? 0,
+                    due_offset_days: template.due_offset_days ?? null
+                }));
+            const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
+            const dueAt = maxOffset ? addDaysIso(monthStartKey, maxOffset) : halfDue;
+            upsertOperationsProgressive({
+                listKey,
+                listTitle,
+                steps,
+                dueAt
+            });
+            return;
+        }
+
+        groupTemplates.forEach((template) => {
+            const title = template.title;
+            if (!title) return;
+            const dueAt = template.due_offset_days != null
+                ? addDaysIso(monthStartKey, Number(template.due_offset_days))
+                : halfDue;
+            upsertOperationsTask({
+                title,
+                listKey: template.step_key || normalizeListKey(title),
+                dueAt,
+                originEvent: template.step_key || 'timesheets'
+            });
         });
     });
+
+    const seedPeriodicTasks = (templates, periodKey, fallbackDue) => {
+        const grouped = templates.reduce((acc, template) => {
+            const listKey = template.list_key || 'list';
+            const listMode = template.list_mode || 'sequential';
+            const groupKey = `${listKey}:${listMode}`;
+            if (!acc[groupKey]) acc[groupKey] = [];
+            acc[groupKey].push(template);
+            return acc;
+        }, {});
+
+        Object.values(grouped).forEach((groupTemplates) => {
+            const listKey = groupTemplates[0]?.list_key || null;
+            const listTitle = groupTemplates[0]?.list_title || null;
+            if (groupTemplates.length > 1 && String(groupTemplates[0]?.list_mode || '').toLowerCase() === 'progressive') {
+                const steps = groupTemplates
+                    .slice()
+                    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                    .map((template) => ({
+                        key: template.step_key,
+                        title: template.title,
+                        sort_order: template.sort_order ?? 0,
+                        due_offset_days: template.due_offset_days ?? null
+                    }));
+                const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
+                const dueAt = maxOffset ? addDaysIso(periodKey, maxOffset) : fallbackDue;
+                upsertOperationsProgressive({
+                    listKey,
+                    listTitle,
+                    steps,
+                    dueAt
+                });
+                return;
+            }
+
+            groupTemplates.forEach((template) => {
+                const title = template.title;
+                if (!title) return;
+                const dueAt = template.due_offset_days != null
+                    ? addDaysIso(periodKey, Number(template.due_offset_days))
+                    : fallbackDue;
+                upsertOperationsTask({
+                    title,
+                    listKey: template.step_key || normalizeListKey(title),
+                    dueAt,
+                    originEvent: template.step_key || 'recurring'
+                });
+            });
+        });
+    };
+
+    if (monthlyTemplates.length) {
+        const monthStartKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        const monthEndKey = getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
+        seedPeriodicTasks(monthlyTemplates, monthStartKey, monthEndKey);
+    }
+
+    if (yearlyTemplates.length) {
+        const yearStartKey = `${now.getFullYear()}-01-01`;
+        const yearEndKey = `${now.getFullYear()}-12-31`;
+        seedPeriodicTasks(yearlyTemplates, yearStartKey, yearEndKey);
+    }
 };
 
 const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey }) => {
@@ -1073,27 +2061,70 @@ const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey }) => 
     if (!occurrenceId || !eventTypeId || !dateKey) return;
     const templates = listRecurringTemplates('event', String(eventTypeId));
     if (!templates.length) return;
-    templates.forEach((template) => {
-        const dueOffset = Number.isFinite(Number(template.due_offset_days))
-            ? Number(template.due_offset_days)
-            : null;
-        const dueAt = dueOffset != null
-            ? addDaysIso(dateKey, dueOffset)
-            : dateKey;
-        createTaskInstance({
-            title: template.title,
-            taskType: 'event',
-            priorityBase: Number.isFinite(Number(template.priority_base))
-                ? Number(template.priority_base)
-                : getDefaultPriorityBase('event'),
-            dueAt,
-            originType: 'event',
-            originId: occurrenceId,
-            originEvent: template.step_key,
-            generationKey: `event:${occurrenceId}:${template.list_key || 'list'}:${template.step_key}`,
-            listKey: template.list_key || null,
-            listTitle: template.list_title || null,
-            listMode: template.list_mode || 'sequential'
+    const grouped = templates.reduce((acc, template) => {
+        const listKey = template.list_key || 'list';
+        const listMode = template.list_mode || 'sequential';
+        const groupKey = `${listKey}:${listMode}`;
+        if (!acc[groupKey]) acc[groupKey] = [];
+        acc[groupKey].push(template);
+        return acc;
+    }, {});
+    Object.values(grouped).forEach((groupTemplates) => {
+        const listKey = groupTemplates[0]?.list_key || null;
+        const listTitle = groupTemplates[0]?.list_title || null;
+        const listMode = groupTemplates[0]?.list_mode || 'sequential';
+        if (listMode === 'progressive') {
+            const steps = groupTemplates
+                .slice()
+                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                .map((template) => ({
+                    key: template.step_key,
+                    title: template.title,
+                    sort_order: template.sort_order ?? 0,
+                    due_offset_days: template.due_offset_days ?? null
+                }));
+            const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
+            const dueAt = addDaysIso(dateKey, maxOffset);
+            createTaskInstance({
+                title: listTitle || listKey || 'Task',
+                taskType: 'event',
+                priorityBase: Number.isFinite(Number(groupTemplates[0]?.priority_base))
+                    ? Number(groupTemplates[0].priority_base)
+                    : getDefaultPriorityBase('event'),
+                dueAt,
+                originType: 'event',
+                originId: occurrenceId,
+                originEvent: listKey || 'progressive',
+                generationKey: `event:${occurrenceId}:${listKey || 'list'}:progressive`,
+                listKey,
+                listTitle,
+                listMode: 'progressive',
+                progressSteps: steps
+            });
+            return;
+        }
+        groupTemplates.forEach((template) => {
+            const dueOffset = Number.isFinite(Number(template.due_offset_days))
+                ? Number(template.due_offset_days)
+                : null;
+            const dueAt = dueOffset != null
+                ? addDaysIso(dateKey, dueOffset)
+                : dateKey;
+            createTaskInstance({
+                title: template.title,
+                taskType: 'event',
+                priorityBase: Number.isFinite(Number(template.priority_base))
+                    ? Number(template.priority_base)
+                    : getDefaultPriorityBase('event'),
+                dueAt,
+                originType: 'event',
+                originId: occurrenceId,
+                originEvent: template.step_key,
+                generationKey: `event:${occurrenceId}:${template.list_key || 'list'}:${template.step_key}`,
+                listKey: template.list_key || null,
+                listTitle: template.list_title || null,
+                listMode: template.list_mode || 'sequential'
+            });
         });
     });
 };
@@ -1133,12 +2164,27 @@ const createTaskInstance = (payload) => {
         generationKey,
         listKey = null,
         listTitle = null,
-        listMode = 'sequential'
+        listMode = 'sequential',
+        progressKey = null,
+        progressSteps = null
     } = payload || {};
     if (!title || !originType || !originId || !generationKey) return null;
     if (tableHasColumn('task_instances', 'generation_key')
         && db.prepare('SELECT 1 FROM task_instances WHERE generation_key = ?').get(generationKey)) {
         return null;
+    }
+    if (tableExists('task_origins')) {
+        const existingOrigin = db.prepare(`
+            SELECT id FROM task_origins
+            WHERE scope = 'instance'
+              AND origin_type = ?
+              AND origin_id = ?
+              AND origin_event = ?
+            LIMIT 1
+        `).get(originType, originId, originEvent);
+        if (existingOrigin) {
+            return null;
+        }
     }
     const now = new Date().toISOString();
     const taskId = `taskdef-${randomUUID()}`;
@@ -1217,8 +2263,8 @@ const createTaskInstance = (payload) => {
         INSERT INTO task_instances (
             id, task_id, state, due_at, start_at, completed_at, generated_from,
             generation_key, priority_override, rank, sla_target_at, blocked,
-            list_key, list_title, list_mode
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            list_key, list_title, list_mode, progress_key, progress_steps
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         taskInstanceId,
         taskId,
@@ -1234,33 +2280,25 @@ const createTaskInstance = (payload) => {
         0,
         listKey,
         listTitle,
-        listMode || 'sequential'
+        listMode || 'sequential',
+        progressKey,
+        progressSteps ? JSON.stringify(progressSteps) : null
     );
 
-    const existingOrigin = db.prepare(`
-        SELECT id FROM task_origins
-        WHERE scope = 'instance'
-          AND origin_type = ?
-          AND origin_id = ?
-          AND origin_event = ?
-        LIMIT 1
-    `).get(originType, originId, originEvent);
-    if (!existingOrigin) {
-        db.prepare(`
-            INSERT INTO task_origins (
-                id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-            `origin-${taskInstanceId}`,
-            'instance',
-            taskId,
-            taskInstanceId,
-            originType,
-            originId,
-            originEvent,
-            now
-        );
-    }
+    db.prepare(`
+        INSERT INTO task_origins (
+            id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        `origin-${taskInstanceId}`,
+        'instance',
+        taskId,
+        taskInstanceId,
+        originType,
+        originId,
+        originEvent,
+        now
+    );
 
     upsertEntityLink({
         fromType: 'task_instance',
@@ -1274,6 +2312,9 @@ const createTaskInstance = (payload) => {
     return taskInstanceId;
 };
 
+migrateTaskListsToProgressive();
+normalizeOperationsOrigins();
+collapseOperationsRecurringTasks();
 seedTaskEngine();
 
 const BULLETIN_STATUS_RANK = {
@@ -1337,6 +2378,7 @@ const getSundayTaskStepRank = (listKey, originEvent) => {
 
 const isSundayTaskAutoComplete = (row) => {
     if (row.origin_type !== 'sunday' || !row.origin_id) return false;
+    if ((row.list_mode || '').toLowerCase() === 'progressive') return false;
     const listKey = row.list_key || row.list_id || '';
     if (!['bulletins', 'insert'].includes(listKey)) return false;
     const statusRank = getSundayDocumentStatusRank(row.origin_id, listKey);
@@ -1362,6 +2404,19 @@ const formatTaskInstanceRow = (row) => {
         normalizedState = 'done';
     }
     const listMode = row.list_mode || (row.list_type === 'parallel' ? 'parallel' : 'sequential');
+    const progressKey = row.progress_key || '';
+    const rawProgressSteps = row.progress_steps ? parseJsonField(row.progress_steps, []) : [];
+    const progressSteps = Array.isArray(rawProgressSteps)
+        ? rawProgressSteps.slice().sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0))
+        : [];
+    const isProgressiveComplete = listMode === 'progressive'
+        && progressSteps.length > 0
+        && progressKey
+        && progressSteps[progressSteps.length - 1]?.key === progressKey;
+    if (!completed && isProgressiveComplete) {
+        completed = true;
+        normalizedState = 'done';
+    }
     return {
         id: row.task_instance_id,
         task_id: row.task_id,
@@ -1388,6 +2443,8 @@ const formatTaskInstanceRow = (row) => {
         list_key: row.list_key || row.list_id || null,
         list_title: row.list_title || null,
         list_mode: listMode,
+        progress_key: progressKey,
+        progress_steps: progressSteps,
         task_type: row.task_type || null,
         origin_type: row.origin_type || null,
         origin_id: row.origin_id || null,
@@ -1873,7 +2930,8 @@ const readDocxStatus = async (filePath) => {
     }
 };
 
-const buildDocumentPreview = async (filePath) => {
+const buildDocumentPreview = async (filePath, options = {}) => {
+    const { force = false } = options;
     const cacheRoot = PREVIEW_CACHE_ROOT;
     const outputDir = join(tmpdir(), `preview-${randomUUID()}`);
     const ext = extname(filePath || '').toLowerCase();
@@ -1888,12 +2946,14 @@ const buildDocumentPreview = async (filePath) => {
             .update(`${filePath}:${stats.mtimeMs}:${stats.size}`)
             .digest('hex');
         const cachedPreview = join(cacheRoot, `${cacheKey}.png`);
-        try {
-            await access(cachedPreview);
-            const cachedData = await readFile(cachedPreview);
-            return `data:image/png;base64,${cachedData.toString('base64')}`;
-        } catch {
-            // Cache miss, generate preview.
+        if (!force) {
+            try {
+                await access(cachedPreview);
+                const cachedData = await readFile(cachedPreview);
+                return `data:image/png;base64,${cachedData.toString('base64')}`;
+            } catch {
+                // Cache miss, generate preview.
+            }
         }
 
         await mkdir(outputDir, { recursive: true });
@@ -1963,7 +3023,7 @@ const buildDocumentPreview = async (filePath) => {
 };
 
 const buildDocumentStatus = async (filePath, options = {}) => {
-    const { includePreview = true, statusOverride = '' } = options;
+    const { includePreview = true, statusOverride = '', forcePreview = false } = options;
     if (!filePath) {
         return { exists: false, preview: '', path: '', name: '', status: '' };
     }
@@ -1973,7 +3033,7 @@ const buildDocumentStatus = async (filePath, options = {}) => {
         return { exists: false, preview: '', path: filePath, name: basename(filePath), status: '' };
     }
     const status = statusOverride || await readDocxStatus(filePath);
-    const preview = includePreview ? await buildDocumentPreview(filePath) : '';
+    const preview = includePreview ? await buildDocumentPreview(filePath, { force: forcePreview }) : '';
     return {
         exists: true,
         preview,
@@ -2418,6 +3478,8 @@ app.get('/api/sunday/documents', async (req, res) => {
     }
     try {
         const includePreview = String(req.query.preview || '').trim() !== '0';
+        const forcePreview = String(req.query.forcePreview || '').trim() === '1';
+        const doc = String(req.query.doc || '').trim();
         const bulletin10Path = await findBulletinFile(date, '10am');
         const bulletin8Path = await findBulletinFile(date, '8am');
         const insertPath = await findInsertFile(date);
@@ -2447,20 +3509,27 @@ app.get('/api/sunday/documents', async (req, res) => {
         if (!bulletin8Path && bulletin8Stored) {
             clearBulletinStatus(date, 'bulletin8');
         }
-        const [bulletin10, bulletin8, insert] = await Promise.all([
-            buildDocumentStatus(bulletin10Path, { includePreview, statusOverride: bulletin10Status }),
-            buildDocumentStatus(bulletin8Path, { includePreview, statusOverride: bulletin8Status }),
-            buildDocumentStatus(insertPath, { includePreview, statusOverride: insertStored })
-        ]);
+        let bulletin10 = null;
+        let bulletin8 = null;
+        let insert = null;
+        if (!doc || doc === 'bulletin10') {
+            bulletin10 = await buildDocumentStatus(bulletin10Path, { includePreview, statusOverride: bulletin10Status, forcePreview });
+        }
+        if (!doc || doc === 'bulletin8') {
+            bulletin8 = await buildDocumentStatus(bulletin8Path, { includePreview, statusOverride: bulletin8Status, forcePreview });
+        }
+        if (!doc || doc === 'insert') {
+            insert = await buildDocumentStatus(insertPath, { includePreview, statusOverride: insertStored, forcePreview });
+        }
         console.log('Sunday docs status', {
             date,
-            bulletin10: { exists: bulletin10.exists, status: bulletin10.status, stored: bulletin10Stored },
-            bulletin8: { exists: bulletin8.exists, status: bulletin8.status, stored: bulletin8Stored },
-            insert: { exists: insert.exists, status: insert.status, stored: insertStored, path: insertPath || '' }
+            bulletin10: bulletin10 ? { exists: bulletin10.exists, status: bulletin10.status, stored: bulletin10Stored } : null,
+            bulletin8: bulletin8 ? { exists: bulletin8.exists, status: bulletin8.status, stored: bulletin8Stored } : null,
+            insert: insert ? { exists: insert.exists, status: insert.status, stored: insertStored, path: insertPath || '' } : null
         });
-        if (bulletin10.exists && bulletin10Status) bulletin10.status = bulletin10Status;
-        if (bulletin8.exists && bulletin8Status) bulletin8.status = bulletin8Status;
-        if (insert.exists && insertStored) insert.status = insertStored;
+        if (bulletin10?.exists && bulletin10Status) bulletin10.status = bulletin10Status;
+        if (bulletin8?.exists && bulletin8Status) bulletin8.status = bulletin8Status;
+        if (insert?.exists && insertStored) insert.status = insertStored;
         if (!insertExists && insertStored) {
             clearBulletinStatus(date, 'insert');
         }
@@ -3610,6 +4679,8 @@ const listTaskInstances = (whereClause = '', params = []) => {
                 ti.list_key,
                 ti.list_title,
                 ti.list_mode,
+                ti.progress_key,
+                ti.progress_steps,
                 ti.notes,
                 src.origin_type,
                 src.origin_id,
@@ -3769,7 +4840,7 @@ const buildOriginRollups = (tasks) => {
     return [...sortedWithNext, ...withoutNext];
 };
 
-const deleteTaskInstance = (taskInstanceId) => {
+function deleteTaskInstance(taskInstanceId) {
     const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
     if (!row) return false;
     db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
@@ -3781,7 +4852,7 @@ const deleteTaskInstance = (taskInstanceId) => {
         db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
     }
     return true;
-};
+}
 
 const buildTicketResponse = (ticketRow) => {
     const areas = getTicketAreaIds(ticketRow.id);
@@ -4289,6 +5360,8 @@ app.post('/api/tasks', (req, res) => {
         list_key = null,
         list_title = null,
         list_mode = 'sequential',
+        progress_key = null,
+        progress_steps = null,
         notes = null
     } = req.body || {};
     const normalizedText = normalizeName(text);
@@ -4334,8 +5407,8 @@ app.post('/api/tasks', (req, res) => {
         INSERT INTO task_instances (
             id, task_id, state, due_at, start_at, completed_at, generated_from,
             generation_key, priority_override, rank, sla_target_at, blocked,
-            list_key, list_title, list_mode, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            list_key, list_title, list_mode, progress_key, progress_steps, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         taskInstanceId,
         taskId,
@@ -4352,6 +5425,8 @@ app.post('/api/tasks', (req, res) => {
         list_key,
         list_title || list_key,
         list_mode || 'sequential',
+        progress_key,
+        progress_steps ? JSON.stringify(progress_steps) : null,
         notes ? String(notes).trim() : null
     );
 
@@ -4485,15 +5560,38 @@ app.put('/api/tasks/:id', (req, res) => {
         blocked = existing.blocked,
         archive_after_due = existing.archive_after_due ?? 1,
         keep_until = existing.keep_until || null,
-        notes = existing.notes
+        notes = existing.notes,
+        progress_key = existing.progress_key || '',
+        progress_steps = null
     } = req.body || {};
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
         return res.status(400).json({ error: 'Task text is required' });
     }
 
-    const completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
-    const nextState = completed ? 'done' : (Number(blocked) ? 'blocked' : 'open');
+    let completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
+    let nextState = completed ? 'done' : (Number(blocked) ? 'blocked' : 'open');
+    const progressKeyValue = progress_key != null ? String(progress_key) : (existing.progress_key || '');
+    const parsedProgressSteps = Array.isArray(progress_steps)
+        ? progress_steps
+        : (existing.progress_steps ? parseJsonField(existing.progress_steps, []) : []);
+    const sortedProgressSteps = Array.isArray(parsedProgressSteps)
+        ? parsedProgressSteps.slice().sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0))
+        : [];
+    const isProgressive = String(existing.list_mode || '').toLowerCase() === 'progressive';
+    const isProgressComplete = isProgressive
+        && sortedProgressSteps.length > 0
+        && progressKeyValue
+        && sortedProgressSteps[sortedProgressSteps.length - 1]?.key === progressKeyValue;
+    if (isProgressive) {
+        if (isProgressComplete) {
+            completedAt = completedAt || new Date().toISOString();
+            nextState = 'done';
+        } else {
+            completedAt = null;
+            nextState = Number(blocked) ? 'blocked' : 'open';
+        }
+    }
 
     db.prepare(`
         UPDATE tasks_new SET title = ?, updated_at = ?
@@ -4501,31 +5599,35 @@ app.put('/api/tasks/:id', (req, res) => {
     `).run(normalizedText, new Date().toISOString(), existing.task_id);
 
     db.prepare(`
-        UPDATE task_instances SET
-            state = ?,
-            due_at = ?,
-            sla_target_at = ?,
-            priority_override = ?,
-            rank = ?,
-            blocked = ?,
-            completed_at = ?,
-            archive_after_due = ?,
-            keep_until = ?,
-            notes = ?
-        WHERE id = ?
-    `).run(
-        nextState,
-        due_at,
-        sla_target_at,
-        priority_override,
-        rank,
-        Number(blocked) ? 1 : 0,
-        completedAt,
-        Number(archive_after_due) ? 1 : 0,
-        keep_until,
-        notes != null ? String(notes).trim() : null,
-        id
-    );
+            UPDATE task_instances SET
+                state = ?,
+                due_at = ?,
+                sla_target_at = ?,
+                priority_override = ?,
+                rank = ?,
+                blocked = ?,
+                completed_at = ?,
+                archive_after_due = ?,
+                keep_until = ?,
+                progress_key = ?,
+                progress_steps = ?,
+                notes = ?
+            WHERE id = ?
+        `).run(
+            nextState,
+            due_at,
+            sla_target_at,
+            priority_override,
+            rank,
+            Number(blocked) ? 1 : 0,
+            completedAt,
+            Number(archive_after_due) ? 1 : 0,
+            keep_until,
+            progressKeyValue,
+            Array.isArray(progress_steps) ? JSON.stringify(parsedProgressSteps) : existing.progress_steps,
+            notes != null ? String(notes).trim() : null,
+            id
+        );
 
     const [updated] = listTaskInstances('WHERE ti.id = ?', [id]);
     res.json(updated);
@@ -5376,6 +6478,9 @@ const ROLE_KEYS = [
     'childcare'
 ];
 
+const EIGHT_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist'];
+const TEN_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist', 'lem', 'acolyte', 'usher', 'sound', 'coffeeHour', 'childcare'];
+
 const ROLE_FIELD_MAP = {
     celebrant: 'celebrant',
     preacher: 'preacher',
@@ -5387,6 +6492,133 @@ const ROLE_FIELD_MAP = {
     sound: 'sound',
     coffeeHour: 'coffeeHour',
     childcare: 'childcare'
+};
+
+const parseJsonArray = (value) => {
+    if (!value) return [];
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+};
+
+const parseJsonObject = (value) => {
+    if (!value) return {};
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+};
+
+const getSundayIndex = (dateStr) => {
+    const date = new Date(`${dateStr}T00:00:00`);
+    const firstOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
+    const firstDow = firstOfMonth.getDay();
+    const firstSunday = 1 + ((7 - firstDow) % 7);
+    const index = Math.floor((date.getDate() - firstSunday) / 7) + 1;
+    return index;
+};
+
+const getRotationAssignmentsForDate = (dateStr, roleKeys) => {
+    const teamNumber = getSundayIndex(dateStr);
+    if (teamNumber > 4 || teamNumber < 1) return { __skipRotation: true };
+    const rows = db.prepare('SELECT id, roles, teams FROM people').all();
+    const assignments = {};
+    roleKeys.forEach((roleKey) => {
+        assignments[roleKey] = [];
+    });
+    rows.forEach((row) => {
+        const roles = parseJsonArray(row.roles);
+        const teams = parseJsonObject(row.teams);
+        roleKeys.forEach((roleKey) => {
+            if (!roles.includes(roleKey)) return;
+            const teamList = Array.isArray(teams?.[roleKey]) ? teams[roleKey] : [];
+            if (teamList.map(Number).includes(teamNumber)) {
+                assignments[roleKey].push(row.id);
+            }
+        });
+    });
+    return assignments;
+};
+
+const ensureSundayOccurrence = (date, serviceTime) => {
+    const existing = db.prepare(`
+        SELECT id FROM event_occurrences
+        WHERE event_id = 'sunday-service' AND date = ? AND start_time = ?
+    `).get(date, serviceTime);
+    if (existing?.id) return existing.id;
+    const rite = serviceTime.startsWith('08') ? 'Rite I' : 'Rite II';
+    const occurrenceId = `occ-${randomUUID()}`;
+    db.prepare(`
+        INSERT INTO event_occurrences (
+            id, event_id, date, start_time, end_time, building_id, rite, is_default, notes
+        ) VALUES (?, 'sunday-service', ?, ?, NULL, ?, ?, 0, NULL)
+    `).run(
+        occurrenceId,
+        date,
+        serviceTime,
+        DEFAULT_LOCATION_BY_TIME[serviceTime] || '',
+        rite
+    );
+    return occurrenceId;
+};
+
+const replaceAssignmentsForRole = (occurrenceId, roleKey, personIds) => {
+    db.prepare('DELETE FROM assignments WHERE occurrence_id = ? AND role_key = ?')
+        .run(occurrenceId, roleKey);
+    const uniquePeople = Array.from(new Set(personIds || []));
+    uniquePeople.forEach((personId) => {
+        db.prepare(`
+            INSERT INTO assignments (id, occurrence_id, role_key, person_id)
+            VALUES (?, ?, ?, ?)
+        `).run(`asgn-${randomUUID()}`, occurrenceId, roleKey, personId);
+    });
+};
+
+const formatDateKey = (date) => date.toISOString().slice(0, 10);
+
+const applyRotationForDate = (date) => {
+    const rotationTen = getRotationAssignmentsForDate(date, TEN_AM_ROLE_KEYS);
+    const rotationEight = getRotationAssignmentsForDate(date, EIGHT_AM_ROLE_KEYS);
+    const skipRotation = rotationTen.__skipRotation || rotationEight.__skipRotation;
+
+    const occurrenceTen = ensureSundayOccurrence(date, '10:00');
+    if (!skipRotation) {
+        Object.entries(rotationTen).forEach(([roleKey, personIds]) => {
+            if (roleKey === '__skipRotation') return;
+            if (!personIds.length) return;
+            replaceAssignmentsForRole(occurrenceTen, roleKey, personIds);
+        });
+    } else {
+        const keepRoles = new Set(['celebrant', 'preacher', 'organist', 'sound']);
+        TEN_AM_ROLE_KEYS.forEach((roleKey) => {
+            if (keepRoles.has(roleKey)) return;
+            replaceAssignmentsForRole(occurrenceTen, roleKey, []);
+        });
+    }
+    applyDefaultSundayAssignments(occurrenceTen, date, '10:00', { skipTeams: skipRotation });
+
+    const occurrenceEight = ensureSundayOccurrence(date, '08:00');
+    if (!skipRotation) {
+        Object.entries(rotationEight).forEach(([roleKey, personIds]) => {
+            if (roleKey === '__skipRotation') return;
+            if (!personIds.length) return;
+            replaceAssignmentsForRole(occurrenceEight, roleKey, personIds);
+        });
+    } else {
+        const keepRoles = new Set(['celebrant', 'preacher', 'organist', 'sound']);
+        EIGHT_AM_ROLE_KEYS.forEach((roleKey) => {
+            if (keepRoles.has(roleKey)) return;
+            replaceAssignmentsForRole(occurrenceEight, roleKey, []);
+        });
+    }
+    applyDefaultSundayAssignments(occurrenceEight, date, '08:00');
+
+    return { date, serviceTimes: ['08:00', '10:00'], skipRotation };
 };
 
 const normalizeAssignmentList = (value, peopleIndex) => {
@@ -5415,6 +6647,306 @@ const buildServiceRowsFromOccurrences = (occurrences = []) => {
     });
 };
 
+const ROLE_LABELS = {
+    celebrant: 'Celebrant',
+    preacher: 'Preacher',
+    organist: 'Organist',
+    lector: 'Lector',
+    usher: 'Usher',
+    acolyte: 'Acolyte',
+    lem: 'LEM',
+    sound: 'Sound',
+    coffeeHour: 'Coffee Hour',
+    childcare: 'Childcare'
+};
+
+const buildUpcomingSundaySchedule = (startDate) => {
+    const liturgicalDays = db.prepare(`
+        SELECT date, feast, color
+        FROM liturgical_days
+        WHERE date >= ?
+        ORDER BY date
+    `).all(startDate);
+    const liturgicalByDate = new Map(liturgicalDays.map((day) => [day.date, day]));
+
+    const peopleRows = db.prepare('SELECT id, display_name FROM people').all();
+    const peopleById = new Map(peopleRows.map((row) => [row.id, row.display_name]));
+
+    const buildingRows = db.prepare('SELECT id, name FROM buildings').all();
+    const buildingsById = new Map(buildingRows.map((row) => [row.id, row.name]));
+
+    const occurrencesByDate = loadSundayOccurrences(startDate, null);
+    const dates = Object.keys(occurrencesByDate)
+        .filter((date) => {
+            const parsed = parseISO(date);
+            return !Number.isNaN(parsed.getTime()) && isSunday(parsed);
+        })
+        .sort((a, b) => a.localeCompare(b));
+
+    const entries = dates.map((date) => {
+        const dateObj = parseISO(date);
+        const liturgical = liturgicalByDate.get(date);
+            const services = (occurrencesByDate[date] || [])
+                .filter((occurrence) => ['08:00', '10:00'].includes(occurrence.start_time || '10:00'))
+                .map((occurrence) => {
+                const time = occurrence.start_time || '10:00';
+                const rite = occurrence.rite || (time.startsWith('08') ? 'Rite I' : 'Rite II');
+                const locationName = buildingsById.get(occurrence.building_id) || occurrence.building_id || '';
+                const roles = ROLE_KEYS.reduce((acc, roleKey) => {
+                    const ids = occurrence.roles?.[roleKey] || [];
+                    const names = ids
+                        .map((id) => peopleById.get(id) || id)
+                        .filter(Boolean)
+                        .join(', ');
+                    acc[roleKey] = names;
+                    return acc;
+                }, {});
+                return { time, rite, location: locationName, roles };
+            })
+            .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+
+        return {
+            date,
+            dateObj,
+            feast: liturgical?.feast || 'Sunday',
+            color: liturgical?.color || '',
+            services
+        };
+    });
+
+    const grouped = new Map();
+    entries.forEach((entry) => {
+        const monthKey = format(entry.dateObj, 'MMMM yyyy');
+        if (!grouped.has(monthKey)) grouped.set(monthKey, []);
+        grouped.get(monthKey).push(entry);
+    });
+
+    return Array.from(grouped.entries()).map(([month, items]) => ({ month, items }));
+};
+
+const wrapTextLines = (text, font, size, maxWidth) => {
+    const raw = String(text || '').trim();
+    if (!raw) return [''];
+    const words = raw.split(/\s+/);
+    const lines = [];
+    let current = '';
+    words.forEach((word) => {
+        const next = current ? `${current} ${word}` : word;
+        const width = font.widthOfTextAtSize(next, size);
+        if (width <= maxWidth) {
+            current = next;
+            return;
+        }
+        if (current) lines.push(current);
+        current = word;
+    });
+    if (current) lines.push(current);
+    return lines.length ? lines : [''];
+};
+
+const parseReadings = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return [];
+    return raw
+        .split(';')
+        .map((item) => item.trim())
+        .filter(Boolean);
+};
+
+const classifyReading = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return 'unknown';
+    if (/\bpsalm\b/i.test(raw)) return 'psalm';
+    if (/\bgospel\b/i.test(raw)) return 'gospel';
+
+    const normalize = (text) => text.toLowerCase().replace(/\s+/g, ' ').trim();
+    const book = normalize(raw);
+    const startsWith = (name) => new RegExp(`^${name}\\b`, 'i').test(book);
+
+    const gospelBooks = ['matthew', 'mark', 'luke', 'john'];
+    if (gospelBooks.some((name) => startsWith(name))) return 'gospel';
+
+    const ntBooks = [
+        'acts',
+        'romans',
+        '1 corinthians',
+        '2 corinthians',
+        'corinthians',
+        'galatians',
+        'ephesians',
+        'philippians',
+        'colossians',
+        '1 thessalonians',
+        '2 thessalonians',
+        'thessalonians',
+        '1 timothy',
+        '2 timothy',
+        'timothy',
+        'titus',
+        'philemon',
+        'hebrews',
+        'james',
+        '1 peter',
+        '2 peter',
+        'peter',
+        '1 john',
+        '2 john',
+        '3 john',
+        'jude',
+        'revelation'
+    ];
+    if (ntBooks.some((name) => startsWith(name))) return 'nt';
+
+    const otBooks = [
+        'genesis', 'exodus', 'leviticus', 'numbers', 'deuteronomy',
+        'joshua', 'judges', 'ruth', '1 samuel', '2 samuel', 'samuel',
+        '1 kings', '2 kings', 'kings', '1 chronicles', '2 chronicles', 'chronicles',
+        'ezra', 'nehemiah', 'esther', 'job', 'proverbs', 'ecclesiastes', 'song of solomon',
+        'song of songs', 'isaiah', 'jeremiah', 'lamentations', 'ezekiel', 'daniel',
+        'hosea', 'joel', 'amos', 'obadiah', 'jonah', 'micah', 'nahum', 'habakkuk',
+        'zephaniah', 'haggai', 'zechariah', 'malachi'
+    ];
+    if (otBooks.some((name) => startsWith(name))) return 'ot';
+
+    return 'unknown';
+};
+
+const mergeReadingFragments = (list) => {
+    const merged = [];
+    list.forEach((item) => {
+        const trimmed = String(item || '').trim();
+        if (!trimmed) return;
+        const isContinuation = /^(?:\d+\s*[:\[]|\[\d|\(\d|or\b)/i.test(trimmed);
+        if (isContinuation && merged.length > 0) {
+            merged[merged.length - 1] = `${merged[merged.length - 1]}; ${trimmed}`;
+            return;
+        }
+        merged.push(trimmed);
+    });
+    return merged;
+};
+
+const getReadingPair = (readings) => {
+    const list = Array.isArray(readings) ? readings : parseReadings(readings);
+    const merged = mergeReadingFragments(list);
+    const filtered = merged.filter((item) => {
+        const type = classifyReading(item);
+        return type !== 'psalm' && type !== 'gospel';
+    });
+
+    const oldTestament = filtered.find((item) => classifyReading(item) === 'ot') || '';
+    const newTestament = filtered.find((item) => classifyReading(item) === 'nt') || '';
+
+    return {
+        oldTestament: oldTestament || filtered[0] || '',
+        newTestament: newTestament || filtered[1] || ''
+    };
+};
+
+const pickReadingForService = (readings, serviceTime) => {
+    const { oldTestament, newTestament } = getReadingPair(readings);
+    if (String(serviceTime || '').startsWith('08')) return oldTestament || newTestament || '';
+    return newTestament || oldTestament || '';
+};
+
+const wrapCellLines = (text, font, size, maxWidth) => {
+    const segments = String(text || '')
+        .split('\n')
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+    if (segments.length === 0) return [''];
+    const lines = [];
+    segments.forEach((segment) => {
+        wrapTextLines(segment, font, size, maxWidth).forEach((line) => lines.push(line));
+    });
+    return lines.length ? lines : [''];
+};
+
+const buildScheduleForMonths = (monthKeys = []) => {
+    const validKeys = Array.from(new Set(monthKeys))
+        .map((key) => String(key || '').trim())
+        .filter((key) => /^\d{4}-\d{2}$/.test(key));
+    if (validKeys.length === 0) return [];
+
+    const peopleRows = db.prepare('SELECT id, display_name FROM people').all();
+    const peopleById = new Map(peopleRows.map((row) => [row.id, row.display_name]));
+
+    const buildingRows = db.prepare('SELECT id, name FROM buildings').all();
+    const buildingsById = new Map(buildingRows.map((row) => [row.id, row.name]));
+
+    const monthData = [];
+    validKeys.forEach((monthKey) => {
+        const [year, month] = monthKey.split('-').map(Number);
+        const monthStart = new Date(year, month - 1, 1);
+        const monthEnd = new Date(year, month, 0);
+        const startKey = formatDateKey(monthStart);
+        const endKey = formatDateKey(monthEnd);
+
+        const liturgicalDays = db.prepare(`
+            SELECT date, feast, readings
+            FROM liturgical_days
+            WHERE date BETWEEN ? AND ?
+            ORDER BY date
+        `).all(startKey, endKey);
+        const liturgicalByDate = new Map(liturgicalDays.map((day) => [day.date, day]));
+
+        const occurrencesByDate = loadSundayOccurrences(startKey, endKey);
+        const dates = Object.keys(occurrencesByDate)
+            .filter((date) => {
+                const parsed = parseISO(date);
+                return !Number.isNaN(parsed.getTime()) && isSunday(parsed);
+            })
+            .sort((a, b) => a.localeCompare(b));
+
+        const rows = [];
+        dates.forEach((date) => {
+            const dateObj = parseISO(date);
+            const liturgical = liturgicalByDate.get(date);
+            const readings = parseReadings(liturgical?.readings || '');
+            const services = (occurrencesByDate[date] || [])
+                .filter((occurrence) => ['08:00', '10:00'].includes(occurrence.start_time || '10:00'))
+                .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+
+            services.forEach((occurrence) => {
+                const time = occurrence.start_time || '10:00';
+                const locationName = buildingsById.get(occurrence.building_id) || occurrence.building_id || '';
+                const feast = liturgical?.feast || 'Sunday';
+                const reading = pickReadingForService(readings, time);
+
+                const getRoleNames = (roleKey, { numbered = false } = {}) => {
+                    const ids = occurrence.roles?.[roleKey] || [];
+                    const names = ids.map((id) => peopleById.get(id) || id).filter(Boolean);
+                    if (!numbered) return names.join('\n');
+                    return names.map((name, index) => `${index + 1}: ${name}`).join('\n');
+                };
+
+                rows.push({
+                    date,
+                    dateObj,
+                    time,
+                    feast,
+                    location: locationName,
+                    lector: getRoleNames('lector', { numbered: time.startsWith('10') }),
+                    lem: getRoleNames('lem'),
+                    acolyte: getRoleNames('acolyte'),
+                    usher: getRoleNames('usher'),
+                    sound: getRoleNames('sound'),
+                    reading
+                });
+            });
+        });
+
+        if (rows.length) {
+            monthData.push({
+                monthLabel: format(monthStart, 'MMMM yyyy'),
+                rows
+            });
+        }
+    });
+
+    return monthData;
+};
+
 const loadSundayOccurrences = (start, end) => {
     const params = [];
     let sql = `
@@ -5423,6 +6955,7 @@ const loadSundayOccurrences = (start, end) => {
         FROM event_occurrences o
         LEFT JOIN assignments a ON a.occurrence_id = o.id
         WHERE o.event_id = 'sunday-service'
+          AND o.start_time IN ('08:00','10:00')
     `;
     if (start && end) {
         sql += ' AND o.date BETWEEN ? AND ?';
@@ -5495,9 +7028,11 @@ app.get('/api/sundays', (req, res) => {
 app.get('/api/schedule-roles', (req, res) => {
     const { start, end } = req.query;
     const occurrencesByDate = loadSundayOccurrences(start, end);
+    const allowedTimes = new Set(['08:00', '10:00']);
     const rows = [];
     Object.values(occurrencesByDate).forEach((occurrences) => {
         occurrences.forEach((occurrence) => {
+            if (occurrence.start_time && !allowedTimes.has(occurrence.start_time)) return;
             rows.push({
                 id: occurrence.id,
                 date: occurrence.date,
@@ -5602,7 +7137,465 @@ app.put('/api/schedule-roles', (req, res) => {
     });
 
     applyDefaultSundayAssignments(occurrenceId, date, service_time);
+
+    if (service_time === '10:00') {
+        const mirrorOccurrenceId = ensureSundayOccurrence(date, '08:00');
+        const mirrorRoles = ['celebrant', 'preacher'];
+        mirrorRoles.forEach((roleKey) => {
+            const apiKey = ROLE_FIELD_MAP[roleKey];
+            if (!apiKey) return;
+            deleteAssignments.run(mirrorOccurrenceId, roleKey);
+            const people = normalizeAssignmentList(normalized[apiKey], peopleIndex);
+            const uniquePeople = Array.from(new Set(people));
+            uniquePeople.forEach((personId) => {
+                insertAssignment.run(`asgn-${randomUUID()}`, mirrorOccurrenceId, roleKey, personId);
+            });
+        });
+        applyDefaultSundayAssignments(mirrorOccurrenceId, date, '08:00');
+    }
     res.json({ success: true, date, service_time });
+});
+
+app.post('/api/schedule-roles/auto-next-month', (req, res) => {
+    try {
+        const now = new Date();
+        const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        const nextMonthEnd = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+        const startKey = formatDateKey(nextMonthStart);
+        const endKey = formatDateKey(nextMonthEnd);
+
+        const sundayRows = db.prepare(`
+            SELECT date
+            FROM liturgical_days
+            WHERE date BETWEEN ? AND ?
+              AND CAST(strftime('%w', date) AS INTEGER) = 0
+            ORDER BY date
+        `).all(startKey, endKey);
+
+        const results = sundayRows.map(({ date }) => applyRotationForDate(date));
+
+        res.json({ ok: true, month: format(nextMonthStart, 'MMMM yyyy'), dates: results.length });
+    } catch (error) {
+        console.error('Auto schedule next month error:', error);
+        res.status(500).json({ error: 'Failed to schedule next month' });
+    }
+});
+
+app.post('/api/schedule-roles/auto-week', (req, res) => {
+    try {
+        const date = String(req.body?.date || '').trim();
+        if (!date) {
+            return res.status(400).json({ error: 'Date is required' });
+        }
+        const parsed = parseISO(date);
+        if (Number.isNaN(parsed.getTime()) || !isSunday(parsed)) {
+            return res.status(400).json({ error: 'Date must be a Sunday' });
+        }
+        const result = applyRotationForDate(date);
+        res.json({ ok: true, ...result });
+    } catch (error) {
+        console.error('Auto schedule week error:', error);
+        res.status(500).json({ error: 'Failed to schedule week' });
+    }
+});
+
+app.post('/api/dev/restart', (req, res) => {
+    const ip = req.ip || req.connection?.remoteAddress || '';
+    const isLocal = ip.includes('127.0.0.1') || ip === '::1' || ip.endsWith('::1');
+    if (process.env.NODE_ENV === 'production' || !isLocal) {
+        return res.status(403).json({ error: 'Restart not allowed' });
+    }
+    try {
+        const scriptPath = resolve(__dirname, '../scripts/restart-dev.ps1');
+        const child = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true
+        });
+        child.unref();
+        res.json({ ok: true });
+    } catch (error) {
+        console.error('Restart error:', error);
+        res.status(500).json({ error: 'Failed to restart dev services' });
+    }
+});
+
+app.get('/api/liturgical-schedule/pdf', async (req, res) => {
+    try {
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const scheduleGroups = buildUpcomingSundaySchedule(todayKey);
+
+        const doc = await PDFDocument.create();
+        const fontRegular = await doc.embedFont(StandardFonts.Helvetica);
+        const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
+
+        const pageMargin = 36;
+        const headingSize = 16;
+        const subheadingSize = 13;
+        const bodySize = 10;
+        const lineHeight = 12;
+
+        const drawHeader = (page, monthLabel, isContinued = false) => {
+            const { width, height } = page.getSize();
+            const title = 'Liturgical Schedule';
+            page.drawText(title, {
+                x: pageMargin,
+                y: height - pageMargin - headingSize,
+                size: headingSize,
+                font: fontBold,
+                color: rgb(0.12, 0.16, 0.23)
+            });
+            const monthText = isContinued ? `${monthLabel} (continued)` : monthLabel;
+            page.drawText(monthText, {
+                x: pageMargin,
+                y: height - pageMargin - headingSize - 18,
+                size: subheadingSize,
+                font: fontRegular,
+                color: rgb(0.25, 0.31, 0.39)
+            });
+            return height - pageMargin - headingSize - 34;
+        };
+
+        scheduleGroups.forEach(({ month, items }) => {
+            let page = doc.addPage();
+            const { width, height } = page.getSize();
+            let cursorY = drawHeader(page, month);
+            const maxTextWidth = width - pageMargin * 2;
+
+            items.forEach((entry) => {
+                const dateLabel = `${format(entry.dateObj, 'MMM d, yyyy')} — ${entry.feast || 'Sunday'}`;
+                const dateLines = wrapTextLines(dateLabel, fontBold, bodySize, maxTextWidth);
+                dateLines.forEach((line) => {
+                    cursorY -= lineHeight;
+                    if (cursorY < pageMargin + 40) {
+                        page = doc.addPage();
+                        cursorY = drawHeader(page, month, true);
+                    }
+                    page.drawText(line, {
+                        x: pageMargin,
+                        y: cursorY,
+                        size: bodySize,
+                        font: fontBold,
+                        color: rgb(0.1, 0.1, 0.1)
+                    });
+                });
+
+                entry.services.forEach((service) => {
+                    const serviceLabel = `${service.time || '10:00'}${service.location ? ` • ${service.location}` : ''}${service.rite ? ` • ${service.rite}` : ''}`;
+                    cursorY -= lineHeight;
+                    if (cursorY < pageMargin + 40) {
+                        page = doc.addPage();
+                        cursorY = drawHeader(page, month, true);
+                    }
+                    page.drawText(serviceLabel, {
+                        x: pageMargin + 10,
+                        y: cursorY,
+                        size: bodySize,
+                        font: fontRegular,
+                        color: rgb(0.32, 0.38, 0.45)
+                    });
+
+                    ROLE_KEYS.forEach((roleKey) => {
+                        const names = service.roles?.[roleKey] || '';
+                        if (!names) return;
+                        const label = ROLE_LABELS[roleKey] || roleKey;
+                        const linePrefix = `${label}: `;
+                        const labelWidth = fontRegular.widthOfTextAtSize(linePrefix, bodySize);
+                        const availableWidth = maxTextWidth - 32 - labelWidth;
+                        const lines = wrapTextLines(names, fontRegular, bodySize, availableWidth);
+                        lines.forEach((line, index) => {
+                            cursorY -= lineHeight;
+                            if (cursorY < pageMargin + 40) {
+                                page = doc.addPage();
+                                cursorY = drawHeader(page, month, true);
+                            }
+                            if (index === 0) {
+                                page.drawText(linePrefix, {
+                                    x: pageMargin + 24,
+                                    y: cursorY,
+                                    size: bodySize,
+                                    font: fontRegular,
+                                    color: rgb(0.15, 0.2, 0.26)
+                                });
+                            }
+                            page.drawText(line, {
+                                x: pageMargin + 24 + labelWidth,
+                                y: cursorY,
+                                size: bodySize,
+                                font: fontRegular,
+                                color: rgb(0.15, 0.2, 0.26)
+                            });
+                        });
+                    });
+                });
+
+                cursorY -= lineHeight * 0.6;
+            });
+        });
+
+        const pdfBytes = await doc.save();
+        const fileName = `liturgical-schedule-${todayKey}.pdf`;
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.send(Buffer.from(pdfBytes));
+    } catch (error) {
+        console.error('Liturgical schedule PDF error:', error);
+        res.status(500).json({ error: 'Failed to build liturgical schedule PDF' });
+    }
+});
+
+app.post('/api/liturgical-schedule/pdf-months', async (req, res) => {
+    try {
+        const months = Array.isArray(req.body?.months) ? req.body.months : [];
+        const scheduleGroups = buildScheduleForMonths(months);
+        if (scheduleGroups.length === 0) {
+            return res.status(400).json({ error: 'No schedule data for selected months' });
+        }
+
+        const doc = await PDFDocument.create();
+        const fontRegular = await doc.embedFont(StandardFonts.Helvetica);
+        const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
+
+        const pageMargin = 36;
+        const headingSize = 14;
+        const subheadingSize = 12;
+        const bodySize = 9;
+        const lineHeight = 11;
+        const tableWidth = 720;
+        const columns = [
+            { key: 'service', label: '', width: 220 },
+            { key: 'lector', label: 'Lector', width: 90 },
+            { key: 'lem', label: 'LEM', width: 80 },
+            { key: 'acolyte', label: 'Acolytes', width: 90 },
+            { key: 'usher', label: 'Ushers', width: 90 },
+            { key: 'sound', label: 'Sound/Stream', width: 80 },
+            { key: 'reading', label: '', width: 70 }
+        ];
+
+        const drawPageHeader = (page, monthLabel, continued = false) => {
+            const { width, height } = page.getSize();
+            const title = 'St. Edmund\'s Episcopal Church - Liturgical Schedule';
+            const titleWidth = fontBold.widthOfTextAtSize(title, headingSize);
+            page.drawText(title, {
+                x: (width - titleWidth) / 2,
+                y: height - pageMargin - headingSize,
+                size: headingSize,
+                font: fontBold,
+                color: rgb(0.1, 0.1, 0.1)
+            });
+            const monthText = continued ? `${monthLabel} (continued)` : monthLabel;
+            const monthWidth = fontRegular.widthOfTextAtSize(monthText, subheadingSize);
+            page.drawText(monthText, {
+                x: (width - monthWidth) / 2,
+                y: height - pageMargin - headingSize - 16,
+                size: subheadingSize,
+                font: fontRegular,
+                color: rgb(0.2, 0.2, 0.2)
+            });
+            return height - pageMargin - headingSize - 34;
+        };
+
+        const drawTableHeader = (page, topY, monthLabel) => {
+            const { width } = page.getSize();
+            const left = (width - tableWidth) / 2;
+            const headerHeight = lineHeight + 8;
+            page.drawRectangle({
+                x: left,
+                y: topY - headerHeight,
+                width: tableWidth,
+                height: headerHeight,
+                color: rgb(0.86, 0.86, 0.86),
+                borderWidth: 1,
+                borderColor: rgb(0.1, 0.1, 0.1)
+            });
+            let cursorX = left;
+            columns.forEach((col, index) => {
+                if (index > 0) {
+                    page.drawLine({
+                        start: { x: cursorX, y: topY },
+                        end: { x: cursorX, y: topY - headerHeight },
+                        thickness: 1,
+                        color: rgb(0.1, 0.1, 0.1)
+                    });
+                }
+                const label = index === 0 ? monthLabel.toUpperCase() : col.label;
+                if (label) {
+                    const textWidth = fontBold.widthOfTextAtSize(label, bodySize);
+                    page.drawText(label, {
+                        x: cursorX + (col.width - textWidth) / 2,
+                        y: topY - headerHeight + 4,
+                        size: bodySize,
+                        font: fontBold,
+                        color: rgb(0.1, 0.1, 0.1)
+                    });
+                }
+                cursorX += col.width;
+            });
+            return topY - headerHeight;
+        };
+
+        const drawFooter = (page) => {
+            const { width } = page.getSize();
+            const leftText = 'Lector 1: Reads Old Testament Lesson';
+            const rightText = 'Lector 2: Reads Epistle';
+            page.drawText(leftText, {
+                x: pageMargin + 40,
+                y: pageMargin - 8,
+                size: 9,
+                font: fontRegular,
+                color: rgb(0.1, 0.1, 0.1)
+            });
+            const rightWidth = fontRegular.widthOfTextAtSize(rightText, 9);
+            page.drawText(rightText, {
+                x: width - pageMargin - 40 - rightWidth,
+                y: pageMargin - 8,
+                size: 9,
+                font: fontRegular,
+                color: rgb(0.1, 0.1, 0.1)
+            });
+        };
+
+        const drawRow = (page, topY, cells, rowIndex) => {
+            const { width } = page.getSize();
+            const left = (width - tableWidth) / 2;
+            const lineSets = columns.map((col) => wrapCellLines(cells[col.key] || '', fontRegular, bodySize, col.width - 8));
+            const rowHeight = Math.max(...lineSets.map((lines) => lines.length)) * lineHeight + 6;
+            let cursorX = left;
+            const stripeFill = Math.floor(rowIndex / 2) % 2 === 0 ? rgb(0.92, 0.92, 0.92) : null;
+            lineSets.forEach((lines, index) => {
+                page.drawRectangle({
+                    x: cursorX,
+                    y: topY - rowHeight,
+                    width: columns[index].width,
+                    height: rowHeight,
+                    color: stripeFill || undefined,
+                    borderWidth: 1,
+                    borderColor: rgb(0.1, 0.1, 0.1)
+                });
+                lines.forEach((line, lineIndex) => {
+                    const color = columns[index].key === 'reading'
+                        ? rgb(0.1, 0.1, 0.8)
+                        : rgb(0.1, 0.1, 0.1);
+                    page.drawText(line, {
+                        x: cursorX + 4,
+                        y: topY - 10.5 - lineIndex * lineHeight,
+                        size: bodySize,
+                        font: fontRegular,
+                        color
+                    });
+                });
+                cursorX += columns[index].width;
+            });
+            return rowHeight;
+        };
+
+        scheduleGroups.forEach(({ monthLabel, rows }) => {
+            let page = doc.addPage([792, 612]);
+            let cursorY = drawPageHeader(page, monthLabel);
+            cursorY = drawTableHeader(page, cursorY, monthLabel);
+
+            rows.forEach((row, index) => {
+                const timeLabel = String(row.time || '')
+                    .replace(/^0/, '')
+                    .replace(':00', ':00 AM');
+                const serviceLines = [
+                    `Sunday, ${format(row.dateObj, 'MMMM d')}`,
+                    timeLabel,
+                    row.location ? `${row.feast} (${row.location})` : row.feast
+                ].filter(Boolean);
+
+                const cells = {
+                    service: serviceLines.join('\n'),
+                    lector: row.lector,
+                    lem: row.lem,
+                    acolyte: row.acolyte,
+                    usher: row.usher,
+                    sound: row.sound,
+                    reading: row.reading
+                };
+
+                const rowHeight = Math.max(
+                    ...columns.map((col) => wrapCellLines(cells[col.key] || '', fontRegular, bodySize, col.width - 8).length)
+                ) * lineHeight + 6;
+                if (cursorY - rowHeight < pageMargin + 28) {
+                    drawFooter(page);
+                    page = doc.addPage([792, 612]);
+                    cursorY = drawPageHeader(page, monthLabel, true);
+                    cursorY = drawTableHeader(page, cursorY, monthLabel);
+                }
+                const usedHeight = drawRow(page, cursorY, cells, index);
+                cursorY -= usedHeight;
+            });
+
+            drawFooter(page);
+        });
+
+        const pdfBytes = await doc.save();
+        const fileName = `liturgical-schedule-table-${months.join('-')}.pdf`;
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('X-Liturgical-Layout', 'table-v2');
+        res.send(Buffer.from(pdfBytes));
+    } catch (error) {
+        console.error('Liturgical schedule months PDF error:', error);
+        res.status(500).json({ error: 'Failed to build liturgical schedule PDF' });
+    }
+});
+
+app.post('/api/liturgical-schedule/xlsx-months', async (req, res) => {
+    try {
+        const months = Array.isArray(req.body?.months) ? req.body.months : [];
+        const scheduleGroups = buildScheduleForMonths(months);
+        if (scheduleGroups.length === 0) {
+            return res.status(400).json({ error: 'No schedule data for selected months' });
+        }
+
+        const dateSet = new Set();
+        scheduleGroups.forEach((group) => {
+            group.rows.forEach((row) => dateSet.add(row.date));
+        });
+        const dates = Array.from(dateSet);
+        const readingsMap = new Map();
+        if (dates.length > 0) {
+            const placeholders = dates.map(() => '?').join(',');
+            const rows = db.prepare(`SELECT date, readings FROM liturgical_days WHERE date IN (${placeholders})`).all(...dates);
+            rows.forEach((row) => readingsMap.set(row.date, row.readings));
+        }
+
+        const sheetRows = [];
+        scheduleGroups.forEach((group) => {
+            group.rows.forEach((row) => {
+                const readings = readingsMap.get(row.date) || '';
+                const { oldTestament, newTestament } = getReadingPair(readings);
+                sheetRows.push({
+                    Month: group.monthLabel,
+                    Date: format(row.dateObj, 'yyyy-MM-dd'),
+                    Service: row.time || '10:00',
+                    Feast: row.location ? `${row.feast} (${row.location})` : row.feast,
+                    Lector: row.lector || '',
+                    LEM: row.lem || '',
+                    Acolytes: row.acolyte || '',
+                    Ushers: row.usher || '',
+                    'Sound/Stream': row.sound || '',
+                    'Old Testament': oldTestament || '',
+                    'New Testament': newTestament || ''
+                });
+            });
+        });
+
+        const workbook = xlsx.utils.book_new();
+        const worksheet = xlsx.utils.json_to_sheet(sheetRows);
+        xlsx.utils.book_append_sheet(workbook, worksheet, 'Liturgical Schedule');
+        const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+        const fileName = `liturgical-schedule-${months.join('-')}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.send(Buffer.from(buffer));
+    } catch (error) {
+        console.error('Liturgical schedule XLSX error:', error);
+        res.status(500).json({ error: 'Failed to build liturgical schedule spreadsheet' });
+    }
 });
 
 // --- Vestry Packet Builder ---
@@ -6885,8 +8878,8 @@ app.post('/api/deposit-slip/pdf', depositBundleUpload.fields([
     try {
         const checksFile = req.files?.checksPdf?.[0] || null;
         const cashFile = req.files?.cashPdf?.[0] || null;
-        if (!checksFile || !cashFile) {
-            return res.status(400).json({ error: 'Checks PDF and Cash Count PDF are required' });
+        if (!checksFile) {
+            return res.status(400).json({ error: 'Checks PDF is required' });
         }
         const slipFileId = String(req.body?.slipFileId || '').trim();
         const slipPath = buildDepositFilePath(slipFileId);
@@ -6899,19 +8892,23 @@ app.post('/api/deposit-slip/pdf', depositBundleUpload.fields([
             return res.status(404).json({ error: 'Deposit slip file not found' });
         }
         checksPath = checksFile.path;
-        cashPath = cashFile.path;
+        cashPath = cashFile?.path || null;
 
         const depositBytes = await readFile(slipPath);
         const depositDoc = await PDFDocument.load(depositBytes);
+        const depositForm = depositDoc.getForm();
+        depositForm.flatten();
         const finalDoc = await PDFDocument.create();
         const [depositPage] = await finalDoc.copyPages(depositDoc, [0]);
         finalDoc.addPage(depositPage);
 
-        const cashBytes = await readFile(cashPath);
-        const cashDoc = await PDFDocument.load(cashBytes);
-        if (cashDoc.getPageCount() > 0) {
-            const [cashPage] = await finalDoc.copyPages(cashDoc, [0]);
-            finalDoc.addPage(cashPage);
+        if (cashPath) {
+            const cashBytes = await readFile(cashPath);
+            const cashDoc = await PDFDocument.load(cashBytes);
+            if (cashDoc.getPageCount() > 0) {
+                const [cashPage] = await finalDoc.copyPages(cashDoc, [0]);
+                finalDoc.addPage(cashPage);
+            }
         }
 
         const checksBytes = await readFile(checksPath);

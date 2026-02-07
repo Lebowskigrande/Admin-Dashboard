@@ -141,6 +141,61 @@
     align-items: center;
 }
 
+.export-months {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.export-months__intro {
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+}
+
+.export-months__format {
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    font-weight: 600;
+    color: var(--color-text-main);
+}
+
+.export-months__format label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.export-months__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+}
+
+.export-months__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid rgba(15, 23, 42, 0.1);
+    border-radius: 10px;
+    background: #f8fafc;
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--color-text-main);
+}
+
+.export-months__item input {
+    accent-color: var(--color-primary);
+}
+
+.export-months__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
 .schedule-roles {
     display: grid;
     grid-template-columns: repeat(2, minmax(140px, 1fr));

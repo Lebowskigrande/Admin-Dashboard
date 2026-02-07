@@ -346,11 +346,35 @@ const Dashboard = () => {
         return rawType;
     }, []);
 
-    const formatTaskText = useCallback((text) => {
-        const raw = (text || '').trim();
-        const cleaned = raw.replace(/[\s.,;:!?]+$/, '');
-        return cleaned || raw;
-    }, []);
+const formatTaskText = useCallback((text) => {
+    const raw = (text || '').trim();
+    const cleaned = raw.replace(/[\s.,;:!?]+$/, '');
+    return cleaned || raw;
+}, []);
+
+const getSortedProgressSteps = (task) => {
+    const steps = Array.isArray(task?.progress_steps) ? task.progress_steps : [];
+    return steps.slice().sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0));
+};
+
+const getTaskProgressMeta = (task) => {
+    const listMode = String(task?.list_mode || '').toLowerCase();
+    if (listMode !== 'progressive') return null;
+    const steps = getSortedProgressSteps(task);
+    if (!steps.length) return null;
+    const currentKey = String(task?.progress_key || '');
+    const currentIndex = steps.findIndex((step) => step.key === currentKey);
+    const currentStep = currentIndex >= 0 ? steps[currentIndex] : null;
+    const isComplete = currentIndex >= steps.length - 1 && currentIndex >= 0;
+    return { currentStep, isComplete };
+};
+
+const getTaskProgressLabel = (task) => {
+    const meta = getTaskProgressMeta(task);
+    if (!meta) return '';
+    if (meta.isComplete) return 'Complete';
+    return meta.currentStep?.title || 'Not Started';
+};
 
     const weekSchedule = useMemo(() => {
         const days = Array.from({ length: 7 }, (_, idx) => addDays(today, idx));
@@ -528,29 +552,35 @@ const Dashboard = () => {
                         <p className="no-events">No active tasks.</p>
                     ) : (
                         <div className="dashboard-ticket-list dashboard-task-list">
-                            {taskList.map((task) => (
-                                <button
-                                    key={task.id}
-                                    type="button"
-                                    className={`ticket-row task-row ${task.id === selectedTaskId ? 'active' : ''}`}
-                                    onClick={() => setSelectedTaskId(task.id)}
-                                >
-                                    <div className="task-row-main">
-                                        <div className="task-row-title">
-                                            <span className={`priority-dot ${getPriorityClass(task)}`} aria-hidden="true" />
-                                            <h4>{formatTaskText(task.text)}</h4>
+                            {taskList.map((task) => {
+                                const progressLabel = getTaskProgressLabel(task);
+                                return (
+                                    <button
+                                        key={task.id}
+                                        type="button"
+                                        className={`ticket-row task-row ${task.id === selectedTaskId ? 'active' : ''}`}
+                                        onClick={() => setSelectedTaskId(task.id)}
+                                    >
+                                        <div className="task-row-main">
+                                            <div className="task-row-title">
+                                                <span className={`priority-dot ${getPriorityClass(task)}`} aria-hidden="true" />
+                                                <h4>{formatTaskText(task.text)}</h4>
+                                            </div>
+                                            <div className="task-row-meta">
+                                                <span className={`priority-pill ${getPriorityClass(task)}`}>
+                                                    {formatPriorityLabel(task)}
+                                                </span>
+                                                {task.list_title && (
+                                                    <span className="ticket-area-chip pill pill-neutral">{task.list_title}</span>
+                                                )}
+                                                {progressLabel && (
+                                                    <span className="ticket-area-chip pill pill-neutral">{progressLabel}</span>
+                                                )}
+                                            </div>
                                         </div>
-                                        <div className="task-row-meta">
-                                            <span className={`priority-pill ${getPriorityClass(task)}`}>
-                                                {formatPriorityLabel(task)}
-                                            </span>
-                                            {task.list_title && (
-                                                <span className="ticket-area-chip pill pill-neutral">{task.list_title}</span>
-                                            )}
-                                        </div>
-                                    </div>
-                                </button>
-                            ))}
+                                    </button>
+                                );
+                            })}
                         </div>
                     )}
                 </Card>
@@ -568,14 +598,19 @@ const Dashboard = () => {
                                 <div className="task-detail-header">
                                     <div>
                                         <div className="task-detail-title">{selectedTask.text}</div>
-                                        <div className="task-detail-meta">
-                                            <span className={`priority-pill ${getPriorityClass(selectedTask)}`}>
-                                                {formatPriorityLabel(selectedTask)}
-                                            </span>
-                                            {selectedTask.due_at && (
-                                                <span className="muted">Due {format(new Date(selectedTask.due_at), 'MMM d')}</span>
-                                            )}
-                                        </div>
+                                          <div className="task-detail-meta">
+                                              <span className={`priority-pill ${getPriorityClass(selectedTask)}`}>
+                                                  {formatPriorityLabel(selectedTask)}
+                                              </span>
+                                              {getTaskProgressLabel(selectedTask) && (
+                                                  <span className="ticket-area-chip pill pill-neutral">
+                                                      {getTaskProgressLabel(selectedTask)}
+                                                  </span>
+                                              )}
+                                              {selectedTask.due_at && (
+                                                  <span className="muted">Due {format(new Date(selectedTask.due_at), 'MMM d')}</span>
+                                              )}
+                                          </div>
                                     </div>
                                 </div>
                                 <div className="task-origin-panel">
@@ -622,18 +657,24 @@ const Dashboard = () => {
                                         <p className="text-muted">Loading origin tasks...</p>
                                     ) : detailTasks.length === 0 ? (
                                         <p className="text-muted">No additional tasks found.</p>
-                                    ) : (
-                                        <ul className="simple-list">
-                                            {detailTasks.map((task) => (
-                                                <li key={task.id} className="simple-item">
-                                                    <span className="simple-title">{formatTaskText(task.text)}</span>
-                                                    <span className={`priority-pill ${getPriorityClass(task)}`}>
-                                                        {formatPriorityLabel(task)}
-                                                    </span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    )}
+                                      ) : (
+                                          <ul className="simple-list">
+                                              {detailTasks.map((task) => {
+                                                  const title = formatTaskText(task.text);
+                                                  const progressLabel = getTaskProgressLabel(task);
+                                                  return (
+                                                      <li key={task.id} className="simple-item">
+                                                          <span className="simple-title">
+                                                              {progressLabel ? `${title} - ${progressLabel}` : title}
+                                                          </span>
+                                                          <span className={`priority-pill ${getPriorityClass(task)}`}>
+                                                              {formatPriorityLabel(task)}
+                                                          </span>
+                                                      </li>
+                                                  );
+                                              })}
+                                          </ul>
+                                      )}
                                 </div>
                             </div>
                         )}

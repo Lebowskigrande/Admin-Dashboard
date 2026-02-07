@@ -207,6 +207,8 @@ export const taskInstances = sqliteTable('task_instances', {
     listKey: text('list_key'),
     listTitle: text('list_title'),
     listMode: text('list_mode').default('sequential'),
+    progressKey: text('progress_key'),
+    progressSteps: text('progress_steps'),
     notes: text('notes')
 });
 
