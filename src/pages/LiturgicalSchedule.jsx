@@ -100,16 +100,50 @@ const LiturgicalSchedule = () => {
     const [menuDirection, setMenuDirection] = useState('up');
     const [showPast, setShowPast] = useState(false);
 
+    const serializeAssignments = (value) => {
+        if (!value) return '';
+        if (Array.isArray(value)) return value.filter(Boolean).join(', ');
+        return String(value);
+    };
+
+    const buildScheduleRowsFromSundays = (sundays = []) => {
+        const rows = [];
+        sundays.forEach((day) => {
+            const services = Array.isArray(day?.services) ? day.services : [];
+            services.forEach((service) => {
+                const entry = {
+                    id: `${day.date}-${service.time || '10:00'}`,
+                    date: day.date,
+                    service_time: service.time || '10:00',
+                    location: service.location || ''
+                };
+                Object.entries(entryFieldByRole).forEach(([roleKey, fieldKey]) => {
+                    const value = service?.roles?.[roleKey] ?? service?.[roleKey];
+                    entry[fieldKey] = serializeAssignments(value);
+                });
+                rows.push(entry);
+            });
+        });
+        return rows;
+    };
+
     const refreshScheduleRows = async () => {
         setError('');
         try {
-            const response = await fetch(`${API_URL}/schedule-roles`);
-            if (!response.ok) throw new Error('Failed to load schedule roles');
-            const schedule = await response.json();
-            setScheduleRows(Array.isArray(schedule) ? schedule : []);
+            const response = await fetch(`${API_URL}/sunday/sundays?months=12`);
+            if (!response.ok) throw new Error('Failed to load schedule');
+            const sundays = await response.json();
+            const list = Array.isArray(sundays) ? sundays : [];
+            setLiturgicalDays(list.map((day) => ({
+                date: day.date,
+                feast: day.feast,
+                color: day.color,
+                readings: day.readings
+            })));
+            setScheduleRows(buildScheduleRowsFromSundays(list));
         } catch (err) {
             console.error(err);
-            setError('Unable to load schedule roles.');
+            setError('Unable to load schedule.');
         }
     };
 
@@ -117,25 +151,28 @@ const LiturgicalSchedule = () => {
         setLoading(true);
         setError('');
         try {
-            const [daysRes, scheduleRes, peopleRes, buildingsRes] = await Promise.all([
-                fetch(`${API_URL}/liturgical-days`),
-                fetch(`${API_URL}/schedule-roles`),
+            const [sundaysRes, peopleRes, buildingsRes] = await Promise.all([
+                fetch(`${API_URL}/sunday/sundays?months=12`),
                 fetch(`${API_URL}/people`),
                 fetch(`${API_URL}/buildings`)
             ]);
 
-            if (!daysRes.ok) throw new Error('Failed to load liturgical days');
-            if (!scheduleRes.ok) throw new Error('Failed to load schedule roles');
+            if (!sundaysRes.ok) throw new Error('Failed to load liturgical schedule');
             if (!peopleRes.ok) throw new Error('Failed to load people');
             if (!buildingsRes.ok) throw new Error('Failed to load buildings');
 
-            const days = await daysRes.json();
-            const schedule = await scheduleRes.json();
+            const sundays = await sundaysRes.json();
             const peopleList = await peopleRes.json();
             const buildingList = await buildingsRes.json();
 
-            setLiturgicalDays(Array.isArray(days) ? days : []);
-            setScheduleRows(Array.isArray(schedule) ? schedule : []);
+            const list = Array.isArray(sundays) ? sundays : [];
+            setLiturgicalDays(list.map((day) => ({
+                date: day.date,
+                feast: day.feast,
+                color: day.color,
+                readings: day.readings
+            })));
+            setScheduleRows(buildScheduleRowsFromSundays(list));
             setPeople(Array.isArray(peopleList) ? peopleList : []);
             setBuildings(Array.isArray(buildingList) ? buildingList : []);
         } catch (err) {
@@ -276,11 +313,6 @@ const LiturgicalSchedule = () => {
             .filter(Boolean);
     };
 
-    const serializeAssignments = (ids) => {
-        if (!Array.isArray(ids) || ids.length === 0) return '';
-        return ids.join(', ');
-    };
-
     const formatAssignments = (value) => {
         if (!value) return '-';
         return value
@@ -363,8 +395,9 @@ const LiturgicalSchedule = () => {
         try {
             const serviceRoleKeys = getServiceRoleKeys(entry.service_time);
             const payload = {
-                date: entry.date,
-                service_time: entry.service_time || '10:00'
+                [entry.service_time || '10:00']: {
+                    location: entry.location || ''
+                }
             };
 
             roleConfigs.forEach((role) => {
@@ -376,10 +409,10 @@ const LiturgicalSchedule = () => {
                 const normalizedNext = role.key === roleKey
                     ? normalizeRoleIds(role.key, nextIds)
                     : normalizedCurrent;
-                payload[apiFieldByRole[role.key]] = serializeAssignments(normalizedNext);
+                payload[entry.service_time || '10:00'][role.key] = normalizedNext;
             });
 
-            const response = await fetch(`${API_URL}/schedule-roles`, {
+            const response = await fetch(`${API_URL}/sunday/roles/${entry.date}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -392,7 +425,7 @@ const LiturgicalSchedule = () => {
                 const entryField = entryFieldByRole[roleKey];
                 return {
                     ...row,
-                    [entryField]: serializeAssignments(normalizeRoleIds(roleKey, nextIds))
+                    [entryField]: normalizeRoleIds(roleKey, nextIds).join(', ')
                 };
             }));
         } catch (err) {
@@ -500,7 +533,7 @@ const LiturgicalSchedule = () => {
         setScheduling(true);
         setError('');
         try {
-            const response = await fetch(`${API_URL}/schedule-roles/auto-next-month`, { method: 'POST' });
+            const response = await fetch(`${API_URL}/sunday/schedule-roles/auto-next-month`, { method: 'POST' });
             if (!response.ok) throw new Error('Failed to schedule next month');
             clearLiturgicalCache();
             await loadData();
@@ -519,7 +552,7 @@ const LiturgicalSchedule = () => {
         setSchedulingWeek(date);
         setError('');
         try {
-            const response = await fetch(`${API_URL}/schedule-roles/auto-week`, {
+            const response = await fetch(`${API_URL}/sunday/schedule-roles/auto-week`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ date })

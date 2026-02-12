@@ -19,6 +19,7 @@ import DataPill from '../components/DataPill';
 import { useEvents } from '../context/EventsContext';
 import { getSundaysInRange } from '../services/liturgicalService';
 import { API_URL } from '../services/apiConfig';
+import { getTaskProgressMeta } from '../utils/taskProgress';
 import './Calendar.css';
 
 
@@ -270,17 +271,7 @@ const Calendar = () => {
         }
     };
 
-    const getTaskProgressMeta = (task) => {
-        const listMode = String(task?.list_mode || '').toLowerCase();
-        if (listMode !== 'progressive') return null;
-        const steps = Array.isArray(task?.progress_steps) ? task.progress_steps : [];
-        const sorted = steps.slice().sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0));
-        if (!sorted.length) return null;
-        const currentKey = String(task?.progress_key || '');
-        const currentIndex = sorted.findIndex((step) => step.key === currentKey);
-        const nextStep = currentIndex + 1 < sorted.length ? sorted[currentIndex + 1] : null;
-        return { nextStep };
-    };
+
 
     const handleTaskToggle = async (task) => {
         if (!task?.id) return;

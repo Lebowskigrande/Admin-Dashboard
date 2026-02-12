@@ -1,0 +1,203 @@
+# Admin Dashboard Refactoring — Priorities 1-3
+
+Three major refactors to improve maintainability: extracting shared utilities, splitting the monolithic server, and decomposing oversized page components.
+
+> [!IMPORTANT]
+> There are no existing automated tests in this project. Verification will rely on `npm run build` (Vite production build validates all imports/exports) and a manual smoke test of the dev server. The refactoring is purely structural — no behavior changes.
+
+## Proposed Changes
+
+### Shared Frontend Utilities (Priority 2 — done first, it's a dependency for Priority 3)
+
+Extract duplicated functions from page components into shared modules.
+
+#### [NEW] [formatters.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/src/utils/formatters.js)
+
+- [formatCurrency(value)](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/depositSlip.js#93-103) — currently duplicated in `Finance.jsx`, `Buildings.jsx`, `Vestry.jsx`
+- `formatPhone(value)` — currently duplicated in `People.jsx`, `Buildings.jsx`
+
+#### [NEW] [taskProgress.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/src/utils/taskProgress.js)
+
+- `getSortedProgressSteps(task)` — duplicated in `Todo.jsx`, `Dashboard.jsx`
+- `getTaskProgressMeta(task)` — duplicated in `Todo.jsx`, `Dashboard.jsx`, `Calendar.jsx`, `Buildings.jsx`
+- `getTaskProgressLabel(task)` — duplicated in `Todo.jsx`, `Dashboard.jsx`
+
+#### [MODIFY] Affected page components
+
+Each of `Finance.jsx`, `Buildings.jsx`, `Vestry.jsx`, `People.jsx`, `Todo.jsx`, `Dashboard.jsx`, `Calendar.jsx` will be updated to import from the new utility modules, removing their local duplicate definitions.
+
+---
+
+### Server Route Splitting (Priority 1)
+
+Split [server/index.js](file:///C:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js) (9,167 lines) into route modules. The new [index.js](file:///C:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js) will only handle app setup, middleware, and mounting route files.
+
+#### [NEW] [helpers.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers.js)
+
+Shared utility functions used across multiple route files:
+- DB utilities: [tableExists](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/db-utils.js#3-8), [tableHasColumn](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/db-utils.js#9-14), [coerceJsonArray](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/db-utils.js#15-31), [coerceJsonObject](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/db-utils.js#32-45), [parseJsonField](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/db-utils.js#48-53)
+- People utilities: `normalizeName`, `slugifyName`, [buildPeopleIndex](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js#602-630), [normalizeScheduleValue](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js#631-653), [normalizeAssignmentList](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js#2601-2608), `normalizePersonName`, `normalizePersonRoles`, `normalizeTags`
+- Date/string helpers: `normalizeDateKey`, `sanitizeFileSegment`, [clampPriority](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/task-utils.js#4-8), etc.
+
+#### [NEW] [routes/auth.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/auth.js)
+
+- Session handling: `parseCookies`, `setSessionCookie`, `clearSessionCookie`, `loadSessionUser`, `requireAuth`
+- Routes: `GET /api/me`, `POST /api/logout`
+
+#### [NEW] [routes/google.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/google.js)
+
+- Google OAuth flow: `GET /auth/google`, `GET /auth/google/callback`, `GET /api/google/auth-url`, `GET /api/google/status`
+- Calendar routes: `GET /api/google/calendars`, `POST /api/google/calendars/select`, `GET /api/google/events`, `POST /api/google/sync`
+
+#### [NEW] [routes/dropbox.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/dropbox.js)
+
+- Dropbox OAuth: `GET /auth/dropbox`, `GET /auth/dropbox/callback`, `GET /api/dropbox/status`, `POST /api/dropbox/disconnect`
+
+#### [NEW] [routes/sunday.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/sunday.js)
+
+- Sunday planner: `GET /api/sunday/documents`, `GET /api/sunday/livestream`, `POST /api/sunday/insert-status`, `POST /api/sunday/:date/details`
+- Schedule/roles: `GET /api/sundays`, `GET/PUT /api/schedule-roles`, `GET/PUT /api/roles/:date`, `POST /api/schedule-roles/auto-next-month`
+- All bulletin status functions, document preview functions, and schedule helpers
+
+#### [NEW] [routes/tasks.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/tasks.js)
+
+- Routes: `GET /api/tasks`, `POST /api/tasks`, `PUT /api/tasks/:id`, `DELETE /api/tasks/:id`
+- Recurring templates: `GET/POST/PUT/DELETE /api/recurring-templates`
+- Entity links: `GET/POST/DELETE /api/links`
+- Task engine functions: [createTaskInstance](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/services/taskEngine.js#167-269), [listTaskInstances](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/services/taskEngine.js#787-854), [deleteTaskInstance](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/services/taskEngine.js#773-786), [formatTaskInstanceRow](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/task-utils.js#174-250), [sortTasksByPriority](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/task-utils.js#18-43), seeding functions, migration logic
+
+#### [NEW] [routes/people.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/people.js)
+
+- Routes: `GET/POST/PUT/DELETE /api/people`, `GET /api/people/backups`, `POST /api/people/restore`
+
+#### [NEW] [routes/buildings.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/buildings.js)
+
+- Routes: `GET/POST/PUT /api/buildings`, `GET/PUT /api/rooms`, `GET/POST/PUT /api/tickets`, `GET/POST /api/vendors`, `POST /api/buildings/import-rooms`
+
+#### [NEW] [routes/events.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/events.js)
+
+- Routes: 
+    - `GET /api/events` (merged liturgical + manual events)
+    - `GET /api/event-categories`
+    - `GET /api/event-types`
+    - `GET /api/liturgical-days`
+    - `GET /api/event-occurrences/:id`
+    - `PUT /api/event-occurrences/:id`
+    - `GET /api/event-occurrences/:id/documents`
+    - `POST /api/event-occurrences/:id/documents` (includes document preview logic)
+    - `GET /api/event-template-fields`
+    - `PUT /api/event-template-fields/:eventTypeId`
+    - `POST /api/events` (manual event creation + task seeding)
+- Dependencies: [buildDocumentPreview](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js#457-548), `ensureEventDocDir`, `ensureUniquePath`, [seedEventTasksForOccurrence](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/services/taskEngine.js#688-750), [isSundayDate](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js#161-167).
+
+
+#### [NEW] [routes/finance.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/finance.js)
+
+- Deposit slip: `POST /api/deposit-slip`, `POST /api/deposit-slip/manual`, `POST /api/deposit-slip/pdf`, `GET/DELETE /api/deposit-slip/file/:id`, `POST /api/deposit-slip/print-*`
+- Printing/PDF helpers: [saveDepositPdf](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/finance-utils.js#16-24), [buildDepositFilePath](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/finance-utils.js#25-28), [getDefaultPrinterName](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/finance-utils.js#100-115), [resolveSumatraPdfPath](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/finance-utils.js#116-133), [addChecksGridFromPdf](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/finance-utils.js#134-197), [addCheckGridPages](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/finance-utils.js#198-249) (moved to [finance-utils.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/finance-utils.js))
+
+#### [NEW] [helpers/finance-utils.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/finance-utils.js)
+
+- Shared finance constants and helper functions.
+
+#### [NEW] [routes/vestry.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/vestry.js)
+
+- Routes: `GET /api/vestry/checklist`, `GET/POST /api/vestry/members`, `GET/POST /api/vestry/packet-cache`, `POST /api/vestry/build-packet`, `POST /api/vestry/preview-certificate`, `POST /api/vestry/save-certificate`, `POST /api/vestry/print-certificate`
+
+#### [NEW] [helpers/vestry-utils.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/vestry-utils.js)
+
+- Certificate generation and vestry packet helpers.
+
+#### [NEW] [routes/communications.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/communications.js)
+
+- Constant Contact OAuth and API routes
+- Livestream email creation/scheduling/sending
+
+#### [NEW] [routes/hgk.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/hgk.js)
+
+- Routes: `GET /api/hgk/items`, `GET/POST /api/hgk/supplies`, `POST /api/hgk/gmail-search`, `POST /api/hgk/email/webhook`, `POST /api/hgk/email`, `POST /api/hgk/instacart`
+- Supply parsing: `parseSupplyEmail`, `levenshteinDistance`, `similarityScore`, etc.
+
+#### [NEW] [routes/files.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/files.js)
+
+- Routes: `POST /api/files/open`, `GET /api/files/download`, `POST /api/files/print`
+
+#### [NEW] [routes/youtube.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/youtube.js)
+
+- Routes: `GET /api/youtube/upcoming`, `POST /api/youtube/sync`
+- YouTube sync: [fetchUpcomingStreams](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/youtube.js#19-60), [syncLivestreamsToSundays](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/youtube.js#63-86), `scheduleYouTubeSync`
+
+#### [MODIFY] [index.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js)
+
+Reduced to ~100 lines: imports, Express app creation, middleware, route mounting, DB initialization calls, and `app.listen()`.
+
+---
+
+### Page Component Decomposition (Priority 3)
+
+Break down the five largest page components by extracting custom hooks (data fetching + state logic) and sub-components (render logic).
+
+#### Sunday.jsx (2,273 → ~300 lines)
+
+- [NEW] `pages/sunday/useSundayData.js` — all data loading, state management, and API calls
+- [NEW] `pages/sunday/SundayRosterPanel.jsx` — role assignment UI, person selection menus
+- [NEW] `pages/sunday/SundayBulletinStatus.jsx` — bulletin/insert status pipeline
+- [NEW] `pages/sunday/SundayHgkPanel.jsx` — HGK supply management section
+- [NEW] `pages/sunday/SundayLivestreamPanel.jsx` — livestream + email section  
+- [NEW] `pages/sunday/sundayHelpers.js` — constants and formatting helpers specific to Sunday
+- [MODIFY] `pages/Sunday.jsx` — becomes a thin orchestrator importing sub-components
+
+#### Todo.jsx (1,568 → ~300 lines)
+
+- [NEW] `pages/todo/useTodoData.js` — task loading, sorting, filtering state
+- [NEW] `pages/todo/TodoListCard.jsx` — the task list card with progress indicators
+- [NEW] `pages/todo/TodoDetailPanel.jsx` — task detail/editing panel
+- [NEW] `pages/todo/TodoAddForm.jsx` — add-task form
+- [NEW] `pages/todo/todoHelpers.js` — sorting, due-date logic, formatting helpers
+- [MODIFY] `pages/Todo.jsx` — orchestrator
+
+#### Buildings.jsx (1,299 → ~250 lines)
+
+- [NEW] `pages/buildings/useBuildingsData.js` — data loading hook
+- [NEW] `pages/buildings/BuildingsMap.jsx` — interactive SVG campus map
+- [NEW] `pages/buildings/BuildingsTickets.jsx` — ticket management panel
+- [NEW] `pages/buildings/BuildingsVendors.jsx` — vendor list
+- [NEW] `pages/buildings/BuildingsNeeds.jsx` — maintenance needs
+- [MODIFY] `pages/Buildings.jsx` — orchestrator
+
+#### People.jsx (1,059 → ~200 lines)
+
+- [NEW] `pages/people/usePeopleData.js` — data loading, filtering
+- [NEW] `pages/people/PeopleDetailPanel.jsx` — detail/edit panel (420 lines extracted)
+- [NEW] `pages/people/PeopleForm.jsx` — create/edit form
+- [MODIFY] `pages/People.jsx` — orchestrator with list view
+
+#### Vestry.jsx (1,182 → ~250 lines)
+
+- [NEW] `pages/vestry/useVestryData.js` — data loading hook
+- [NEW] `pages/vestry/VestryPacketBuilder.jsx` — packet assembly UI
+- [NEW] `pages/vestry/VestryCertificatePanel.jsx` — certificate entry + preview
+- [NEW] `pages/vestry/VestryChecklist.jsx` — monthly checklist view
+- [MODIFY] `pages/Vestry.jsx` — orchestrator
+
+---
+
+## Verification Plan
+
+### Automated Build Check
+
+```bash
+cd "c:\Users\Secretary\Documents\Admin Dashboard"
+npm run build
+```
+
+This validates all imports/exports are correct. Any broken import from the refactoring will fail the Vite build with a clear error.
+
+### Manual Smoke Test
+
+After the build succeeds, start the dev server and verify key pages load:
+
+1. Run `npm run dev:both` to start both client and server
+2. Open the dashboard in a browser
+3. Navigate to each route in the sidebar — verify each page loads without console errors
+4. Specifically test: Overview, Sunday Planner, Calendar, Finance, Buildings, People, To-Do, Vestry

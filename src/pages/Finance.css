@@ -9,6 +9,142 @@
     margin-bottom: var(--space-lg);
 }
 
+.routing-log-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-md);
+    margin-bottom: var(--space-lg);
+}
+
+.routing-log-card {
+    padding: var(--space-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.routing-log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-sm);
+}
+
+.routing-log-header h2 {
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+.routing-log-header p {
+    margin: 4px 0 0;
+    color: var(--color-text-secondary);
+    font-size: 0.88rem;
+}
+
+.routing-log-date-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.routing-log-date-controls span {
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+}
+
+.routing-log-date-controls button {
+    border: 1px solid #d1d5db;
+    background: #f8fafc;
+    color: #334155;
+    border-radius: 999px;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.routing-log-date-controls button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.routing-log-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    min-height: 120px;
+}
+
+.routing-log-entry {
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 0.55rem 0.65rem;
+    background: #fff;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.routing-log-entry.failure {
+    border-color: #fecaca;
+    background: #fef2f2;
+}
+
+.routing-log-entry-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+}
+
+.routing-log-entry-top strong {
+    color: var(--color-text-main);
+}
+
+.routing-log-error-text {
+    margin: 0;
+    font-size: 0.82rem;
+    color: #991b1b;
+}
+
+.routing-log-file-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.routing-log-file-row span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.85rem;
+    color: #1f2937;
+}
+
+.routing-log-file-row button {
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-radius: 999px;
+    padding: 0.2rem 0.65rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.routing-log-file-row button:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
 .finance-summary {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -594,6 +730,10 @@
 }
 
 @media (max-width: 960px) {
+    .routing-log-grid {
+        grid-template-columns: 1fr;
+    }
+
     .deposit-body {
         grid-template-columns: 1fr;
     }

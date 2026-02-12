@@ -1,0 +1,47 @@
+# Admin Dashboard Refactoring — Priorities 1-3
+
+## Priority 2: Extract Shared Utility Functions (do first — dependency for #3)
+- [x] Create [src/utils/formatters.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/src/utils/formatters.js) — [formatCurrency](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/depositSlip.js#93-103), `formatPhone`
+- [x] Create [src/utils/taskProgress.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/src/utils/taskProgress.js) — `getTaskProgressMeta`, `getSortedProgressSteps`, `getTaskProgressLabel`, `getTaskNextStepLabel`
+- [ ] Create `src/utils/constants.js` — `HGK_DEFAULT_ITEMS`, `HGK_STATUS_OPTIONS`, role constants
+- [x] Update all page components to import from shared utils instead of local definitions
+- [x] Verify build passes after all changes
+
+## Priority 1: Split [server/index.js](file:///C:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js) into Route Modules
+- [x] Create [server/routes/auth.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/auth.js) — session, OAuth, login/logout, middleware
+- [x] Create [server/routes/google.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/google.js) — Google Calendar OAuth + sync + events
+- [x] Create [server/routes/dropbox.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/dropbox.js) — Dropbox OAuth
+- [x] Create [server/routes/sunday.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/sunday.js) — Sunday planner routes (documents, livestream, roles, schedule)
+- [x] Create [server/routes/tasks.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/tasks.js) — Task CRUD + task engine helpers
+
+- [x] Create [server/routes/people.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/people.js) — People CRUD
+- [x] Create [server/routes/buildings.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/buildings.js) — Buildings/rooms/tickets/vendors
+- [x] Create [server/routes/events.js](file:///C:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/events.js) — Events, categories, templates, entity links
+
+
+- [x] Create [server/routes/finance.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/finance.js) — Deposit slips, funds reports
+- [x] Create [server/helpers/finance-utils.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/finance-utils.js) — Shared finance helpers
+- [x] Create [server/routes/vestry.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/vestry.js) — Vestry meetings, packets, certificates, checklist
+- [x] Create [server/helpers/vestry-utils.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/vestry-utils.js) — Vestry helpers
+- [x] Create [server/routes/communications.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/communications.js) — Constant Contact, bulletins
+- [x] Create [server/routes/hgk.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/hgk.js) — HGK supply management
+- [ ] Create `server/routes/files.js` — File open/download/print
+- [x] Create [server/routes/youtube.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/routes/youtube.js) — YouTube livestream sync
+- [x] Create [server/services/taskEngine.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/services/taskEngine.js) — Task seeding, migration, archiving helpers
+- [x] Create [server/services/bulletinService.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/services/bulletinService.js) — Bulletin status + document preview
+- [ ] Create `server/services/printService.js` — Printing helpers
+- [x] Create [server/helpers/db-utils.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/db-utils.js) — tableExists, tableHasColumn, coerceJsonArray, etc.
+- [x] Create [server/helpers/people-utils.js](file:///c:/Users/Secretary/Documents/Admin%20Dashboard/server/helpers/people-utils.js) — normalizeName, buildPeopleIndex, etc.
+- [x] Slim down [server/index.js](file:///C:/Users/Secretary/Documents/Admin%20Dashboard/server/index.js) to just app setup + route mounting
+
+## Priority 3: Break Down Largest Page Components
+- [ ] Extract Sunday.jsx sub-components and hooks
+- [ ] Extract Todo.jsx sub-components and hooks
+- [ ] Extract Buildings.jsx sub-components and hooks
+- [ ] Extract People.jsx sub-components
+- [ ] Extract Vestry.jsx sub-components
+
+## Verification
+- [x] Verify app builds without errors (`npm run build`)
+- [ ] Verify dev server starts and serves the app
+- [ ] Manual smoke test of key pages

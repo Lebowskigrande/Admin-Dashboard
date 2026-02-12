@@ -60,6 +60,19 @@ sqlite.exec(`
         file_path TEXT NOT NULL,
         created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS sharefile_job_events (
+        id TEXT PRIMARY KEY,
+        job_id TEXT,
+        message_id TEXT,
+        thread_id TEXT,
+        code_type TEXT,
+        code_value TEXT,
+        status TEXT NOT NULL,
+        error_text TEXT,
+        output_json TEXT,
+        created_at TEXT NOT NULL
+    );
 `);
 
 const seedVestryChecklist = () => {

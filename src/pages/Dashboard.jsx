@@ -4,6 +4,7 @@ import Card from '../components/Card';
 import { format, isSameDay, addDays, startOfDay } from 'date-fns';
 import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
+import { getTaskProgressMeta, getTaskProgressLabel } from '../utils/taskProgress';
 import './Dashboard.css';
 
 const WEATHER_CENTER = {
@@ -191,9 +192,9 @@ const Dashboard = () => {
     const today = useMemo(() => startOfDay(new Date()), []);
     useEffect(() => {
         let active = true;
-            const loadTasks = async () => {
-                setTasksLoading(true);
-                try {
+        const loadTasks = async () => {
+            setTasksLoading(true);
+            try {
                 const response = await fetch(`${API_URL}/tasks?rollup=1`);
                 if (!response.ok) throw new Error('Failed to load tasks');
                 const data = await response.json();
@@ -346,35 +347,13 @@ const Dashboard = () => {
         return rawType;
     }, []);
 
-const formatTaskText = useCallback((text) => {
-    const raw = (text || '').trim();
-    const cleaned = raw.replace(/[\s.,;:!?]+$/, '');
-    return cleaned || raw;
-}, []);
+    const formatTaskText = useCallback((text) => {
+        const raw = (text || '').trim();
+        const cleaned = raw.replace(/[\s.,;:!?]+$/, '');
+        return cleaned || raw;
+    }, []);
 
-const getSortedProgressSteps = (task) => {
-    const steps = Array.isArray(task?.progress_steps) ? task.progress_steps : [];
-    return steps.slice().sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0));
-};
 
-const getTaskProgressMeta = (task) => {
-    const listMode = String(task?.list_mode || '').toLowerCase();
-    if (listMode !== 'progressive') return null;
-    const steps = getSortedProgressSteps(task);
-    if (!steps.length) return null;
-    const currentKey = String(task?.progress_key || '');
-    const currentIndex = steps.findIndex((step) => step.key === currentKey);
-    const currentStep = currentIndex >= 0 ? steps[currentIndex] : null;
-    const isComplete = currentIndex >= steps.length - 1 && currentIndex >= 0;
-    return { currentStep, isComplete };
-};
-
-const getTaskProgressLabel = (task) => {
-    const meta = getTaskProgressMeta(task);
-    if (!meta) return '';
-    if (meta.isComplete) return 'Complete';
-    return meta.currentStep?.title || 'Not Started';
-};
 
     const weekSchedule = useMemo(() => {
         const days = Array.from({ length: 7 }, (_, idx) => addDays(today, idx));
@@ -440,29 +419,29 @@ const getTaskProgressLabel = (task) => {
                     )}
                     {!weatherState.loading && !weatherState.error && weatherDisplay && (
                         <>
-                                                        <div className="weather-row">
+                            <div className="weather-row">
                                 <div className="weather-today">
                                     <div className="weather-section-label">Today in San Marino</div>
                                     <div className="weather-today-body">
-                                    <div
-                                        className="weather-icon weather-icon-lg"
-                                        aria-hidden="true"
-                                        title={weatherDisplay.todayMeta.label}
-                                    >
-                                        <WeatherIcon kind={weatherDisplay.todayMeta.kind} size={36} />
-                                    </div>
-                                    <div className="weather-today-main">
-                                        <div className="weather-temp">
-                                            {Number.isFinite(weatherDisplay.currentTemp)
-                                                ? `${Math.round(weatherDisplay.currentTemp)}°`
-                                                : `${formatTemp(weatherDisplay.today.tempMax)}`}
+                                        <div
+                                            className="weather-icon weather-icon-lg"
+                                            aria-hidden="true"
+                                            title={weatherDisplay.todayMeta.label}
+                                        >
+                                            <WeatherIcon kind={weatherDisplay.todayMeta.kind} size={36} />
                                         </div>
-                                        <div className="weather-range">
-                                            <span>H {formatTemp(weatherDisplay.today.tempMax)}</span>
-                                            <span>L {formatTemp(weatherDisplay.today.tempMin)}</span>
+                                        <div className="weather-today-main">
+                                            <div className="weather-temp">
+                                                {Number.isFinite(weatherDisplay.currentTemp)
+                                                    ? `${Math.round(weatherDisplay.currentTemp)}°`
+                                                    : `${formatTemp(weatherDisplay.today.tempMax)}`}
+                                            </div>
+                                            <div className="weather-range">
+                                                <span>H {formatTemp(weatherDisplay.today.tempMax)}</span>
+                                                <span>L {formatTemp(weatherDisplay.today.tempMin)}</span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
                                 </div>
                                 <div className="weather-upcoming">
                                     <div className="weather-upcoming-header">
@@ -540,50 +519,50 @@ const getTaskProgressLabel = (task) => {
                         )}
                     </Card>
                     <Card className="dashboard-card">
-                    <div className="dashboard-card-header badge-corner">
-                        <h2>Task List</h2>
-                        <span className="count-badge" aria-label={`${taskList.length} tasks`}>
-                            {taskList.length}
-                        </span>
-                    </div>
-                    {tasksLoading ? (
-                        <p className="loading-text">Loading tasks...</p>
-                    ) : taskList.length === 0 ? (
-                        <p className="no-events">No active tasks.</p>
-                    ) : (
-                        <div className="dashboard-ticket-list dashboard-task-list">
-                            {taskList.map((task) => {
-                                const progressLabel = getTaskProgressLabel(task);
-                                return (
-                                    <button
-                                        key={task.id}
-                                        type="button"
-                                        className={`ticket-row task-row ${task.id === selectedTaskId ? 'active' : ''}`}
-                                        onClick={() => setSelectedTaskId(task.id)}
-                                    >
-                                        <div className="task-row-main">
-                                            <div className="task-row-title">
-                                                <span className={`priority-dot ${getPriorityClass(task)}`} aria-hidden="true" />
-                                                <h4>{formatTaskText(task.text)}</h4>
-                                            </div>
-                                            <div className="task-row-meta">
-                                                <span className={`priority-pill ${getPriorityClass(task)}`}>
-                                                    {formatPriorityLabel(task)}
-                                                </span>
-                                                {task.list_title && (
-                                                    <span className="ticket-area-chip pill pill-neutral">{task.list_title}</span>
-                                                )}
-                                                {progressLabel && (
-                                                    <span className="ticket-area-chip pill pill-neutral">{progressLabel}</span>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </button>
-                                );
-                            })}
+                        <div className="dashboard-card-header badge-corner">
+                            <h2>Task List</h2>
+                            <span className="count-badge" aria-label={`${taskList.length} tasks`}>
+                                {taskList.length}
+                            </span>
                         </div>
-                    )}
-                </Card>
+                        {tasksLoading ? (
+                            <p className="loading-text">Loading tasks...</p>
+                        ) : taskList.length === 0 ? (
+                            <p className="no-events">No active tasks.</p>
+                        ) : (
+                            <div className="dashboard-ticket-list dashboard-task-list">
+                                {taskList.map((task) => {
+                                    const progressLabel = getTaskProgressLabel(task);
+                                    return (
+                                        <button
+                                            key={task.id}
+                                            type="button"
+                                            className={`ticket-row task-row ${task.id === selectedTaskId ? 'active' : ''}`}
+                                            onClick={() => setSelectedTaskId(task.id)}
+                                        >
+                                            <div className="task-row-main">
+                                                <div className="task-row-title">
+                                                    <span className={`priority-dot ${getPriorityClass(task)}`} aria-hidden="true" />
+                                                    <h4>{formatTaskText(task.text)}</h4>
+                                                </div>
+                                                <div className="task-row-meta">
+                                                    <span className={`priority-pill ${getPriorityClass(task)}`}>
+                                                        {formatPriorityLabel(task)}
+                                                    </span>
+                                                    {task.list_title && (
+                                                        <span className="ticket-area-chip pill pill-neutral">{task.list_title}</span>
+                                                    )}
+                                                    {progressLabel && (
+                                                        <span className="ticket-area-chip pill pill-neutral">{progressLabel}</span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </Card>
                 </div>
 
                 <div className="dashboard-column">
@@ -598,19 +577,19 @@ const getTaskProgressLabel = (task) => {
                                 <div className="task-detail-header">
                                     <div>
                                         <div className="task-detail-title">{selectedTask.text}</div>
-                                          <div className="task-detail-meta">
-                                              <span className={`priority-pill ${getPriorityClass(selectedTask)}`}>
-                                                  {formatPriorityLabel(selectedTask)}
-                                              </span>
-                                              {getTaskProgressLabel(selectedTask) && (
-                                                  <span className="ticket-area-chip pill pill-neutral">
-                                                      {getTaskProgressLabel(selectedTask)}
-                                                  </span>
-                                              )}
-                                              {selectedTask.due_at && (
-                                                  <span className="muted">Due {format(new Date(selectedTask.due_at), 'MMM d')}</span>
-                                              )}
-                                          </div>
+                                        <div className="task-detail-meta">
+                                            <span className={`priority-pill ${getPriorityClass(selectedTask)}`}>
+                                                {formatPriorityLabel(selectedTask)}
+                                            </span>
+                                            {getTaskProgressLabel(selectedTask) && (
+                                                <span className="ticket-area-chip pill pill-neutral">
+                                                    {getTaskProgressLabel(selectedTask)}
+                                                </span>
+                                            )}
+                                            {selectedTask.due_at && (
+                                                <span className="muted">Due {format(new Date(selectedTask.due_at), 'MMM d')}</span>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                                 <div className="task-origin-panel">
@@ -657,24 +636,24 @@ const getTaskProgressLabel = (task) => {
                                         <p className="text-muted">Loading origin tasks...</p>
                                     ) : detailTasks.length === 0 ? (
                                         <p className="text-muted">No additional tasks found.</p>
-                                      ) : (
-                                          <ul className="simple-list">
-                                              {detailTasks.map((task) => {
-                                                  const title = formatTaskText(task.text);
-                                                  const progressLabel = getTaskProgressLabel(task);
-                                                  return (
-                                                      <li key={task.id} className="simple-item">
-                                                          <span className="simple-title">
-                                                              {progressLabel ? `${title} - ${progressLabel}` : title}
-                                                          </span>
-                                                          <span className={`priority-pill ${getPriorityClass(task)}`}>
-                                                              {formatPriorityLabel(task)}
-                                                          </span>
-                                                      </li>
-                                                  );
-                                              })}
-                                          </ul>
-                                      )}
+                                    ) : (
+                                        <ul className="simple-list">
+                                            {detailTasks.map((task) => {
+                                                const title = formatTaskText(task.text);
+                                                const progressLabel = getTaskProgressLabel(task);
+                                                return (
+                                                    <li key={task.id} className="simple-item">
+                                                        <span className="simple-title">
+                                                            {progressLabel ? `${title} - ${progressLabel}` : title}
+                                                        </span>
+                                                        <span className={`priority-pill ${getPriorityClass(task)}`}>
+                                                            {formatPriorityLabel(task)}
+                                                        </span>
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    )}
                                 </div>
                             </div>
                         )}

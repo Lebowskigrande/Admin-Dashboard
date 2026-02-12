@@ -3,6 +3,7 @@ import { FaEye, FaPrint, FaSave } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
 import { API_URL } from '../services/apiConfig';
+import { formatCurrency } from '../utils/formatters';
 import './Finance.css';
 
 const createChecks = () =>
@@ -24,16 +25,7 @@ const normalizeStorageAmount = (value) => {
     return numeric.toFixed(2);
 };
 
-const formatCurrency = (value) => {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return '$0.00';
-    return new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: 'USD',
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
-    }).format(numeric);
-};
+
 
 const formatDateStamp = (date = new Date()) => {
     const year = date.getFullYear();
@@ -75,6 +67,46 @@ const loadSavedChecks = () => {
     }
 };
 
+const formatDateKey = (date = new Date()) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+};
+
+const parseDateKey = (value) => {
+    const raw = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date();
+    const [year, month, day] = raw.split('-').map(Number);
+    return new Date(year, month - 1, day, 0, 0, 0, 0);
+};
+
+const shiftDateKey = (value, deltaDays) => {
+    const base = parseDateKey(value);
+    base.setDate(base.getDate() + deltaDays);
+    return formatDateKey(base);
+};
+
+const formatLogDate = (value) => {
+    const date = parseDateKey(value);
+    return date.toLocaleDateString([], {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+    });
+};
+
+const formatLogTime = (isoValue) => {
+    const parsed = new Date(isoValue);
+    if (Number.isNaN(parsed.getTime())) return '';
+    return parsed.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+};
+
 const Finance = () => {
     const [checks, setChecks] = useState(() => {
         const saved = loadSavedChecks();
@@ -107,6 +139,10 @@ const Finance = () => {
     const [checksPdfFile, setChecksPdfFile] = useState(null);
     const [cashPdfFile, setCashPdfFile] = useState(null);
     const [uploadResetKey, setUploadResetKey] = useState(0);
+    const [apDate, setApDate] = useState(() => formatDateKey(new Date()));
+    const [arDate, setArDate] = useState(() => formatDateKey(new Date()));
+    const [apLog, setApLog] = useState({ loading: false, error: '', notice: '', entries: [], revealBusyKey: '' });
+    const [arLog, setArLog] = useState({ loading: false, error: '', notice: '', entries: [], revealBusyKey: '' });
 
     const updateCheck = (index, field, value) => {
         setChecks((prev) => {
@@ -374,13 +410,85 @@ const Finance = () => {
         if (idsToDelete.size > 0) {
             await Promise.all(
                 Array.from(idsToDelete).map((fileId) => (
-                    fetch(`${API_URL}/deposit-slip/file/${fileId}`, { method: 'DELETE' }).catch(() => {})
+                    fetch(`${API_URL}/deposit-slip/file/${fileId}`, { method: 'DELETE' }).catch(() => { })
                 ))
             );
         }
         setDepositSlipFileId('');
         setPreviewModal({ open: false, url: '', fileId: '' });
     };
+
+    const todayKey = formatDateKey(new Date());
+
+    const loadRoutingLog = async (type, dateKey, setState) => {
+        setState((prev) => ({
+            ...prev,
+            loading: true,
+            error: '',
+            notice: ''
+        }));
+        try {
+            const response = await fetch(
+                `${API_URL}/deposit-slip/routing-log?type=${encodeURIComponent(type)}&date=${encodeURIComponent(dateKey)}`
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload?.ok) {
+                throw new Error(payload?.error || 'Failed to load routing log');
+            }
+            setState((prev) => ({
+                ...prev,
+                loading: false,
+                error: '',
+                entries: Array.isArray(payload.entries) ? payload.entries : []
+            }));
+        } catch (error) {
+            console.error('Routing log load error:', error);
+            setState((prev) => ({
+                ...prev,
+                loading: false,
+                entries: [],
+                error: error?.message || 'Failed to load routing log'
+            }));
+        }
+    };
+
+    const handleRevealRoutedFile = async ({ jobId, fileIndex, setState, type }) => {
+        const busyKey = `${jobId}:${fileIndex}`;
+        setState((prev) => ({ ...prev, revealBusyKey: busyKey, error: '', notice: '' }));
+        try {
+            const response = await fetch(`${API_URL}/deposit-slip/routing-log/reveal`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jobId, fileIndex })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload?.ok) {
+                throw new Error(payload?.error || 'Failed to open file location');
+            }
+            setState((prev) => ({
+                ...prev,
+                revealBusyKey: '',
+                notice: `${type} file location opened.`,
+                error: ''
+            }));
+        } catch (error) {
+            console.error('Routing file reveal error:', error);
+            setState((prev) => ({
+                ...prev,
+                revealBusyKey: '',
+                notice: '',
+                error: error?.message || 'Failed to open file location'
+            }));
+        }
+    };
+
+    useEffect(() => {
+        loadRoutingLog('ap', apDate, setApLog);
+    }, [apDate]);
+
+    useEffect(() => {
+        loadRoutingLog('ar', arDate, setArLog);
+    }, [arDate]);
 
     return (
         <div className="page-finance">
@@ -390,6 +498,150 @@ const Finance = () => {
                     <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
                 </div>
             </header>
+
+            <div className="routing-log-grid">
+                <Card className="routing-log-card">
+                    <div className="routing-log-header">
+                        <div>
+                            <h2>AP Email Routing</h2>
+                            <p>Invoices and direct debits routed for the selected day.</p>
+                        </div>
+                        <div className="routing-log-date-controls">
+                            <button
+                                type="button"
+                                onClick={() => setApDate((prev) => shiftDateKey(prev, -1))}
+                            >
+                                Previous day
+                            </button>
+                            <span>{formatLogDate(apDate)}</span>
+                            <button
+                                type="button"
+                                onClick={() => setApDate((prev) => shiftDateKey(prev, 1))}
+                                disabled={apDate >= todayKey}
+                            >
+                                Next day
+                            </button>
+                        </div>
+                    </div>
+                    <div className="routing-log-body">
+                        {apLog.loading && <p className="text-muted">Loading AP log...</p>}
+                        {!apLog.loading && apLog.entries.length === 0 && !apLog.error && (
+                            <p className="text-muted">No AP routing entries for this day.</p>
+                        )}
+                        {!apLog.loading && apLog.entries.map((entry) => (
+                            <div
+                                key={entry.id}
+                                className={`routing-log-entry${entry.status === 'failure' ? ' failure' : ''}`}
+                            >
+                                <div className="routing-log-entry-top">
+                                    <strong>{formatLogTime(entry.createdAt) || 'Unknown time'}</strong>
+                                    <span>{entry.status === 'failure' ? 'Failed' : `Code ${entry.codeValue || 'N/A'}`}</span>
+                                </div>
+                                {entry.status === 'failure' && (
+                                    <p className="routing-log-error-text">{entry.errorText || 'Unknown routing failure.'}</p>
+                                )}
+                                {Array.isArray(entry.files) && entry.files.length > 0 ? (
+                                    entry.files.map((file) => {
+                                        const busyKey = `${entry.id}:${file.fileIndex}`;
+                                        return (
+                                            <div key={`${entry.id}-${file.fileIndex}`} className="routing-log-file-row">
+                                                <span title={file.name}>{file.name}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleRevealRoutedFile({
+                                                        jobId: entry.id,
+                                                        fileIndex: file.fileIndex,
+                                                        setState: setApLog,
+                                                        type: 'AP'
+                                                    })}
+                                                    disabled={apLog.revealBusyKey === busyKey}
+                                                >
+                                                    {apLog.revealBusyKey === busyKey ? 'Opening...' : 'Reveal file'}
+                                                </button>
+                                            </div>
+                                        );
+                                    })
+                                ) : (
+                                    <p className="text-muted">No file paths recorded for this entry.</p>
+                                )}
+                            </div>
+                        ))}
+                        {apLog.notice && <div className="alert success">{apLog.notice}</div>}
+                        {apLog.error && <div className="alert error">{apLog.error}</div>}
+                    </div>
+                </Card>
+
+                <Card className="routing-log-card">
+                    <div className="routing-log-header">
+                        <div>
+                            <h2>AR Email Routing</h2>
+                            <p>Contribution routing history for the selected day.</p>
+                        </div>
+                        <div className="routing-log-date-controls">
+                            <button
+                                type="button"
+                                onClick={() => setArDate((prev) => shiftDateKey(prev, -1))}
+                            >
+                                Previous day
+                            </button>
+                            <span>{formatLogDate(arDate)}</span>
+                            <button
+                                type="button"
+                                onClick={() => setArDate((prev) => shiftDateKey(prev, 1))}
+                                disabled={arDate >= todayKey}
+                            >
+                                Next day
+                            </button>
+                        </div>
+                    </div>
+                    <div className="routing-log-body">
+                        {arLog.loading && <p className="text-muted">Loading AR log...</p>}
+                        {!arLog.loading && arLog.entries.length === 0 && !arLog.error && (
+                            <p className="text-muted">No AR routing entries for this day.</p>
+                        )}
+                        {!arLog.loading && arLog.entries.map((entry) => (
+                            <div
+                                key={entry.id}
+                                className={`routing-log-entry${entry.status === 'failure' ? ' failure' : ''}`}
+                            >
+                                <div className="routing-log-entry-top">
+                                    <strong>{formatLogTime(entry.createdAt) || 'Unknown time'}</strong>
+                                    <span>{entry.status === 'failure' ? 'Failed' : `Code ${entry.codeValue || 'N/A'}`}</span>
+                                </div>
+                                {entry.status === 'failure' && (
+                                    <p className="routing-log-error-text">{entry.errorText || 'Unknown routing failure.'}</p>
+                                )}
+                                {Array.isArray(entry.files) && entry.files.length > 0 ? (
+                                    entry.files.map((file) => {
+                                        const busyKey = `${entry.id}:${file.fileIndex}`;
+                                        return (
+                                            <div key={`${entry.id}-${file.fileIndex}`} className="routing-log-file-row">
+                                                <span title={file.name}>{file.name}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleRevealRoutedFile({
+                                                        jobId: entry.id,
+                                                        fileIndex: file.fileIndex,
+                                                        setState: setArLog,
+                                                        type: 'AR'
+                                                    })}
+                                                    disabled={arLog.revealBusyKey === busyKey}
+                                                >
+                                                    {arLog.revealBusyKey === busyKey ? 'Opening...' : 'Reveal file'}
+                                                </button>
+                                            </div>
+                                        );
+                                    })
+                                ) : (
+                                    <p className="text-muted">No file paths recorded for this entry.</p>
+                                )}
+                            </div>
+                        ))}
+                        {arLog.notice && <div className="alert success">{arLog.notice}</div>}
+                        {arLog.error && <div className="alert error">{arLog.error}</div>}
+                    </div>
+                </Card>
+            </div>
 
             <Card className="deposit-card manual-deposit">
                 <div className="deposit-header">
@@ -424,8 +676,8 @@ const Finance = () => {
                     </div>
                 </div>
                 <div className="deposit-builder-body">
-                        <div className="deposit-checks-table-wrapper">
-                            <table className="deposit-checks-table">
+                    <div className="deposit-checks-table-wrapper">
+                        <table className="deposit-checks-table">
                             <thead>
                                 <tr>
                                     <th>Check #</th>

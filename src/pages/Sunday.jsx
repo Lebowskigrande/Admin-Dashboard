@@ -4,42 +4,25 @@ import { addDays, format, isSameDay, parseISO } from 'date-fns';
 import Card from '../components/Card';
 import { API_URL } from '../services/apiConfig';
 import { ROLE_DEFINITIONS } from '../models/roles';
+import { HGK_DEFAULT_ITEMS, HGK_STATUS_OPTIONS } from '../utils/constants';
 import { clearLiturgicalCache, getFollowingSunday, getLiturgicalDay, getNextSunday, getPreviousSunday, getServicesByDate } from '../services/liturgicalService';
 import { getSundayDetails, saveSundayDetails } from '../services/sundayDetails';
 import { useEvents } from '../context/EventsContext';
-import { FaFolderOpen, FaYoutube, FaUpload, FaPrint, FaSyncAlt } from 'react-icons/fa';
+import SundayBulletinStatus from './sunday/SundayBulletinStatus';
+import SundayLivestreamPanel from './sunday/SundayLivestreamPanel';
+import SundayEventsPanel from './sunday/SundayEventsPanel';
+import SundayRosterPanel from './sunday/SundayRosterPanel';
 import './Sunday.css';
 import './People.css';
 
 const serializeDate = (date) => date.toISOString().slice(0, 10);
 const toDateKey = (date) => (date ? date.toISOString().slice(0, 10) : '');
 
-const bulletinOptions = ['Not Started', 'draft', 'review', 'ready', 'printed'];
-const insertOptions = ['Not Started', 'draft', 'review', 'ready', 'printed', 'stuffed'];
-
-const resolveBulletinStatusFromDoc = (doc) => {
-    if (!doc?.exists) return 'Not Started';
-    const raw = String(doc.status || '').toLowerCase().trim();
-    if (!raw) return 'draft';
-    if (raw === 'not_started') return 'Not Started';
-    if (raw === 'final') return 'ready';
-    return raw;
-};
-
 const normalizeStatusLabel = (value) => {
     const raw = String(value || '').toLowerCase().trim();
     if (!raw || raw === 'not_started') return 'Not Started';
     if (raw === 'final') return 'ready';
     return raw;
-};
-
-const getStatusPillClass = (status) => {
-    const normalized = String(status || '').toLowerCase();
-    if (normalized === 'not started' || normalized === 'not_started') return 'pill-neutral';
-    if (normalized === 'review') return 'status-reviewed';
-    if (normalized === 'draft') return 'status-in_process';
-    if (normalized === 'ready' || normalized === 'printed') return 'status-closed';
-    return 'pill-neutral';
 };
 
 const apiRoleKeys = new Set([
@@ -54,19 +37,6 @@ const apiRoleKeys = new Set([
     'coffeeHour',
     'childcare'
 ]);
-
-const roleToApiField = {
-    celebrant: 'celebrant',
-    preacher: 'preacher',
-    lector: 'lector',
-    organist: 'organist',
-    lem: 'lem',
-    acolyte: 'acolyte',
-    usher: 'usher',
-    sound: 'sound',
-    coffeeHour: 'coffeeHour',
-    childcare: 'childcare'
-};
 
 const EIGHT_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist'];
 const TEN_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist', 'lem', 'acolyte', 'usher', 'sound', 'coffeeHour', 'childcare'];
@@ -83,29 +53,6 @@ const formatServiceTime = (time) => {
 const defaultLocationForTime = (time) => (isEightAmService(time) ? 'chapel' : 'sanctuary');
 
 const roleLabel = (key) => ROLE_DEFINITIONS.find((role) => role.key === key)?.label || key;
-
-const HGK_DEFAULT_ITEMS = [
-    'Bread',
-    'Peanut Butter',
-    'Jelly',
-    'Chips (box)',
-    'Granola Bars (box)',
-    'Oranges',
-    'Rice Krispie Treats (box)',
-    'Water',
-    'Lunch Bags',
-    'Sandwich Bags',
-    'Gloves',
-    'Napkins'
-];
-
-const HGK_STATUS_OPTIONS = ['needed', 'ordered', 'received'];
-
-const HGK_STATUS_LABELS = {
-    needed: 'Needed',
-    ordered: 'Ordered',
-    received: 'Received'
-};
 
 const buildHgkSupplyList = (rawItems = [], knownNames = []) => {
     const legacyNameMap = {
@@ -959,10 +906,10 @@ const Sunday = () => {
         setError('');
         try {
             const dateStr = serializeDate(currentDate);
-            const requests = services.map((service) => {
-                const payload = {
-                    date: dateStr,
-                    service_time: service.time || '10:00',
+            const payload = {};
+            services.forEach((service) => {
+                const serviceTime = service.time || '10:00';
+                payload[serviceTime] = {
                     location: locationDrafts?.[service.time] || service.location || defaultLocationForTime(service.time)
                 };
                 const serviceRoleKeys = getServiceRoleKeys(service);
@@ -972,17 +919,17 @@ const Sunday = () => {
                     const selectedIds = Array.isArray(draftValue)
                         ? draftValue
                         : (draftValue ? [draftValue] : []);
-                    payload[roleToApiField[roleKey]] = selectedIds.join(', ');
-                });
-                return fetch(`${API_URL}/schedule-roles`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    payload[serviceTime][roleKey] = selectedIds;
                 });
             });
 
-            const results = await Promise.all(requests);
-            if (results.some((res) => !res.ok)) {
+            const response = await fetch(`${API_URL}/sunday/roles/${dateStr}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
                 throw new Error('Failed to save schedule updates');
             }
             saveSundayDetails(currentDate, details);
@@ -1050,6 +997,45 @@ const Sunday = () => {
         }
     };
 
+    const handleBulletin10CopiesChange = (event) => {
+        const next = Math.max(1, Number(event.target.value) || 1);
+        setBulletinPrintCopies((prev) => ({ ...prev, bulletin10: next }));
+    };
+
+    const handleBulletin8CopiesChange = (event) => {
+        const next = Math.max(1, Number(event.target.value) || 1);
+        setBulletinPrintCopies((prev) => ({ ...prev, bulletin8: next }));
+    };
+
+    const handleInsertCopiesChange = (event) => {
+        const next = Math.max(1, Number(event.target.value) || 1);
+        setBulletinPrintCopies((prev) => ({ ...prev, insert: next }));
+    };
+
+    const handlePrintBulletin10 = async () => {
+        const ok = await printFile(bulletinDoc?.path, {
+            printer: 'SHARP-BULLETIN',
+            copies: bulletinPrintCopies.bulletin10
+        });
+        const expectedCopies = getBulletinDefaultCopies(bulletin10Display, 90);
+        if (ok && isReadyStatus(bulletin10Display) && bulletinPrintCopies.bulletin10 === expectedCopies) {
+            updateDetailField('bulletinStatus10', 'printed');
+        }
+    };
+
+    const handlePrintBulletin8 = async () => {
+        const ok = await printFile(bulletin8Doc?.path, {
+            printer: 'SHARP-BULLETIN',
+            copies: bulletinPrintCopies.bulletin8
+        });
+        const expectedCopies = getBulletinDefaultCopies(bulletin8Display, 20);
+        if (ok && isReadyStatus(bulletin8Display) && bulletinPrintCopies.bulletin8 === expectedCopies) {
+            updateDetailField('bulletinStatus8', 'printed');
+        }
+    };
+
+    const handlePrintInsert = () => printFile(insertDoc.path, { copies: bulletinPrintCopies.insert });
+
     const renderTooltipCard = (person) => {
         if (!person) return null;
         const tags = person.tags || [];
@@ -1102,6 +1088,11 @@ const Sunday = () => {
         );
     };
 
+    const handleTooltipToggle = (event, tooltipKey) => {
+        event.stopPropagation();
+        setOpenTooltipKey((prev) => (prev === tooltipKey ? null : tooltipKey));
+    };
+
     const bulletin10Fallback = bulletinDoc?.exists
         ? normalizeStatusLabel(bulletinDoc.status || details.bulletinStatus10 || 'draft')
         : 'Not Started';
@@ -1151,11 +1142,6 @@ const Sunday = () => {
         updateDetailField(field, !details[field]);
     };
 
-    const isEmailChecklistComplete = !!livestreamUrl
-        && details.bulletinUploaded
-        && details.emailCreated
-        && details.emailScheduled
-        && details.emailSent;
     const sundayEvents = useMemo(() => {
         if (!currentDate) return [];
         return events
@@ -1254,143 +1240,6 @@ const Sunday = () => {
         }
         setHgkSupplies(buildHgkSupplyList(hgkRawSupplies, hgkItemNames));
     }, [hgkRawSupplies, hgkItemNames, isHgkEvent]);
-
-    const servicePanels = useMemo(() => {
-        return services.map((service) => (
-            <Card key={service.id} className="sunday-service-card">
-                <header className="sunday-service-header">
-                    <div>
-                        <h3>{formatServiceTime(service.time)} Sunday Service - {service.rite || 'Rite II'}</h3>
-                        <div className="service-location">
-                            <span>Location</span>
-                            <select
-                                value={locationDrafts?.[service.time] || service.location || defaultLocationForTime(service.time)}
-                                onChange={(event) => updateLocationDraft(service.time, event.target.value)}
-                            >
-                                {buildings.length === 0 ? (
-                                    <option value={defaultLocationForTime(service.time)}>
-                                        {defaultLocationForTime(service.time)}
-                                    </option>
-                                ) : (
-                                    buildings.map((building) => (
-                                        <option key={building.id} value={building.id}>
-                                            {building.name}
-                                        </option>
-                                    ))
-                                )}
-                            </select>
-                        </div>
-                    </div>
-                </header>
-                <div className="service-roles-grid">
-                    {ROLE_DEFINITIONS.filter((role) => getServiceRoleKeys(service).includes(role.key)).map((role) => {
-                        const isMulti = MULTI_ASSIGNMENT_ROLES.has(role.key);
-                        const selectedValue = roleDrafts?.[service.time]?.[role.key];
-                        const selectValue = isMulti
-                            ? (Array.isArray(selectedValue) ? selectedValue : (selectedValue ? [selectedValue] : []))
-                            : (Array.isArray(selectedValue) ? (selectedValue[0] || '') : (selectedValue || ''));
-                        const eligiblePeople = people.filter((person) => (person.roles || []).includes(role.key));
-                        const teamMap = getTeamMap(role.key, eligiblePeople);
-                        const teamEntries = Array.from(teamMap.entries()).sort((a, b) => a[0] - b[0]);
-                        const selectedPeople = (Array.isArray(selectValue) ? selectValue : [selectValue])
-                            .map((id) => peopleById.get(id))
-                            .filter(Boolean);
-                        const menuOpen = openMenu?.serviceTime === service.time && openMenu?.roleKey === role.key;
-
-                        return (
-                            <div key={`${service.id}-${role.key}`} className="role-edit-row">
-                                <div className="role-menu-anchor">
-                                    <button
-                                        type="button"
-                                        className="role-menu-trigger"
-                                        onClick={(event) => {
-                                            event.preventDefault();
-                                            event.stopPropagation();
-                                            toggleRoleMenu(service.time, role.key);
-                                        }}
-                                        disabled={eligiblePeople.length === 0}
-                                        aria-expanded={menuOpen ? 'true' : 'false'}
-                                    >
-                                        <span>{role.label}</span>
-                                        <span className={`caret-icon ${menuOpen ? 'open' : ''}`}>▸</span>
-                                    </button>
-                                    {menuOpen && (
-                                        <div
-                                            className={`person-menu ${menuDirection === 'down' ? 'open-down' : 'open-up'}`}
-                                            data-menu-key={`${service.time}-${role.key}`}
-                                        >
-                                            {isMulti && teamEntries.length > 0 && (
-                                                <div className="person-menu-section">
-                                                    <div className="person-menu-title">Teams</div>
-                                                    {teamEntries.map(([teamNumber, memberIds]) => {
-                                                        const teamSelected = memberIds.every((id) => selectValue.includes(id));
-                                                        return (
-                                                            <button
-                                                                key={`${service.id}-${role.key}-team-${teamNumber}`}
-                                                                type="button"
-                                                                className="person-menu-item"
-                                                                onClick={() => toggleTeamSelection(service.time, role.key, memberIds)}
-                                                            >
-                                                                <span className={`person-chip person-chip-volunteer ${teamSelected ? 'chip-selected' : ''}`}>
-                                                                    Team {teamNumber}
-                                                                </span>
-                                                            </button>
-                                                        );
-                                                    })}
-                                                    <div className="person-menu-divider" />
-                                                </div>
-                                            )}
-                                            <div className="person-menu-section">
-                                                <div className="person-menu-title">People</div>
-                                                {eligiblePeople.map((person) => {
-                                                    const isSelected = isMulti
-                                                        ? selectValue.includes(person.id)
-                                                        : selectValue === person.id;
-                                                    const category = person.category || 'volunteer';
-                                                    return (
-                                                        <button
-                                                            key={`${service.id}-${role.key}-${person.id}`}
-                                                            type="button"
-                                                            className="person-menu-item"
-                                                            onClick={() => togglePersonSelection(service.time, role.key, person.id, isMulti)}
-                                                        >
-                                                            <span className={`person-chip person-chip-${category} ${isSelected ? 'chip-selected' : ''}`}>
-                                                                {person.displayName}
-                                                            </span>
-                                                        </button>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                                {selectedPeople.length > 0 ? (
-                                    <div className="role-chip-list">
-                                        {selectedPeople.map((person) => (
-                                            <span
-                                                key={person.id}
-                                                className={`person-chip-wrapper ${openTooltipKey === `${service.time}-${role.key}-${person.id}` ? 'tooltip-open' : ''}`}
-                                                onClick={(event) => {
-                                                    event.stopPropagation();
-                                                    const tooltipKey = `${service.time}-${role.key}-${person.id}`;
-                                                    setOpenTooltipKey((prev) => (prev === tooltipKey ? null : tooltipKey));
-                                                }}
-                                            >
-                                                <span className={`person-chip person-chip-${person.category || 'volunteer'}`}>{person.displayName}</span>
-                                                <span className={`person-tooltip ${openTooltipKey === `${service.time}-${role.key}-${person.id}` ? 'open' : ''}`}>
-                                                    {renderTooltipCard(person)}
-                                                </span>
-                                            </span>
-                                        ))}
-                                    </div>
-                                ) : null}
-                            </div>
-                        );
-                    })}
-                </div>
-            </Card>
-        ));
-    }, [buildings, locationDrafts, menuDirection, openMenu, openTooltipKey, people, peopleById, roleDrafts, services]);
 
     const handleHgkItemQuantityChange = (index, value) => {
         setHgkSupplies((prev) => {
@@ -1792,474 +1641,96 @@ const Sunday = () => {
             {error && <div className="alert error">{error}</div>}
 
             <div className="top-panel-row">
-                <Card
-                    id="bulletin-10am"
-                    className={`sunday-panel bulletin-card ${(statusDrafts.bulletin10 || bulletin10Status) === 'printed' ? 'panel-complete' : ''}`}
-                >
-                    {renderMilestoneInline('10am Bulletin', bulletinMilestone, 'bulletins-10am')}
-                    {isMilestoneComplete(bulletinMilestone, 'bulletins-10am') && (
-                        <span className="check-badge panel-check" aria-hidden="true">✓</span>
-                    )}
-                    
-                    <div className="doc-preview">
-                        <button
-                            type="button"
-                            className="doc-preview-refresh"
-                            onClick={() => refreshDocPreviews('bulletin10')}
-                            disabled={getPreviewLoading('bulletin10')}
-                            aria-label="Refresh preview"
-                            title="Refresh preview"
-                        >
-                            <FaSyncAlt />
-                        </button>
-                        {getPreviewLoading('bulletin10') && <span className="doc-spinner" aria-hidden="true" />}
-                        {bulletinDoc?.preview ? (
-                            <img src={bulletinDoc.preview} alt="10am bulletin preview" />
-                        ) : docsLoading ? null : (
-                            <div className="doc-preview-empty">No bulletin preview</div>
-                        )}
-                    </div>
-                    <div className="panel-actions panel-actions-bottom">
-                        <button
-                            type="button"
-                            className="btn-icon btn-icon-ghost"
-                            onClick={() => openFileLocation(bulletinDoc?.path)}
-                            disabled={!bulletinDoc?.exists}
-                            aria-label="Open 10am bulletin folder"
-                            title="Open File Location"
-                        >
-                            <FaFolderOpen />
-                        </button>
-                        <input
-                            type="number"
-                            min="1"
-                            className="print-copies-input"
-                            value={bulletinPrintCopies.bulletin10}
-                            onChange={(event) => {
-                                const next = Math.max(1, Number(event.target.value) || 1);
-                                setBulletinPrintCopies((prev) => ({ ...prev, bulletin10: next }));
-                            }}
-                            aria-label="10am bulletin copies"
-                        />
-                        <button
-                            type="button"
-                            className="btn-icon btn-icon-ghost"
-                            onClick={async () => {
-                                const ok = await printFile(bulletinDoc?.path, {
-                                    printer: 'SHARP-BULLETIN',
-                                    copies: bulletinPrintCopies.bulletin10
-                                });
-                                const expectedCopies = getBulletinDefaultCopies(bulletin10Display, 90);
-                                if (ok && isReadyStatus(bulletin10Display) && bulletinPrintCopies.bulletin10 === expectedCopies) {
-                                    updateDetailField('bulletinStatus10', 'printed');
-                                }
-                            }}
-                            disabled={!bulletinDoc?.exists}
-                            aria-label="Print 10am bulletin"
-                            title="Print"
-                        >
-                            <FaPrint />
-                        </button>
-                        <button
-                            type="button"
-                            className="btn-icon btn-icon-ghost"
-                            onClick={handleUploadBulletin}
-                            disabled={!bulletinDoc?.exists || uploadingBulletin}
-                            aria-label="Upload 10am bulletin"
-                            title="Upload to WordPress"
-                        >
-                            {uploadingBulletin ? <span className="btn-icon-loading" aria-hidden="true" /> : <FaUpload />}
-                        </button>
-                    </div>
-                    {uploadError && <div className="text-muted">{uploadError}</div>}
-                </Card>
-                <Card
-                    id="bulletin-8am"
-                    className={`sunday-panel bulletin-card ${(statusDrafts.bulletin8 || bulletin8Status) === 'printed' ? 'panel-complete' : ''}`}
-                >
-                    {renderMilestoneInline('8am Bulletin', bulletinMilestone, 'bulletins-8am')}
-                    {isMilestoneComplete(bulletinMilestone, 'bulletins-8am') && (
-                        <span className="check-badge panel-check" aria-hidden="true">✓</span>
-                    )}
-                    
-                    <div className="doc-preview">
-                        <button
-                            type="button"
-                            className="doc-preview-refresh"
-                            onClick={() => refreshDocPreviews('bulletin8')}
-                            disabled={getPreviewLoading('bulletin8')}
-                            aria-label="Refresh preview"
-                            title="Refresh preview"
-                        >
-                            <FaSyncAlt />
-                        </button>
-                        {getPreviewLoading('bulletin8') && <span className="doc-spinner" aria-hidden="true" />}
-                        {bulletin8Doc?.preview ? (
-                            <img src={bulletin8Doc.preview} alt="8am bulletin preview" />
-                        ) : docsLoading ? null : (
-                            <div className="doc-preview-empty">No bulletin preview</div>
-                        )}
-                    </div>
-                    <div className="panel-actions panel-actions-bottom">
-                        <button
-                            type="button"
-                            className="btn-icon btn-icon-ghost"
-                            onClick={() => openFileLocation(bulletin8Doc?.path)}
-                            disabled={!bulletin8Doc?.exists}
-                            aria-label="Open 8am bulletin folder"
-                            title="Open File Location"
-                        >
-                            <FaFolderOpen />
-                        </button>
-                        <input
-                            type="number"
-                            min="1"
-                            className="print-copies-input"
-                            value={bulletinPrintCopies.bulletin8}
-                            onChange={(event) => {
-                                const next = Math.max(1, Number(event.target.value) || 1);
-                                setBulletinPrintCopies((prev) => ({ ...prev, bulletin8: next }));
-                            }}
-                            aria-label="8am bulletin copies"
-                        />
-                        <button
-                            type="button"
-                            className="btn-icon btn-icon-ghost"
-                            onClick={async () => {
-                                const ok = await printFile(bulletin8Doc?.path, {
-                                    printer: 'SHARP-BULLETIN',
-                                    copies: bulletinPrintCopies.bulletin8
-                                });
-                                const expectedCopies = getBulletinDefaultCopies(bulletin8Display, 20);
-                                if (ok && isReadyStatus(bulletin8Display) && bulletinPrintCopies.bulletin8 === expectedCopies) {
-                                    updateDetailField('bulletinStatus8', 'printed');
-                                }
-                            }}
-                            disabled={!bulletin8Doc?.exists}
-                            aria-label="Print 8am bulletin"
-                            title="Print"
-                        >
-                            <FaPrint />
-                        </button>
-                    </div>
-                </Card>
-                <Card
-                    className={`sunday-panel insert-card ${(statusDrafts.insert || insertStatus) === 'stuffed' ? 'panel-complete' : ''}`}
-                >
-                    {renderMilestoneInline('Insert', insertMilestone)}
-                    {isMilestoneComplete(insertMilestone, insertMilestone?.key || 'insert') && (
-                        <span className="check-badge panel-check" aria-hidden="true">✓</span>
-                    )}
-                    
-                    <div className="doc-preview">
-                        <button
-                            type="button"
-                            className="doc-preview-refresh"
-                            onClick={() => refreshDocPreviews('insert')}
-                            disabled={getPreviewLoading('insert')}
-                            aria-label="Refresh preview"
-                            title="Refresh preview"
-                        >
-                            <FaSyncAlt />
-                        </button>
-                        {getPreviewLoading('insert') && <span className="doc-spinner" aria-hidden="true" />}
-                        {insertDoc.preview ? (
-                            <img src={insertDoc.preview} alt="Insert preview" />
-                        ) : docsLoading ? null : (
-                            <div className="doc-preview-empty">No insert preview</div>
-                        )}
-                    </div>
-                    <div className="panel-actions panel-actions-bottom">
-                        <button
-                            type="button"
-                            className="btn-icon btn-icon-ghost"
-                            onClick={() => openFileLocation(insertDoc.path)}
-                            disabled={!insertDoc.exists}
-                            aria-label="Open insert folder"
-                            title="Open File Location"
-                        >
-                            <FaFolderOpen />
-                        </button>
-                        <input
-                            type="number"
-                            min="1"
-                            className="print-copies-input"
-                            value={bulletinPrintCopies.insert}
-                            onChange={(event) => {
-                                const next = Math.max(1, Number(event.target.value) || 1);
-                                setBulletinPrintCopies((prev) => ({ ...prev, insert: next }));
-                            }}
-                            aria-label="Insert copies"
-                        />
-                        <button
-                            type="button"
-                            className="btn-icon btn-icon-ghost"
-                            onClick={() => printFile(insertDoc.path, { copies: bulletinPrintCopies.insert })}
-                            disabled={!insertDoc.exists}
-                            aria-label="Print insert"
-                            title="Print"
-                        >
-                            <FaPrint />
-                        </button>
-                    </div>
-                </Card>
-                <Card className={`sunday-panel livestream-card ${isEmailChecklistComplete ? 'panel-complete' : ''}`}>
-                    {renderMilestoneInline('Livestream Email', emailMilestone)}
-
-                    {isMilestoneComplete(emailMilestone, emailMilestone?.key || 'email') && (
-                        <span className="check-badge panel-check" aria-hidden="true">✓</span>
-                    )}
-                    
-                    <div className="email-checklist-wrapper">
-                        <div className="email-checklist">
-                            <div className={`check-item ${livestreamUrl ? 'done' : ''}`}>
-                                <span className={`check-badge check-badge--sm ${livestreamUrl ? '' : 'check-badge--empty'}`} aria-hidden="true">
-                                    {livestreamUrl ? '✓' : ''}
-                                </span>
-                                <span>Livestream setup</span>
-                                {livestreamUrl && (
-                                    <a
-                                        className="btn-icon btn-icon-ghost youtube-link"
-                                        href={livestreamUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        aria-label="Open YouTube livestream"
-                                        title="Open YouTube"
-                                    >
-                                        <FaYoutube />
-                                    </a>
-                                )}
-                            </div>
-                            <button
-                                type="button"
-                                className={`check-item check-action ${details.bulletinUploaded ? 'done' : ''}`}
-                                onClick={() => toggleEmailChecklistItem('bulletinUploaded')}
-                            >
-                                <span className={`check-badge check-badge--sm ${details.bulletinUploaded ? '' : 'check-badge--empty'}`} aria-hidden="true">
-                                    {details.bulletinUploaded ? '✓' : ''}
-                                </span>
-                                <span>Bulletin uploaded</span>
-                            </button>
-                            <button
-                                type="button"
-                                className={`check-item check-action ${details.emailCreated ? 'done' : ''}`}
-                                onClick={() => toggleEmailChecklistItem('emailCreated')}
-                            >
-                                <span className={`check-badge check-badge--sm ${details.emailCreated ? '' : 'check-badge--empty'}`} aria-hidden="true">
-                                    {details.emailCreated ? '✓' : ''}
-                                </span>
-                                <span>Email created</span>
-                            </button>
-                            <button
-                                type="button"
-                                className={`check-item check-action ${details.emailScheduled ? 'done' : ''}`}
-                                onClick={() => toggleEmailChecklistItem('emailScheduled')}
-                            >
-                                <span className={`check-badge check-badge--sm ${details.emailScheduled ? '' : 'check-badge--empty'}`} aria-hidden="true">
-                                    {details.emailScheduled ? '✓' : ''}
-                                </span>
-                                <span>Email scheduled</span>
-                            </button>
-                            <button
-                                type="button"
-                                className={`check-item check-action ${details.emailSent ? 'done' : ''}`}
-                                onClick={() => toggleEmailChecklistItem('emailSent')}
-                            >
-                                <span className={`check-badge check-badge--sm ${details.emailSent ? '' : 'check-badge--empty'}`} aria-hidden="true">
-                                    {details.emailSent ? '✓' : ''}
-                                </span>
-                                <span>Email sent</span>
-                            </button>
-                        </div>
-                    </div>
-                    {livestreamError && <div className="text-muted">{livestreamError}</div>}
-                </Card>
+                <SundayBulletinStatus
+                    bulletinMilestone={bulletinMilestone}
+                    insertMilestone={insertMilestone}
+                    bulletinDoc={bulletinDoc}
+                    bulletin8Doc={bulletin8Doc}
+                    insertDoc={insertDoc}
+                    statusDrafts={statusDrafts}
+                    bulletin10Status={bulletin10Status}
+                    bulletin8Status={bulletin8Status}
+                    insertStatus={insertStatus}
+                    renderMilestoneInline={renderMilestoneInline}
+                    isMilestoneComplete={isMilestoneComplete}
+                    refreshDocPreviews={refreshDocPreviews}
+                    getPreviewLoading={getPreviewLoading}
+                    docsLoading={docsLoading}
+                    bulletinPrintCopies={bulletinPrintCopies}
+                    onChangeBulletin10Copies={handleBulletin10CopiesChange}
+                    onChangeBulletin8Copies={handleBulletin8CopiesChange}
+                    onChangeInsertCopies={handleInsertCopiesChange}
+                    onOpenFileLocation={openFileLocation}
+                    onPrintBulletin10={handlePrintBulletin10}
+                    onPrintBulletin8={handlePrintBulletin8}
+                    onPrintInsert={handlePrintInsert}
+                    onUploadBulletin={handleUploadBulletin}
+                    uploadingBulletin={uploadingBulletin}
+                    uploadError={uploadError}
+                />
+                <SundayLivestreamPanel
+                    renderMilestoneInline={renderMilestoneInline}
+                    emailMilestone={emailMilestone}
+                    isMilestoneComplete={isMilestoneComplete}
+                    livestreamUrl={livestreamUrl}
+                    details={details}
+                    toggleEmailChecklistItem={toggleEmailChecklistItem}
+                    livestreamError={livestreamError}
+                />
             </div>
 
-            {sundayEvents.length > 0 && (
-                <Card className="sunday-panel events-panel">
-                    <div className="panel-header">
-                        <h3>Additional Sunday Events</h3>
-                    </div>
-                    <div className="events-panel-body">
-                        <div className="events-panel-list">
-                            {sundayEvents.map((eventItem) => (
-                                <button
-                                    key={eventItem.id}
-                                    type="button"
-                                    className={`event-row ${eventItem.id === selectedEventId ? 'active' : ''}`}
-                                    onClick={() => setSelectedEventId(eventItem.id)}
-                                >
-                                    <div className="event-row-main">
-                                        <span className="event-row-title">{eventItem.title}</span>
-                                        <span className="event-row-meta">
-                                            {eventItem.type_name || eventItem.category_name || 'Event'}
-                                        </span>
-                                    </div>
-                                    <span className="event-row-time">{eventItem.time || 'All day'}</span>
-                                </button>
-                            ))}
-                        </div>
-                        <div className="events-panel-detail">
-                            {!selectedEvent ? (
-                                <div className="empty-text">Select an event to see details.</div>
-                            ) : (
-                                <div className="event-details">
-                                    <div className="event-detail-row">
-                                        <span className="event-detail-label">Title</span>
-                                        <span className="event-detail-value">{selectedEvent.title}</span>
-                                    </div>
-                                    <div className="event-detail-row">
-                                        <span className="event-detail-label">Time</span>
-                                        <span className="event-detail-value">{selectedEvent.time || 'All day'}</span>
-                                    </div>
-                                    <div className="event-detail-row">
-                                        <span className="event-detail-label">Location</span>
-                                        <span className="event-detail-value">{selectedEvent.location || 'TBD'}</span>
-                                    </div>
-                                    <div className="event-detail-row">
-                                        <span className="event-detail-label">Type</span>
-                                        <span className="event-detail-value">{selectedEvent.type_name || selectedEvent.category_name || 'Event'}</span>
-                                    </div>
-                                    {selectedEvent.description && (
-                                        <div className="event-detail-row">
-                                            <span className="event-detail-label">Notes</span>
-                                            <span className="event-detail-value">{selectedEvent.description}</span>
-                                        </div>
-                                    )}
-                                    {isHgkEvent && (
-                                        <div className="hgk-supply-panel">
-                                            <div className="hgk-supply-header">
-                                                <div>
-                                                    <h4>Holy Ghost Kitchen Supplies</h4>
-                                                    <span className="hgk-supply-month">{hgkSupplyMonthLabel}</span>
-                                                </div>
-                                                <span className="hgk-supply-status-label">
-                                                    {hgkSupplyRequest ? 'Saved request' : 'Ungenerated list'}
-                                                </span>
-                                            </div>
-                                            <div className="hgk-supply-notes">
-                                                <label htmlFor="hgk-supply-notes">Notes</label>
-                                                <textarea
-                                                    id="hgk-supply-notes"
-                                                    className="hgk-supply-textarea"
-                                                    value={hgkNotes}
-                                                    onChange={(event) => setHgkNotes(event.target.value)}
-                                                    placeholder="Add ordering notes or reminders."
-                                                />
-                                            </div>
-                                            <div className="hgk-supply-email">
-                                                <label htmlFor="hgk-supply-email">Supply email</label>
-                                                <div className="hgk-supply-email-row">
-                                                    <textarea
-                                                        id="hgk-supply-email"
-                                                        className="hgk-supply-textarea"
-                                                        value={hgkEmailInput}
-                                                        onChange={(event) => setHgkEmailInput(event.target.value)}
-                                                        placeholder="Paste the monthly supply email text to populate quantities."
-                                                    />
-                                                    <div className="hgk-email-actions">
-                                                        <button
-                                                            type="button"
-                                                            className="btn-secondary hgk-email-button"
-                                                            onClick={handleSearchHgkEmail}
-                                                            disabled={hgkSearchBusy}
-                                                        >
-                                                            {hgkSearchBusy ? 'Searching...' : 'Search for Supply Request'}
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            className="btn-primary hgk-email-button"
-                                                            onClick={handleParseHgkEmail}
-                                                            disabled={hgkEmailBusy || !hgkEmailInput.trim()}
-                                                        >
-                                                            {hgkEmailBusy ? 'Parsing...' : 'Use email'}
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div className="hgk-supply-grid">
-                                                <div className="hgk-supply-row hgk-supply-row--header">
-                                                    <span>Item</span>
-                                                    <span>Qty</span>
-                                                    <span>Status</span>
-                                                    <span>Notes</span>
-                                                </div>
-                                                {hgkSupplyLoading ? (
-                                                    <div className="hgk-supply-loading">Loading supply list...</div>
-                                                ) : hgkSupplies.length === 0 ? (
-                                                    <div className="hgk-supply-empty">No supply items configured yet.</div>
-                                                ) : (
-                                                    hgkSupplies.map((item, index) => (
-                                                        <div className="hgk-supply-row" key={`${item.item_name}-${index}`}>
-                                                            <span className="hgk-supply-name">{item.item_name}</span>
-                                                            <input
-                                                                type="text"
-                                                                className="hgk-supply-input"
-                                                                value={item.quantity}
-                                                                placeholder="Qty"
-                                                                onChange={(event) => handleHgkItemQuantityChange(index, event.target.value)}
-                                                            />
-                                                            <select
-                                                                className="hgk-supply-select"
-                                                                value={item.status}
-                                                                onChange={(event) => handleHgkItemStatusChange(index, event.target.value)}
-                                                            >
-                                                                {HGK_STATUS_OPTIONS.map((value) => (
-                                                                    <option key={value} value={value}>
-                                                                        {HGK_STATUS_LABELS[value] || value}
-                                                                    </option>
-                                                                ))}
-                                                            </select>
-                                                            <input
-                                                                type="text"
-                                                                className="hgk-supply-input"
-                                                                value={item.notes}
-                                                                onChange={(event) => handleHgkItemNotesChange(index, event.target.value)}
-                                                                placeholder="Notes"
-                                                            />
-                                                        </div>
-                                                    ))
-                                                )}
-                                            </div>
-                                            <div className="hgk-supply-actions">
-                                                <button
-                                                    type="button"
-                                                    className="btn-secondary"
-                                                    onClick={handleOpenHgkInstacart}
-                                                    disabled={hgkInstacartBusy || hgkSupplyLoading}
-                                                >
-                                                    {hgkInstacartBusy ? 'Opening...' : 'Open Instacart List'}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn-primary"
-                                                    onClick={handleSaveHgkSupplies}
-                                                    disabled={hgkSupplySaving || hgkSupplyLoading}
-                                                >
-                                                    {hgkSupplySaving ? 'Saving...' : 'Save supply list'}
-                                                </button>
-                                                {hgkSupplyError && <span className="hgk-supply-error">{hgkSupplyError}</span>}
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </Card>
-            )}
+            <SundayEventsPanel
+                sundayEvents={sundayEvents}
+                selectedEventId={selectedEventId}
+                setSelectedEventId={setSelectedEventId}
+                selectedEvent={selectedEvent}
+                isHgkEvent={isHgkEvent}
+                hgkSupplyMonthLabel={hgkSupplyMonthLabel}
+                hgkSupplyRequest={hgkSupplyRequest}
+                hgkNotes={hgkNotes}
+                setHgkNotes={setHgkNotes}
+                hgkEmailInput={hgkEmailInput}
+                setHgkEmailInput={setHgkEmailInput}
+                handleSearchHgkEmail={handleSearchHgkEmail}
+                hgkSearchBusy={hgkSearchBusy}
+                handleParseHgkEmail={handleParseHgkEmail}
+                hgkEmailBusy={hgkEmailBusy}
+                hgkSupplies={hgkSupplies}
+                hgkSupplyLoading={hgkSupplyLoading}
+                handleHgkItemQuantityChange={handleHgkItemQuantityChange}
+                handleHgkItemStatusChange={handleHgkItemStatusChange}
+                handleHgkItemNotesChange={handleHgkItemNotesChange}
+                handleOpenHgkInstacart={handleOpenHgkInstacart}
+                hgkInstacartBusy={hgkInstacartBusy}
+                handleSaveHgkSupplies={handleSaveHgkSupplies}
+                hgkSupplySaving={hgkSupplySaving}
+                hgkSupplyError={hgkSupplyError}
+            />
 
-            <section id="volunteers" className="sunday-services">
-                <div className="section-header">
-                    <h2>Service Roles</h2>
-                    <span className="text-muted">Every role for each service is listed below.</span>
-                </div>
-                {renderRoleProgress()}
-                {servicePanels.length > 0 ? servicePanels : (
-                    <Card className="empty-card">No service assignments available for this Sunday.</Card>
-                )}
-            </section>
+            <SundayRosterPanel
+                services={services}
+                buildings={buildings}
+                roleDrafts={roleDrafts}
+                locationDrafts={locationDrafts}
+                people={people}
+                peopleById={peopleById}
+                openMenu={openMenu}
+                openTooltipKey={openTooltipKey}
+                menuDirection={menuDirection}
+                toggleRoleMenu={toggleRoleMenu}
+                toggleTeamSelection={toggleTeamSelection}
+                togglePersonSelection={togglePersonSelection}
+                updateLocationDraft={updateLocationDraft}
+                renderTooltipCard={renderTooltipCard}
+                renderRoleProgress={renderRoleProgress}
+                getTeamMap={getTeamMap}
+                getServiceRoleKeys={getServiceRoleKeys}
+                defaultLocationForTime={defaultLocationForTime}
+                formatServiceTime={formatServiceTime}
+                multiAssignmentRoles={MULTI_ASSIGNMENT_ROLES}
+                roleDefinitions={ROLE_DEFINITIONS}
+                onTooltipToggle={handleTooltipToggle}
+            />
 
         </div>
     );

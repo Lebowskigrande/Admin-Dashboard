@@ -9,16 +9,23 @@ const Settings = () => {
     const [loading, setLoading] = useState(true);
     const [calendars, setCalendars] = useState([]);
     const [loadingCalendars, setLoadingCalendars] = useState(false);
+    const [sharefileConnected, setSharefileConnected] = useState(false);
+    const [sharefileAccount, setSharefileAccount] = useState(null);
+    const [sharefileLoading, setSharefileLoading] = useState(true);
 
     useEffect(() => {
         checkGoogleStatus();
+        checkSharefileStatus();
 
         // Check if returning from OAuth
         const returnPath = sessionStorage.getItem('oauthReturnPath');
         if (returnPath) {
             sessionStorage.removeItem('oauthReturnPath');
             // Refresh status after OAuth redirect
-            setTimeout(() => checkGoogleStatus(), 1000);
+            setTimeout(() => {
+                checkGoogleStatus();
+                checkSharefileStatus();
+            }, 1000);
         }
     }, []);
 
@@ -42,6 +49,26 @@ const Settings = () => {
             setGoogleConnected(false);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const checkSharefileStatus = async () => {
+        try {
+            const response = await fetch(`${API_URL}/sharefile/google/status`, { credentials: 'include' });
+            if (response.ok) {
+                const data = await response.json();
+                setSharefileConnected(!!data.connected);
+                setSharefileAccount(data.account || null);
+            } else {
+                setSharefileConnected(false);
+                setSharefileAccount(null);
+            }
+        } catch (error) {
+            console.error('Error checking ShareFile Gmail status:', error);
+            setSharefileConnected(false);
+            setSharefileAccount(null);
+        } finally {
+            setSharefileLoading(false);
         }
     };
 
@@ -92,6 +119,19 @@ const Settings = () => {
         sessionStorage.setItem('oauthReturnPath', window.location.pathname);
         // Direct redirect - more reliable than popup
         window.location.href = `${API_BASE}/auth/google`;
+    };
+
+    const connectSharefileGmail = async () => {
+        sessionStorage.setItem('oauthReturnPath', window.location.pathname);
+        try {
+            const response = await fetch(`${API_URL}/sharefile/google/auth-url`, { credentials: 'include' });
+            if (!response.ok) throw new Error('Failed to load ShareFile Gmail auth URL');
+            const data = await response.json();
+            if (!data?.url) throw new Error('Missing auth URL');
+            window.location.href = data.url;
+        } catch (error) {
+            console.error('ShareFile Gmail connect error:', error);
+        }
     };
 
     const disconnectGoogle = async () => {
@@ -187,6 +227,44 @@ const Settings = () => {
                             )}
                         </div>
                     )}
+                </div>
+            </Card>
+
+            <Card title="ShareFile Gmail Routing">
+                <div className="settings-section">
+                    <div className="integration-status">
+                        <div className="status-icon">
+                            <FaGoogle size={48} color={sharefileConnected ? '#4285f4' : '#ccc'} />
+                        </div>
+                        <div className="status-info">
+                            <h3>ShareFile Gmail Inbox</h3>
+                            {sharefileLoading ? (
+                                <p className="status-text">Checking connection...</p>
+                            ) : sharefileConnected ? (
+                                <>
+                                    <p className="status-text status-connected">
+                                        <FaCheck /> Connected
+                                    </p>
+                                    <p className="status-detail">
+                                        {sharefileAccount?.email || 'ShareFile Gmail is connected'}
+                                    </p>
+                                </>
+                            ) : (
+                                <>
+                                    <p className="status-text status-disconnected">
+                                        <FaTimes /> Not Connected
+                                    </p>
+                                    <p className="status-detail">Connect the dashboard Gmail inbox for ShareFile routing</p>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="integration-actions">
+                        <button className="btn-primary" onClick={connectSharefileGmail}>
+                            <FaGoogle /> Connect ShareFile Gmail
+                        </button>
+                    </div>
                 </div>
             </Card>
 

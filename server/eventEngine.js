@@ -1,5 +1,6 @@
-import { sqlite } from './db.js';
 import { createHash } from 'crypto';
+import { tableExists, parseNotes } from './helpers/db-utils.js';
+import { isSundayDate } from './helpers/sunday-utils.js';
 
 /**
  * Categorizes a Google Calendar event based on its summary/description.
@@ -208,15 +209,7 @@ const normalizeBuildingId = (value, locationContext = null) => {
 };
 
 const hashId = (value) => createHash('sha1').update(String(value)).digest('hex');
-const parseNotes = (value) => {
-    if (!value) return {};
-    try {
-        const parsed = JSON.parse(value);
-        return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-        return {};
-    }
-};
+// parseNotes moved to db-utils.js
 
 const parseNotesWithText = (value) => {
     if (!value) return { data: {}, rawText: '' };
@@ -231,16 +224,7 @@ const parseNotesWithText = (value) => {
     return { data: {}, rawText: String(value) };
 };
 
-const tableExists = (name) => !!sqlite.prepare(`
-    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
-`).get(name);
-
-const isSundayDate = (dateStr) => {
-    if (!dateStr) return false;
-    const date = new Date(`${dateStr}T00:00:00`);
-    if (Number.isNaN(date.getTime())) return false;
-    return date.getDay() === 0;
-};
+// tableExists, isSundayDate moved to helpers
 
 const resolveLocation = ({ locationTags, eventLocation, locationContext }) => {
     if (locationTags?.length) {

@@ -8,13 +8,20 @@ export const GOOGLE_SCOPES = [
     'email',
     'profile',
     'https://www.googleapis.com/auth/calendar.readonly',
-    'https://www.googleapis.com/auth/gmail.readonly'
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.modify'
 ];
 
 export const createOAuthClient = () => new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
     process.env.GOOGLE_REDIRECT_URI
+);
+
+export const createOAuthClientWithRedirect = (redirectUri) => new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    redirectUri
 );
 
 // Generate auth URL
@@ -26,9 +33,24 @@ export const getAuthUrl = () => {
     });
 };
 
+export const getAuthUrlWithRedirect = (redirectUri) => {
+    return createOAuthClientWithRedirect(redirectUri).generateAuthUrl({
+        access_type: 'offline',
+        scope: GOOGLE_SCOPES,
+        prompt: 'consent'
+    });
+};
+
 // Exchange code for tokens
 export const getTokensFromCode = async (code) => {
     const client = createOAuthClient();
+    const { tokens } = await client.getToken(code);
+    client.setCredentials(tokens);
+    return tokens;
+};
+
+export const getTokensFromCodeWithRedirect = async (code, redirectUri) => {
+    const client = createOAuthClientWithRedirect(redirectUri);
     const { tokens } = await client.getToken(code);
     client.setCredentials(tokens);
     return tokens;

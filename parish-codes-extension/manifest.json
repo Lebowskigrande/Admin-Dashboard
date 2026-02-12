@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Parish Codes (Budget + Envelope)",
+  "version": "3.0.0",
+  "description": "Gmail context menus for budget codes and envelope numbers. Inserts into compose and posts {messageId/threadId, code} to dashboard server.",
+  "permissions": ["contextMenus", "activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "https://docs.google.com/spreadsheets/d/*",
+    "http://localhost:3001/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["contentScript.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

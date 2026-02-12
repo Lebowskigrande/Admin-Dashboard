@@ -77,7 +77,7 @@ const fetchPeople = async () => {
 const fetchLiturgicalDays = async () => {
     if (cachedLiturgicalDays) return cachedLiturgicalDays;
     try {
-        const response = await fetch(`${API_URL}/liturgical-days`);
+    const response = await fetch(`${API_URL}/sunday/liturgical-days`);
         if (!response.ok) throw new Error('Failed to fetch liturgical days');
         const data = await response.json();
         cachedLiturgicalDays = Array.isArray(data) ? data : [];
@@ -91,7 +91,7 @@ const fetchLiturgicalDays = async () => {
 const fetchScheduleRoles = async () => {
     if (cachedScheduleRoles) return cachedScheduleRoles;
     try {
-        const response = await fetch(`${API_URL}/schedule-roles`);
+    const response = await fetch(`${API_URL}/sunday/schedule-roles`);
         if (!response.ok) throw new Error('Failed to fetch schedule roles');
         const data = await response.json();
         cachedScheduleRoles = Array.isArray(data) ? data : [];
@@ -105,7 +105,7 @@ const fetchScheduleRoles = async () => {
 const fetchSundays = async () => {
     if (cachedSundays) return cachedSundays;
     try {
-        const response = await fetch(`${API_URL}/sundays`);
+    const response = await fetch(`${API_URL}/sunday/sundays?months=12`);
         if (!response.ok) throw new Error('Failed to fetch sundays');
         const data = await response.json();
         cachedSundays = Array.isArray(data) ? data : [];
