@@ -33,3 +33,13 @@ test('validateEmailInput rejects incomplete payload when not test mode', () => {
     );
 });
 
+test('validateEmailInput preserves optional fromEmail and allows testEmpty payload', () => {
+    const result = __TEST__.validateEmailInput({
+        testEmpty: true,
+        fromEmail: '  office@example.org  '
+    });
+
+    assert.equal(result.testEmpty, true);
+    assert.equal(result.fromEmail, 'office@example.org');
+});
+
