@@ -16,6 +16,25 @@ import Vestry from './pages/Vestry';
 import EventTemplates from './pages/EventTemplates';
 import UIMockups from './pages/UIMockups';
 import { EventsProvider } from './context/EventsContext';
+import { ROUTE_MANIFEST } from './config/routeManifest';
+
+const PAGE_COMPONENTS = {
+  overview: Dashboard,
+  sunday: Sunday,
+  calendar: Calendar,
+  liturgical: LiturgicalSchedule,
+  finance: Finance,
+  vestry: Vestry,
+  buildings: Buildings,
+  people: People,
+  todo: Todo,
+  taskOrigins: TaskAdmin,
+  eventTemplates: EventTemplates,
+  uiMockups: UIMockups,
+  settings: Settings,
+  communications: Communications,
+  bulletins: Bulletins,
+};
 
 function App() {
   return (
@@ -23,21 +42,14 @@ function App() {
       <EventsProvider>
         <Routes>
           <Route path="/" element={<Layout />}>
-            <Route index element={<Dashboard />} />
-            <Route path="calendar" element={<Calendar />} />
-            <Route path="liturgical-schedule" element={<LiturgicalSchedule />} />
-            <Route path="sunday" element={<Sunday />} />
-            <Route path="finance" element={<Finance />} />
-            <Route path="buildings" element={<Buildings />} />
-            <Route path="people" element={<People />} />
-            <Route path="bulletins" element={<Bulletins />} />
-            <Route path="todo" element={<Todo />} />
-            <Route path="task-origins" element={<TaskAdmin />} />
-            <Route path="event-templates" element={<EventTemplates />} />
-            <Route path="ui-mockups" element={<UIMockups />} />
-            <Route path="settings" element={<Settings />} />
-            <Route path="communications" element={<Communications />} />
-            <Route path="vestry" element={<Vestry />} />
+            {ROUTE_MANIFEST.map((entry) => {
+              const Component = PAGE_COMPONENTS[entry.key];
+              if (!Component) return null;
+              if (entry.path === '/') {
+                return <Route key={entry.key} index element={<Component />} />;
+              }
+              return <Route key={entry.key} path={entry.routePath} element={<Component />} />;
+            })}
           </Route>
         </Routes>
       </EventsProvider>

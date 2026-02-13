@@ -1,58 +1,28 @@
-import { readFile } from 'fs/promises';
-import { join } from 'path';
+import { ROUTE_MANIFEST } from '../src/config/routeManifest.js';
 
 const STRICT = process.argv.includes('--strict');
-const ROOT = process.cwd();
-const APP_PATH = join(ROOT, 'src', 'App.jsx');
-const SIDEBAR_PATH = join(ROOT, 'src', 'components', 'Sidebar.jsx');
-const NAV_ALLOWLIST = new Set(['/bulletins', '/communications']);
-
-const normalize = (value) => {
-    const trimmed = String(value || '').trim();
-    if (!trimmed) return '/';
-    const withLeading = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-    return withLeading.replace(/\/+/g, '/').replace(/\/$/, '') || '/';
-};
-
-const parseAppRoutes = (raw) => {
-    const routes = new Set(['/']);
-    const routePattern = /<Route\s+path="([^"]+)"/g;
-    let match = routePattern.exec(raw);
-    while (match) {
-        routes.add(normalize(match[1]));
-        match = routePattern.exec(raw);
-    }
-    return routes;
-};
-
-const parseNavPaths = (raw) => {
-    const paths = new Set();
-    const pathPattern = /path:\s*'([^']+)'/g;
-    let match = pathPattern.exec(raw);
-    while (match) {
-        paths.add(normalize(match[1]));
-        match = pathPattern.exec(raw);
-    }
-    return paths;
-};
 
 const run = async () => {
-    const appRaw = await readFile(APP_PATH, 'utf8');
-    const sidebarRaw = await readFile(SIDEBAR_PATH, 'utf8');
-    const appRoutes = parseAppRoutes(appRaw);
-    const navPaths = parseNavPaths(sidebarRaw);
+    const appRoutes = ROUTE_MANIFEST.map((entry) => entry.path);
+    const navPaths = ROUTE_MANIFEST.filter((entry) => entry.showInNav).map((entry) => entry.path);
+    const routeSet = new Set(appRoutes);
+    const navSet = new Set(navPaths);
+    const duplicateRoutes = appRoutes.filter((path, index) => appRoutes.indexOf(path) !== index);
+    const invalidEntries = ROUTE_MANIFEST
+        .filter((entry) => entry.path !== '/' && !entry.routePath)
+        .map((entry) => entry.key);
 
-    const hiddenRoutes = [...appRoutes]
-        .filter((route) => !navPaths.has(route))
-        .filter((route) => !NAV_ALLOWLIST.has(route))
+    const hiddenRoutes = appRoutes
+        .filter((route) => !navSet.has(route))
+        .filter((route) => ROUTE_MANIFEST.find((entry) => entry.path === route)?.showInNav)
         .sort();
 
-    const orphanNav = [...navPaths]
-        .filter((route) => !appRoutes.has(route))
+    const orphanNav = navPaths
+        .filter((route) => !routeSet.has(route))
         .sort();
 
-    console.log(`[smoke:routes] App routes: ${appRoutes.size}`);
-    console.log(`[smoke:routes] Sidebar links: ${navPaths.size}`);
+    console.log(`[smoke:routes] App routes: ${appRoutes.length}`);
+    console.log(`[smoke:routes] Sidebar links: ${navPaths.length}`);
 
     if (hiddenRoutes.length > 0) {
         console.log('[smoke:routes] Routes not present in sidebar:');
@@ -62,11 +32,19 @@ const run = async () => {
         console.log('[smoke:routes] Sidebar routes missing in app router:');
         orphanNav.forEach((route) => console.log(` - ${route}`));
     }
-    if (hiddenRoutes.length === 0 && orphanNav.length === 0) {
+    if (duplicateRoutes.length > 0) {
+        console.log('[smoke:routes] Duplicate route paths in manifest:');
+        duplicateRoutes.forEach((route) => console.log(` - ${route}`));
+    }
+    if (invalidEntries.length > 0) {
+        console.log('[smoke:routes] Manifest entries missing routePath:');
+        invalidEntries.forEach((key) => console.log(` - ${key}`));
+    }
+    if (hiddenRoutes.length === 0 && orphanNav.length === 0 && duplicateRoutes.length === 0 && invalidEntries.length === 0) {
         console.log('[smoke:routes] Route/navigation alignment OK.');
     }
 
-    if (STRICT && (hiddenRoutes.length > 0 || orphanNav.length > 0)) {
+    if (STRICT && (hiddenRoutes.length > 0 || orphanNav.length > 0 || duplicateRoutes.length > 0 || invalidEntries.length > 0)) {
         process.exitCode = 1;
     }
 };

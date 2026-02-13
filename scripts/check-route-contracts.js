@@ -74,42 +74,42 @@ const parseRouteMethods = (source) => {
 };
 
 const buildServerApiPatterns = async () => {
-    const indexPath = join(SERVER_DIR, 'index.js');
-    const indexRaw = await readFile(indexPath, 'utf8');
+    const appPath = join(SERVER_DIR, 'app.js');
+    const appRaw = await readFile(appPath, 'utf8');
     const patterns = new Set();
 
     const routeImports = new Map();
     const importPattern = /import\s+([A-Za-z0-9_]+)\s+from\s+['"]\.\/routes\/([^'"]+)['"]/g;
-    let importMatch = importPattern.exec(indexRaw);
+    let importMatch = importPattern.exec(appRaw);
     while (importMatch) {
         routeImports.set(importMatch[1], importMatch[2]);
-        importMatch = importPattern.exec(indexRaw);
+        importMatch = importPattern.exec(appRaw);
     }
 
     const mounts = new Map();
     const useWithMountPattern = /app\.use\(\s*['"`]([^'"`]+)['"`]\s*,\s*([A-Za-z0-9_]+)\s*\)/g;
-    let mountMatch = useWithMountPattern.exec(indexRaw);
+    let mountMatch = useWithMountPattern.exec(appRaw);
     while (mountMatch) {
         const mount = normalize(mountMatch[1]);
         const varName = mountMatch[2];
         const current = mounts.get(varName) || [];
         current.push(mount);
         mounts.set(varName, current);
-        mountMatch = useWithMountPattern.exec(indexRaw);
+        mountMatch = useWithMountPattern.exec(appRaw);
     }
 
     const useDirectPattern = /app\.use\(\s*([A-Za-z0-9_]+)\s*\)/g;
-    let directMatch = useDirectPattern.exec(indexRaw);
+    let directMatch = useDirectPattern.exec(appRaw);
     while (directMatch) {
         const varName = directMatch[1];
         const current = mounts.get(varName) || [];
         current.push('');
         mounts.set(varName, current);
-        directMatch = useDirectPattern.exec(indexRaw);
+        directMatch = useDirectPattern.exec(appRaw);
     }
 
     // Include direct app routes from index.js
-    parseRouteMethods(indexRaw)
+    parseRouteMethods(appRaw)
         .filter((entry) => entry.scope === 'app')
         .forEach((entry) => {
             if (entry.path.startsWith('/api')) {

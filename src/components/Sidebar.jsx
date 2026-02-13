@@ -3,25 +3,32 @@ import { NavLink } from 'react-router-dom';
 import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun, FaChurch, FaProjectDiagram, FaSyncAlt, FaPalette } from 'react-icons/fa';
 import logo from '../assets/logo.png';
 import { API_URL } from '../services/apiConfig';
+import { ROUTE_MANIFEST } from '../config/routeManifest';
 import './Sidebar.css';
 
 const Sidebar = () => {
     const [restarting, setRestarting] = useState(false);
-    const navItems = [
-        { path: '/', label: 'Overview', icon: <FaHome /> },
-        { path: '/sunday', label: 'Sunday Planner', icon: <FaSun /> },
-        { path: '/calendar', label: 'Events Calendar', icon: <FaCalendarAlt /> },
-        { path: '/liturgical-schedule', label: 'Liturgical Schedule', icon: <FaClipboardCheck /> },
-        { path: '/finance', label: 'Finance', icon: <FaMoneyBillWave /> },
-        { path: '/vestry', label: 'Vestry', icon: <FaChurch /> },
-        { path: '/buildings', label: 'Buildings & Grounds', icon: <FaBuilding /> },
-        { path: '/people', label: 'People', icon: <FaUsers /> },
-        { path: '/todo', label: 'To-Do List', icon: <FaList /> },
-        { path: '/task-origins', label: 'Task Origins', icon: <FaProjectDiagram /> },
-        { path: '/event-templates', label: 'Event Templates', icon: <FaProjectDiagram /> },
-        { path: '/ui-mockups', label: 'UI Mockups', icon: <FaPalette /> },
-        { path: '/settings', label: 'Settings', icon: <FaCog /> },
-    ];
+    const iconByKey = {
+        home: <FaHome />,
+        sun: <FaSun />,
+        calendar: <FaCalendarAlt />,
+        clipboard: <FaClipboardCheck />,
+        money: <FaMoneyBillWave />,
+        church: <FaChurch />,
+        building: <FaBuilding />,
+        users: <FaUsers />,
+        list: <FaList />,
+        project: <FaProjectDiagram />,
+        palette: <FaPalette />,
+        cog: <FaCog />
+    };
+    const navItems = ROUTE_MANIFEST
+        .filter((entry) => entry.showInNav)
+        .map((entry) => ({
+            path: entry.path,
+            label: entry.label,
+            icon: iconByKey[entry.icon] || <FaProjectDiagram />
+        }));
 
     const handleRestart = async () => {
         if (restarting) return;

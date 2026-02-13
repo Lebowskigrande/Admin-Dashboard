@@ -128,7 +128,7 @@ const fetchGoogleProfile = async (tokens) => {
     return response.data;
 };
 
-router.get('/sharefile/google/auth-url', requireAuth, (_req, res) => {
+router.get('/api/sharefile/google/auth-url', requireAuth, (_req, res) => {
     if (!SHAREFILE_REDIRECT_URI) {
         return res.status(500).json({ error: 'Missing SHAREFILE_GOOGLE_REDIRECT_URI' });
     }
@@ -192,7 +192,7 @@ router.get('/auth/google/sharefile/callback', async (req, res) => {
     }
 });
 
-router.get('/sharefile/google/status', requireAuth, (_req, res) => {
+router.get('/api/sharefile/google/status', requireAuth, (_req, res) => {
     const accounts = getSharefileRoutingAccounts();
     const defaultUserId = getDefaultSharefileRoutingAccountUserId();
     const defaultAccount = accounts.find((account) => account.userId === defaultUserId)
@@ -205,12 +205,12 @@ router.get('/sharefile/google/status', requireAuth, (_req, res) => {
     });
 });
 
-router.get('/sharefile/google/accounts', requireAuth, (_req, res) => {
+router.get('/api/sharefile/google/accounts', requireAuth, (_req, res) => {
     const accounts = getSharefileRoutingAccounts();
     res.json({ ok: true, accounts });
 });
 
-router.post('/sharefile/google/accounts/default', requireAuth, (req, res) => {
+router.post('/api/sharefile/google/accounts/default', requireAuth, (req, res) => {
     const userId = String(req.body?.userId || '').trim();
     if (!userId) return res.status(400).json({ ok: false, error: 'userId is required' });
     const ok = setDefaultSharefileRoutingAccount(userId);
@@ -218,7 +218,7 @@ router.post('/sharefile/google/accounts/default', requireAuth, (req, res) => {
     return res.json({ ok: true });
 });
 
-router.post('/sharefile/google/accounts/disconnect', requireAuth, (req, res) => {
+router.post('/api/sharefile/google/accounts/disconnect', requireAuth, (req, res) => {
     const userId = String(req.body?.userId || '').trim();
     if (!userId) return res.status(400).json({ ok: false, error: 'userId is required' });
     const ok = removeSharefileRoutingAccount(userId, { removeTokens: true });
@@ -226,7 +226,7 @@ router.post('/sharefile/google/accounts/disconnect', requireAuth, (req, res) => 
     return res.json({ ok: true });
 });
 
-router.post('/sharefile/route-emails', requireAuth, async (req, res) => {
+router.post('/api/sharefile/route-emails', requireAuth, async (req, res) => {
     try {
         const result = await routeShareFileEmails({
             archive: true
@@ -238,7 +238,7 @@ router.post('/sharefile/route-emails', requireAuth, async (req, res) => {
     }
 });
 
-router.post('/sharefile/route-email', requireSharefileAuth, async (req, res) => {
+router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res) => {
     const payload = req.body || {};
     const gmail = payload.gmail || {};
     const href = gmail.href || payload?.page?.url || '';
@@ -338,7 +338,7 @@ router.post('/sharefile/route-email', requireSharefileAuth, async (req, res) => 
     }
 });
 
-router.post('/sharefile/resolve-message-id', requireSharefileAuth, async (req, res) => {
+router.post('/api/sharefile/resolve-message-id', requireSharefileAuth, async (req, res) => {
     try {
         const tokenCandidates = getExtensionGmailTokenCandidates();
         if (!tokenCandidates.length) {
@@ -445,7 +445,7 @@ const loadEnvelopeNumbers = () => {
     return entries;
 };
 
-router.get('/sharefile/budget-codes', requireSharefileAuth, (_req, res) => {
+router.get('/api/sharefile/budget-codes', requireSharefileAuth, (_req, res) => {
     try {
         const entries = loadBudgetCodes();
         res.json({ ok: true, entries });
@@ -455,7 +455,7 @@ router.get('/sharefile/budget-codes', requireSharefileAuth, (_req, res) => {
     }
 });
 
-router.get('/sharefile/envelope-numbers', requireSharefileAuth, (_req, res) => {
+router.get('/api/sharefile/envelope-numbers', requireSharefileAuth, (_req, res) => {
     try {
         const entries = loadEnvelopeNumbers();
         res.json({ ok: true, entries });
