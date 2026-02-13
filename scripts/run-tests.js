@@ -71,9 +71,10 @@ const tests = [
             const base = __TEST__.formatContributionFilenameBase({
                 timestamp: new Date('2026-02-13T10:15:00.000Z'),
                 donor: 'Elizabeth Woodall',
-                amount: '1000.00'
+                amount: '1000.00',
+                sourceToken: 'PayPal'
             });
-            assert.equal(base, '2026.02.13 Elizabeth Woodall 1000.00');
+            assert.equal(base, '2026.02.13 PayPal Woodall 1000.00');
         }
     },
     {
@@ -109,6 +110,20 @@ const tests = [
             );
             assert.equal(fromOffice, true);
             assert.equal(bofaBody, true);
+        }
+    },
+    {
+        name: 'Contribution source token maps office and BofA senders',
+        run: async () => {
+            assert.equal(__TEST__.getContributionSourceToken('Office <office@saintedmunds.org>'), 'PayPal');
+            assert.equal(__TEST__.getContributionSourceToken('Bank of America <customerservice@ealerts.bankofamerica.com>'), 'Zelle');
+        }
+    },
+    {
+        name: 'Contribution filename uses donor last name only',
+        run: async () => {
+            assert.equal(__TEST__.extractDonorLastName('Elizabeth Woodall'), 'Woodall');
+            assert.equal(__TEST__.extractDonorLastName('Sara Edwards Jr.'), 'Edwards');
         }
     }
 ];

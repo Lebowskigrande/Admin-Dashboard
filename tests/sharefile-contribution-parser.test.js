@@ -66,10 +66,11 @@ test('builds contribution filename base with date donor and amount', async () =>
     const base = __TEST__.formatContributionFilenameBase({
         timestamp: new Date('2026-02-13T10:15:00.000Z'),
         donor: 'Elizabeth Woodall',
-        amount: '1000.00'
+        amount: '1000.00',
+        sourceToken: 'PayPal'
     });
 
-    assert.equal(base, '2026.02.13 Elizabeth Woodall 1000.00');
+    assert.equal(base, '2026.02.13 PayPal Woodall 1000.00');
 });
 
 test('parses website contribution with html entities and amount', async () => {
@@ -104,4 +105,11 @@ test('detects contribution emails from office sender and bofa body pattern', asy
 
     assert.equal(fromOffice, true);
     assert.equal(bofaBody, true);
+});
+
+test('maps contribution source token and extracts donor last name', async () => {
+    assert.equal(__TEST__.getContributionSourceToken('Office <office@saintedmunds.org>'), 'PayPal');
+    assert.equal(__TEST__.getContributionSourceToken('Bank of America <customerservice@ealerts.bankofamerica.com>'), 'Zelle');
+    assert.equal(__TEST__.extractDonorLastName('Elizabeth Woodall'), 'Woodall');
+    assert.equal(__TEST__.extractDonorLastName('Sara Edwards Jr.'), 'Edwards');
 });

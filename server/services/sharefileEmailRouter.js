@@ -125,6 +125,41 @@ const normalizeCurrencyAmount = (value) => {
     return parsed.toFixed(2);
 };
 
+const parseEmailHeaderTimestamp = (dateHeader, fallback = new Date()) => {
+    const parsed = new Date(String(dateHeader || '').trim());
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+    return fallback instanceof Date && !Number.isNaN(fallback.getTime()) ? fallback : new Date();
+};
+
+const getContributionSourceToken = (fromHeader) => {
+    const from = String(fromHeader || '').toLowerCase();
+    if (from.includes('office@saintedmunds.org') || from.includes('office@saintedmunds.com')) {
+        return 'PayPal';
+    }
+    if (from.includes('bank of america') || from.includes('customerservice@ealerts.bankofamerica.com')) {
+        return 'Zelle';
+    }
+    return '';
+};
+
+const extractDonorLastName = (donor) => {
+    const cleaned = sanitizeContributionToken(donor, 'Unknown Donor');
+    const compact = cleaned.replace(/\s+/g, ' ').trim();
+    if (!compact) return 'Unknown Donor';
+    const parts = compact.split(' ').filter(Boolean);
+    if (parts.length === 0) return 'Unknown Donor';
+    const suffixes = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'v']);
+    while (parts.length > 1) {
+        const tail = parts[parts.length - 1].replace(/\./g, '').toLowerCase();
+        if (suffixes.has(tail)) {
+            parts.pop();
+            continue;
+        }
+        break;
+    }
+    return parts[parts.length - 1] || 'Unknown Donor';
+};
+
 const normalizeContributionText = (value) => String(value || '')
     .replace(/\r/g, '\n')
     .replace(/&nbsp;/gi, ' ')
@@ -134,14 +169,16 @@ const normalizeContributionText = (value) => String(value || '')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'");
 
-const formatContributionFilenameBase = ({ timestamp, donor, amount }) => {
+const formatContributionFilenameBase = ({ timestamp, donor, amount, sourceToken = '' }) => {
     const time = timestamp instanceof Date && !Number.isNaN(timestamp.getTime())
         ? timestamp
         : new Date();
     const datePart = formatDate(time, 'yyyy.MM.dd');
-    const donorPart = sanitizeContributionToken(donor, 'Unknown Donor').slice(0, 120);
+    const donorPart = sanitizeContributionToken(extractDonorLastName(donor), 'Unknown Donor').slice(0, 120);
+    const sourcePart = sanitizeContributionToken(sourceToken, '');
     const amountPart = normalizeCurrencyAmount(amount) || 'Unknown Amount';
-    return `${datePart} ${donorPart} ${amountPart}`;
+    const parts = [datePart, sourcePart, donorPart, amountPart].filter(Boolean);
+    return parts.join(' ');
 };
 
 const buildNoteText = (_metadata, extra = {}) => {
@@ -199,7 +236,8 @@ const buildInvoiceFilename = async ({
     timestamp,
     targetDir,
     donor,
-    amount
+    amount,
+    sourceToken
 }) => {
     const time = timestamp instanceof Date && !Number.isNaN(timestamp.getTime())
         ? timestamp
@@ -207,7 +245,7 @@ const buildInvoiceFilename = async ({
     let baseName = '';
 
     if (String(kind || '').toUpperCase() === 'CONTRIBUTION') {
-        baseName = formatContributionFilenameBase({ timestamp: time, donor, amount });
+        baseName = formatContributionFilenameBase({ timestamp: time, donor, amount, sourceToken });
     } else {
         const yearMonth = formatDate(time, 'yyyy.MM');
         const hhmmss = formatDate(time, 'HHmmss');
@@ -441,7 +479,9 @@ export const __TEST__ = {
     parseContributionFields,
     buildNoteText,
     formatContributionFilenameBase,
-    isContributionEmail
+    isContributionEmail,
+    getContributionSourceToken,
+    extractDonorLastName
 };
 
 const renderEmailToPdf = async (metadata, bodyText) => {
@@ -734,6 +774,12 @@ export const routeShareFileEmails = async ({
         });
         const attachments = collectAttachments(message.payload);
         const routingTimestamp = new Date(Number(message?.internalDate) || Date.now());
+        const filenameTimestamp = routeKind === 'CONTRIBUTION'
+            ? parseEmailHeaderTimestamp(metadata?.date, routingTimestamp)
+            : routingTimestamp;
+        const sourceToken = routeKind === 'CONTRIBUTION'
+            ? getContributionSourceToken(metadata?.from)
+            : '';
 
         const tempDir = join(tmpdir(), `sharefile-${randomUUID()}`);
         await mkdir(tempDir, { recursive: true });
@@ -752,10 +798,11 @@ export const routeShareFileEmails = async ({
                 }
                 const { filename, targetPath } = await buildInvoiceFilename({
                     kind: routeKind,
-                    timestamp: routingTimestamp,
+                    timestamp: filenameTimestamp,
                     targetDir: rootPath,
                     donor: contributionMeta?.donor || '',
-                    amount: contributionMeta?.amount || ''
+                    amount: contributionMeta?.amount || '',
+                    sourceToken
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);
@@ -779,10 +826,11 @@ export const routeShareFileEmails = async ({
                     const pdfBytes = await readFile(pdfPath);
                     const { filename, targetPath } = await buildInvoiceFilename({
                         kind: routeKind,
-                        timestamp: routingTimestamp,
+                        timestamp: filenameTimestamp,
                         targetDir: rootPath,
                         donor: contributionMeta?.donor || '',
-                        amount: contributionMeta?.amount || ''
+                        amount: contributionMeta?.amount || '',
+                        sourceToken
                     });
                     const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                     const tempPath = join(tempDir, filename);
@@ -909,6 +957,12 @@ export const routeSharefileMessage = async ({
     const routingTimestamp = clientTsDate && !Number.isNaN(clientTsDate.getTime())
         ? clientTsDate
         : new Date(Number(message?.internalDate) || Date.now());
+    const filenameTimestamp = routeKind === 'CONTRIBUTION'
+        ? parseEmailHeaderTimestamp(metadata?.date, routingTimestamp)
+        : routingTimestamp;
+    const sourceToken = routeKind === 'CONTRIBUTION'
+        ? getContributionSourceToken(metadata?.from)
+        : '';
 
     const resolvedRoot = rootPath || buildTargetDir({
         codeType: extraMeta.codeType,
@@ -948,10 +1002,11 @@ export const routeSharefileMessage = async ({
             }
             const { filename, targetPath } = await buildInvoiceFilename({
                 kind: routeKind,
-                timestamp: routingTimestamp,
+                timestamp: filenameTimestamp,
                 targetDir: resolvedRoot,
                 donor: contributionMeta?.donor || '',
-                amount: contributionMeta?.amount || ''
+                amount: contributionMeta?.amount || '',
+                sourceToken
             });
             const notedBytes = await addNoteToPdf(pdfBytes, noteText);
             const tempPath = join(tempDir, filename);
@@ -975,10 +1030,11 @@ export const routeSharefileMessage = async ({
                 const pdfBytes = await readFile(pdfPath);
                 const { filename, targetPath } = await buildInvoiceFilename({
                     kind: routeKind,
-                    timestamp: routingTimestamp,
+                    timestamp: filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
-                    amount: contributionMeta?.amount || ''
+                    amount: contributionMeta?.amount || '',
+                    sourceToken
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);
