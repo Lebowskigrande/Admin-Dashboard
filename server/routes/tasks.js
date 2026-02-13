@@ -23,10 +23,35 @@ import {
     seedOperationsTasksFromTemplates,
     seedEventTasksForOccurrence
 } from '../services/taskEngine.js';
-import { upsertEntityLink } from '../helpers/entity-utils.js';
+import { upsertEntityLink, deleteEntityLinks } from '../helpers/entity-utils.js';
 import { isSundayDate } from '../helpers/sunday-utils.js';
 
 const router = express.Router();
+const ALLOWED_TASK_STATES = new Set(['open', 'in_progress', 'blocked', 'done']);
+
+export const normalizeTaskState = (value, fallback = 'open') => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (ALLOWED_TASK_STATES.has(normalized)) return normalized;
+    return ALLOWED_TASK_STATES.has(fallback) ? fallback : 'open';
+};
+
+const syncTaskOwner = (taskInstanceId, ownerPersonId) => {
+    if (!tableExists('entity_links')) return null;
+    deleteEntityLinks({ fromType: 'task_instance', fromId: taskInstanceId, role: 'owner' });
+    const ownerId = String(ownerPersonId || '').trim();
+    if (!ownerId) return null;
+    if (!tableExists('people')) return null;
+    const person = db.prepare('SELECT id FROM people WHERE id = ?').get(ownerId);
+    if (!person) return null;
+    upsertEntityLink({
+        fromType: 'task_instance',
+        fromId: taskInstanceId,
+        toType: 'person',
+        toId: ownerId,
+        role: 'owner'
+    });
+    return ownerId;
+};
 
 // --- Tasks ---
 
@@ -128,7 +153,8 @@ router.post('/tasks', (req, res) => {
             due_at = null,
             rank = null,
             state = null,
-            notes = null
+            notes = null,
+            owner_person_id = null
         } = req.body || {};
         const normalizedText = normalizeName(text);
         if (!normalizedText) {
@@ -138,7 +164,7 @@ router.post('/tasks', (req, res) => {
         const taskId = `task-${randomUUID()}`;
         const taskInstanceId = `taskinst-${randomUUID()}`;
         const basePriority = Number.isFinite(Number(priority_base)) ? Number(priority_base) : 50;
-        const instanceState = state || 'open';
+        const instanceState = normalizeTaskState(state, 'open');
 
         db.prepare(`
             INSERT INTO tasks (id, title, description, status, priority_base, created_at, updated_at)
@@ -176,8 +202,31 @@ router.post('/tasks', (req, res) => {
             now
         );
 
+        upsertEntityLink({
+            fromType: 'task_instance',
+            fromId: taskInstanceId,
+            toType: source_type || 'manual',
+            toId: source_id || 'manual',
+            role: 'source',
+            metaJson: JSON.stringify({ origin_event: source_event || 'created' })
+        });
+
+        syncTaskOwner(taskInstanceId, owner_person_id);
+
         const [created] = listTaskInstances('WHERE ti.id = ?', [taskInstanceId]);
-        return res.status(201).json(created);
+        if (created) {
+            return res.status(201).json(created);
+        }
+        return res.status(201).json({
+            id: taskInstanceId,
+            task_id: taskId,
+            text: normalizedText,
+            state: instanceState,
+            due_at,
+            notes: notes ? String(notes).trim() : '',
+            origin_type: source_type || 'manual',
+            origin_id: source_id || 'manual'
+        });
     }
 
     if (!tableExists('task_instances') || !tableExists('tasks_new')) {
@@ -227,7 +276,8 @@ router.post('/tasks', (req, res) => {
         list_mode = 'sequential',
         progress_key = null,
         progress_steps = null,
-        notes = null
+        notes = null,
+        owner_person_id = null
     } = req.body || {};
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
@@ -248,7 +298,9 @@ router.post('/tasks', (req, res) => {
         : getDefaultPriorityBase(tType);
     const taskId = `taskdef-${randomUUID()}`;
     const taskInstanceId = `taskinst-${randomUUID()}`;
-    const computedState = state || (Number(blocked) ? 'blocked' : 'open');
+    const computedState = normalizeTaskState(state, Number(blocked) ? 'blocked' : 'open');
+    const blockedValue = computedState === 'blocked' ? 1 : 0;
+    const completedAt = computedState === 'done' ? now : null;
 
     db.prepare(`
         INSERT INTO tasks_new (
@@ -280,13 +332,13 @@ router.post('/tasks', (req, res) => {
         computedState,
         due_at,
         null,
-        null,
+        completedAt,
         ticket_id ? 'ticket' : 'manual',
         null,
         priority_override,
         rank,
         sla_target_at,
-        Number(blocked) ? 1 : 0,
+        blockedValue,
         list_key,
         list_title || list_key,
         list_mode || 'sequential',
@@ -322,6 +374,7 @@ router.post('/tasks', (req, res) => {
         role: 'source',
         metaJson: JSON.stringify({ origin_event: originEvent })
     });
+    syncTaskOwner(taskInstanceId, owner_person_id);
 
     const [created] = listTaskInstances('WHERE ti.id = ?', [taskInstanceId]);
     res.status(201).json(created);
@@ -342,17 +395,21 @@ router.put('/tasks/:id', (req, res) => {
         const {
             text = existing.title,
             completed = existing.state === 'done',
+            state = null,
             priority_override = existing.priority_override,
             due_at = existing.due_at,
             rank = existing.rank,
-            notes = existing.notes
+            notes = existing.notes,
+            owner_person_id
         } = req.body || {};
         const normalizedText = normalizeName(text);
         if (!normalizedText) {
             return res.status(400).json({ error: 'Task text is required' });
         }
-        const completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
-        const nextState = completed ? 'done' : 'open';
+        const requestedState = state == null ? null : normalizeTaskState(state, existing.state || 'open');
+        const isDone = requestedState ? requestedState === 'done' : !!completed;
+        const completedAt = isDone ? (existing.completed_at || new Date().toISOString()) : null;
+        const nextState = requestedState || (isDone ? 'done' : 'open');
 
         db.prepare('UPDATE tasks SET title = ?, updated_at = ? WHERE id = ?')
             .run(normalizedText, new Date().toISOString(), existing.task_id);
@@ -377,6 +434,10 @@ router.put('/tasks/:id', (req, res) => {
             new Date().toISOString(),
             id
         );
+
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'owner_person_id')) {
+            syncTaskOwner(id, owner_person_id);
+        }
 
         const [updated] = listTaskInstances('WHERE ti.id = ?', [id]);
         return res.json(updated);
@@ -418,6 +479,7 @@ router.put('/tasks/:id', (req, res) => {
     const {
         text = existing.title,
         completed = existing.state === 'done',
+        state = null,
         priority_override = existing.priority_override,
         due_at = existing.due_at,
         sla_target_at = existing.sla_target_at,
@@ -427,15 +489,23 @@ router.put('/tasks/:id', (req, res) => {
         keep_until = existing.keep_until || null,
         notes = existing.notes,
         progress_key = existing.progress_key || '',
-        progress_steps = null
+        progress_steps = null,
+        owner_person_id
     } = req.body || {};
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
         return res.status(400).json({ error: 'Task text is required' });
     }
 
-    let completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
-    let nextState = completed ? 'done' : (Number(blocked) ? 'blocked' : 'open');
+    const requestedState = state == null ? null : normalizeTaskState(state, existing.state || 'open');
+    let blockedValue = Number(blocked) ? 1 : 0;
+    let completedFlag = !!completed;
+    if (requestedState) {
+        completedFlag = requestedState === 'done';
+        blockedValue = requestedState === 'blocked' ? 1 : 0;
+    }
+    let completedAt = completedFlag ? (existing.completed_at || new Date().toISOString()) : null;
+    let nextState = requestedState || (completedFlag ? 'done' : (blockedValue ? 'blocked' : 'open'));
     const progressKeyValue = progress_key != null ? String(progress_key) : (existing.progress_key || '');
     const parsedProgressSteps = Array.isArray(progress_steps)
         ? progress_steps
@@ -452,9 +522,10 @@ router.put('/tasks/:id', (req, res) => {
         if (isProgressComplete) {
             completedAt = completedAt || new Date().toISOString();
             nextState = 'done';
+            blockedValue = 0;
         } else {
             completedAt = null;
-            nextState = Number(blocked) ? 'blocked' : 'open';
+            nextState = blockedValue ? 'blocked' : (requestedState === 'in_progress' ? 'in_progress' : 'open');
         }
     }
 
@@ -484,7 +555,7 @@ router.put('/tasks/:id', (req, res) => {
         sla_target_at,
         priority_override,
         rank,
-        Number(blocked) ? 1 : 0,
+        blockedValue,
         completedAt,
         Number(archive_after_due) ? 1 : 0,
         keep_until,
@@ -493,6 +564,10 @@ router.put('/tasks/:id', (req, res) => {
         notes != null ? String(notes).trim() : null,
         id
     );
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'owner_person_id')) {
+        syncTaskOwner(id, owner_person_id);
+    }
 
     const [updated] = listTaskInstances('WHERE ti.id = ?', [id]);
     res.json(updated);
@@ -508,6 +583,9 @@ router.delete('/tasks/:id', (req, res) => {
         db.prepare('DELETE FROM task_list_items WHERE task_instance_id = ?').run(id);
         db.prepare('DELETE FROM task_instances WHERE id = ?').run(id);
         db.prepare('DELETE FROM task_origins WHERE task_instance_id = ?').run(id);
+        if (tableExists('entity_links')) {
+            deleteEntityLinks({ fromType: 'task_instance', fromId: id });
+        }
         const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
         if (!remaining) {
             db.prepare('DELETE FROM tasks WHERE id = ?').run(row.task_id);
@@ -1016,3 +1094,6 @@ router.get('/recurring-templates/instances', (req, res) => {
 });
 
 export default router;
+export const __TEST__ = {
+    normalizeTaskState
+};

@@ -12,7 +12,7 @@ import {
     addMonths,
     subMonths
 } from 'date-fns';
-import { FaChevronLeft, FaChevronRight, FaEye, FaExternalLinkAlt, FaFolderOpen, FaPaperclip, FaUpload } from 'react-icons/fa';
+import { FaChevronLeft, FaChevronRight, FaEye, FaExternalLinkAlt, FaFolderOpen, FaPaperclip, FaUpload, FaEdit, FaSave, FaTimes, FaTrash } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
 import DataPill from '../components/DataPill';
@@ -41,8 +41,31 @@ const Calendar = () => {
     const [docPreview, setDocPreview] = useState({ open: false, url: '', name: '' });
     const [loadingDetails, setLoadingDetails] = useState(false);
     const [taskInput, setTaskInput] = useState('');
+    const [taskDueAt, setTaskDueAt] = useState('');
+    const [taskState, setTaskState] = useState('open');
+    const [taskOwnerId, setTaskOwnerId] = useState('');
+    const [taskEditingId, setTaskEditingId] = useState('');
+    const [people, setPeople] = useState([]);
     const [contractFile, setContractFile] = useState(null);
     const [otherFile, setOtherFile] = useState(null);
+    const TASK_STATE_OPTIONS = [
+        { value: 'open', label: 'Open' },
+        { value: 'in_progress', label: 'In Progress' },
+        { value: 'blocked', label: 'Blocked' },
+        { value: 'done', label: 'Done' }
+    ];
+
+    const toDateInputValue = (value) => {
+        if (!value) return '';
+        if (value instanceof Date && !Number.isNaN(value.getTime())) {
+            return value.toISOString().slice(0, 10);
+        }
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) {
+            return String(value).slice(0, 10);
+        }
+        return parsed.toISOString().slice(0, 10);
+    };
 
     useEffect(() => {
         const monthStart = startOfMonth(currentDate);
@@ -73,6 +96,10 @@ const Calendar = () => {
         setEventDocs([]);
         setDocPreview({ open: false, url: '', name: '' });
         setTaskInput('');
+        setTaskDueAt('');
+        setTaskState('open');
+        setTaskOwnerId('');
+        setTaskEditingId('');
         setContractFile(null);
         setOtherFile(null);
         setLoadingDetails(false);
@@ -179,6 +206,28 @@ const Calendar = () => {
         };
     }, []);
 
+    useEffect(() => {
+        if (!showModal) return;
+        let active = true;
+        const loadPeople = async () => {
+            try {
+                const response = await fetch(`${API_URL}/people`);
+                if (!response.ok) throw new Error('Failed to load people');
+                const payload = await response.json();
+                if (active) {
+                    setPeople(Array.isArray(payload) ? payload : []);
+                }
+            } catch (error) {
+                console.error('Failed to load people:', error);
+                if (active) setPeople([]);
+            }
+        };
+        loadPeople();
+        return () => {
+            active = false;
+        };
+    }, [showModal]);
+
     const normalizeLocationName = (value) => {
         const raw = String(value || '').trim();
         if (!raw) return '';
@@ -200,6 +249,23 @@ const Calendar = () => {
         const name = match?.name || buildingId;
         return normalizeLocationName(name);
     }, [buildings, locationId]);
+
+    const defaultTaskDueAt = useMemo(() => (
+        toDateInputValue(eventDetails?.occurrence?.date || selectedEvent?.date)
+    ), [eventDetails?.occurrence?.date, selectedEvent?.date]);
+
+    useEffect(() => {
+        if (taskEditingId) return;
+        setTaskDueAt(defaultTaskDueAt);
+    }, [defaultTaskDueAt, taskEditingId]);
+
+    const resetTaskDraft = () => {
+        setTaskEditingId('');
+        setTaskInput('');
+        setTaskDueAt(defaultTaskDueAt);
+        setTaskState('open');
+        setTaskOwnerId('');
+    };
 
     const refreshDocuments = async () => {
         if (!selectedEvent?.occurrence_id) return;
@@ -294,19 +360,55 @@ const Calendar = () => {
         }
     };
 
+    const handleEditTask = (task) => {
+        if (!task?.id) return;
+        setTaskEditingId(task.id);
+        setTaskInput(task.text || '');
+        setTaskDueAt(toDateInputValue(task.due_at || defaultTaskDueAt));
+        setTaskState(task.state || (task.completed ? 'done' : 'open'));
+        setTaskOwnerId(task.owner_person_id || '');
+    };
+
+    const handleDeleteTask = async (taskId) => {
+        if (!taskId) return;
+        try {
+            await fetch(`${API_URL}/tasks/${taskId}`, { method: 'DELETE' });
+            if (taskEditingId === taskId) {
+                resetTaskDraft();
+            }
+            if (selectedEvent) {
+                await loadEventDetails(selectedEvent);
+            }
+        } catch (error) {
+            console.error('Failed to delete task:', error);
+        }
+    };
+
     const handleAddTask = async () => {
         if (!taskInput.trim() || !selectedEvent?.occurrence_id) return;
         try {
-            await fetch(`${API_URL}/tasks`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text: taskInput.trim(),
-                    source_type: 'event',
-                    source_id: selectedEvent.occurrence_id
-                })
-            });
-            setTaskInput('');
+            const payload = {
+                text: taskInput.trim(),
+                source_type: 'event',
+                source_id: selectedEvent.occurrence_id,
+                due_at: taskDueAt ? `${taskDueAt}T00:00:00` : null,
+                state: taskState || 'open',
+                owner_person_id: taskOwnerId || null
+            };
+            if (taskEditingId) {
+                await fetch(`${API_URL}/tasks/${taskEditingId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            } else {
+                await fetch(`${API_URL}/tasks`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            }
+            resetTaskDraft();
             if (selectedEvent) {
                 await loadEventDetails(selectedEvent);
             }
@@ -523,7 +625,7 @@ const Calendar = () => {
                                 <div>
                                     <span className="event-detail-label">Date</span>
                                     <span className="event-detail-value">
-                                        {selectedEvent?.date ? format(selectedEvent.date, 'MMMM d, yyyy') : '—'}
+                                        {selectedEvent?.date ? format(selectedEvent.date, 'MMMM d, yyyy') : '-'}
                                     </span>
                                 </div>
                                 <div>
@@ -762,14 +864,29 @@ const Calendar = () => {
                                         <div className="event-detail-task-title">{group.title}</div>
                                         <div className="event-detail-task-list">
                                             {group.items.map((task) => (
-                                                <label key={task.id} className={`event-detail-task ${task.completed ? 'completed' : ''}`}>
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={task.completed}
-                                                        onChange={() => handleTaskToggle(task)}
-                                                    />
-                                                    <span>{task.text}</span>
-                                                </label>
+                                                <div key={task.id} className={`event-detail-task ${task.completed ? 'completed' : ''}`}>
+                                                    <label className="event-detail-task-main">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={task.completed}
+                                                            onChange={() => handleTaskToggle(task)}
+                                                        />
+                                                        <span>{task.text}</span>
+                                                    </label>
+                                                    <div className="event-detail-task-meta">
+                                                        <span>{task.state ? task.state.replace('_', ' ') : 'open'}</span>
+                                                        <span>{task.due_at ? `Due ${format(new Date(task.due_at), 'MMM d')}` : 'No due date'}</span>
+                                                        <span>{task.owner_name || 'Unassigned'}</span>
+                                                    </div>
+                                                    <div className="event-detail-task-row-actions">
+                                                        <button type="button" className="btn-icon small" title="Edit task" onClick={() => handleEditTask(task)}>
+                                                            <FaEdit />
+                                                        </button>
+                                                        <button type="button" className="btn-icon small" title="Delete task" onClick={() => handleDeleteTask(task.id)}>
+                                                            <FaTrash />
+                                                        </button>
+                                                    </div>
+                                                </div>
                                             ))}
                                         </div>
                                     </div>
@@ -778,13 +895,34 @@ const Calendar = () => {
                             <div className="event-detail-task-add">
                                 <input
                                     type="text"
-                                    placeholder="Add task…"
+                                    placeholder={taskEditingId ? 'Update task...' : 'Add task...'}
                                     value={taskInput}
                                     onChange={(e) => setTaskInput(e.target.value)}
                                 />
+                                <input
+                                    type="date"
+                                    value={taskDueAt}
+                                    onChange={(e) => setTaskDueAt(e.target.value)}
+                                />
+                                <select value={taskState} onChange={(e) => setTaskState(e.target.value)}>
+                                    {TASK_STATE_OPTIONS.map((option) => (
+                                        <option key={option.value} value={option.value}>{option.label}</option>
+                                    ))}
+                                </select>
+                                <select value={taskOwnerId} onChange={(e) => setTaskOwnerId(e.target.value)}>
+                                    <option value="">Unassigned</option>
+                                    {people.map((person) => (
+                                        <option key={person.id} value={person.id}>{person.displayName}</option>
+                                    ))}
+                                </select>
                                 <button className="btn-primary" type="button" onClick={handleAddTask}>
-                                    Add Task
+                                    {taskEditingId ? <><FaSave /> Save</> : 'Add Task'}
                                 </button>
+                                {taskEditingId && (
+                                    <button className="btn-secondary" type="button" onClick={resetTaskDraft}>
+                                        <FaTimes /> Cancel
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -809,3 +947,5 @@ const Calendar = () => {
 };
 
 export default Calendar;
+
+

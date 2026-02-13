@@ -4,6 +4,8 @@ import { join } from 'path';
 
 import { __TEST__ } from '../server/services/sharefileEmailRouter.js';
 import { __TEST__ as __CC_TEST__ } from '../server/services/constantContactService.js';
+import { __TEST__ as TASK_ROUTE_TEST } from '../server/routes/tasks.js';
+import { sqlite as db } from '../server/db.js';
 
 const fixturesDir = join(process.cwd(), 'tests', 'fixtures');
 
@@ -78,10 +80,43 @@ const tests = [
                 /Missing email data/
             );
         }
+    },
+    {
+        name: 'Task route normalizes explicit valid task states',
+        run: async () => {
+            assert.equal(TASK_ROUTE_TEST.normalizeTaskState('open'), 'open');
+            assert.equal(TASK_ROUTE_TEST.normalizeTaskState('in_progress'), 'in_progress');
+            assert.equal(TASK_ROUTE_TEST.normalizeTaskState('blocked'), 'blocked');
+            assert.equal(TASK_ROUTE_TEST.normalizeTaskState('done'), 'done');
+        }
+    },
+    {
+        name: 'Task route falls back when task state is invalid',
+        run: async () => {
+            assert.equal(TASK_ROUTE_TEST.normalizeTaskState('invalid-state', 'blocked'), 'blocked');
+            assert.equal(TASK_ROUTE_TEST.normalizeTaskState('', 'open'), 'open');
+            assert.equal(TASK_ROUTE_TEST.normalizeTaskState(null, 'not-real'), 'open');
+        }
     }
 ];
 
+const ensureTestSchema = () => {
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS people (
+            id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            envelope_number TEXT,
+            tags TEXT
+        )
+    `);
+    const columns = db.prepare('PRAGMA table_info(people)').all().map((row) => row.name);
+    if (!columns.includes('tags')) {
+        db.exec('ALTER TABLE people ADD COLUMN tags TEXT');
+    }
+};
+
 const run = async () => {
+    ensureTestSchema();
     let failed = 0;
     for (const testCase of tests) {
         try {
