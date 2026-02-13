@@ -81,3 +81,10 @@ A comprehensive dashboard for Church Administration, built with React and Vite.
     - `npm run lint` runs baseline lint and allows existing warning backlog.
     - `npm run lint:strict` enforces zero warnings (`--max-warnings=0`) and is expected to fail until warning backlog is reduced.
 
+## Agent Scripts
+
+1. **Sync any worktree branch**
+   ```powershell
+   .\scripts\agent-sync.ps1 -RepoPath "C:\Users\Secretary\Documents\AdminDashboard-F" -Branch "agent-f-platform-quality"
+   ```
+

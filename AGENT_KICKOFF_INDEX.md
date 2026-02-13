@@ -49,3 +49,14 @@ npm run smoke:routes:strict
 - commands run + results
 - open blockers
 - contract/migration impact
+
+## Agent Report Scaffold Example
+```powershell
+.\scripts\agent-report.ps1 `
+  -Agent "f" `
+  -Tickets "AGENT-OPS-001","AGENT-OPS-002" `
+  -Branch "agent-f-platform-quality" `
+  -Head "abc1234" `
+  -Checks "npm run test:quick (pass)","npm run check:contracts:strict (pass)","npm run smoke:routes:strict (pass)" `
+  -Notes "No blockers"
+```
