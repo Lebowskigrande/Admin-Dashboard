@@ -8,6 +8,13 @@ import { spawn } from 'child_process';
 import { sqlite } from './db.js';
 import { loadSessionUser } from './helpers/auth.js';
 import { getDropboxAccessToken } from './helpers/dropbox-utils.js';
+import { validateRuntimeConfig } from './config/runtimeConfig.js';
+import {
+    recordAdminAction,
+    hasRequiredConfirmation,
+    CONFIRM_RESTORE_PHRASE,
+    CONFIRM_RESTART_PHRASE
+} from './helpers/adminAudit.js';
 
 import authRouter from './routes/auth.js';
 import peopleRouter from './routes/people.js';
@@ -24,6 +31,7 @@ import filesRouter from './routes/files.js';
 import sharefileRouter from './routes/sharefile.js';
 import tasksRouter from './routes/tasks.js';
 import eventsRouter from './routes/events.js';
+import opsRouter from './routes/ops.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -60,7 +68,17 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
     app.use(express.json({ limit: '25mb' }));
 
     app.get('/api/health', (_req, res) => {
-        res.json({ ok: true });
+        const strict = String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+        const config = validateRuntimeConfig(process.env, { strict });
+        res.json({
+            ok: config.ok,
+            uptimeSeconds: Math.floor(process.uptime()),
+            config: {
+                ok: config.ok,
+                errorCount: config.errors.length,
+                warningCount: config.warnings.length
+            }
+        });
     });
 
     app.use((req, _res, next) => {
@@ -83,6 +101,7 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
     app.use(sharefileRouter);
     app.use('/api', tasksRouter);
     app.use('/api', eventsRouter);
+    app.use(opsRouter);
 
     app.get('/api/db-backups/latest', async (_req, res) => {
         try {
@@ -97,21 +116,55 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
 
     app.post('/api/db-backups/restore', async (req, res) => {
         try {
+            const confirmPhrase = req.body?.confirmPhrase;
+            if (!hasRequiredConfirmation(confirmPhrase, CONFIRM_RESTORE_PHRASE)) {
+                recordAdminAction({
+                    req,
+                    action: 'db.restore',
+                    status: 'rejected',
+                    errorText: 'Missing confirmation phrase',
+                    details: { requiredPhrase: CONFIRM_RESTORE_PHRASE }
+                });
+                return res.status(400).json({
+                    error: `Confirmation required. Send confirmPhrase="${CONFIRM_RESTORE_PHRASE}" to proceed.`
+                });
+            }
+
             const requestedPath = req.body?.path;
             const latest = await findLatestDbBackup();
             const target = requestedPath || latest?.path;
             if (!target) {
+                recordAdminAction({
+                    req,
+                    action: 'db.restore',
+                    status: 'failure',
+                    errorText: 'No database backup available to restore'
+                });
                 return res.status(404).json({ error: 'No database backup available to restore' });
             }
 
             const resolvedTarget = resolve(target);
             const resolvedDir = resolve(backupDir);
             if (!resolvedTarget.startsWith(resolvedDir)) {
+                recordAdminAction({
+                    req,
+                    action: 'db.restore',
+                    target: resolvedTarget,
+                    status: 'rejected',
+                    errorText: 'Invalid backup path'
+                });
                 return res.status(400).json({ error: 'Invalid backup path' });
             }
 
             const filename = basename(resolvedTarget);
             if (!backupPattern.test(filename)) {
+                recordAdminAction({
+                    req,
+                    action: 'db.restore',
+                    target: resolvedTarget,
+                    status: 'rejected',
+                    errorText: 'Invalid backup filename'
+                });
                 return res.status(400).json({ error: 'Invalid backup filename' });
             }
 
@@ -123,19 +176,51 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
                 restored: resolvedTarget,
                 restartRequired: true
             });
+            recordAdminAction({
+                req,
+                action: 'db.restore',
+                target: resolvedTarget,
+                status: 'success',
+                details: { restartRequired: true }
+            });
 
             setTimeout(() => process.exit(0), 250);
             return undefined;
         } catch (error) {
             console.error('Failed to restore db backup:', error);
+            recordAdminAction({
+                req,
+                action: 'db.restore',
+                status: 'failure',
+                errorText: error?.message || 'Failed to restore database backup'
+            });
             return res.status(500).json({ error: 'Failed to restore database backup' });
         }
     });
 
     app.post('/api/dev/restart', (req, res) => {
+        const confirmPhrase = req.body?.confirmPhrase;
+        if (!hasRequiredConfirmation(confirmPhrase, CONFIRM_RESTART_PHRASE)) {
+            recordAdminAction({
+                req,
+                action: 'dev.restart',
+                status: 'rejected',
+                errorText: 'Missing confirmation phrase',
+                details: { requiredPhrase: CONFIRM_RESTART_PHRASE }
+            });
+            return res.status(400).json({
+                error: `Confirmation required. Send confirmPhrase="${CONFIRM_RESTART_PHRASE}" to proceed.`
+            });
+        }
         const ip = req.ip || req.connection?.remoteAddress || '';
         const isLocal = ip.includes('127.0.0.1') || ip === '::1' || ip.endsWith('::1');
         if (process.env.NODE_ENV === 'production' || !isLocal) {
+            recordAdminAction({
+                req,
+                action: 'dev.restart',
+                status: 'rejected',
+                errorText: 'Restart not allowed'
+            });
             return res.status(403).json({ error: 'Restart not allowed' });
         }
         try {
@@ -146,9 +231,21 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
                 windowsHide: true
             });
             child.unref();
+            recordAdminAction({
+                req,
+                action: 'dev.restart',
+                status: 'success',
+                details: { scriptPath }
+            });
             return res.json({ ok: true });
         } catch (error) {
             console.error('Restart error:', error);
+            recordAdminAction({
+                req,
+                action: 'dev.restart',
+                status: 'failure',
+                errorText: error?.message || 'Failed to restart dev services'
+            });
             return res.status(500).json({ error: 'Failed to restart dev services' });
         }
     });
@@ -180,9 +277,21 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
                 throw new Error(errorText || 'Dropbox upload failed');
             }
 
+            recordAdminAction({
+                req: _req,
+                action: 'db.backup',
+                target: dropboxPath,
+                status: 'success'
+            });
             return res.json({ path: dropboxPath, name: filename });
         } catch (error) {
             console.error('Dropbox backup error:', error);
+            recordAdminAction({
+                req: _req,
+                action: 'db.backup',
+                status: 'failure',
+                errorText: error?.message || 'Failed to back up database'
+            });
             return res.status(500).json({ error: error?.message || 'Failed to back up database' });
         }
     });

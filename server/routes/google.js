@@ -19,6 +19,7 @@ import {
 } from '../googleCalendar.js';
 import { syncGoogleEvents } from '../eventEngine.js';
 import { seedEventTasksForOccurrence } from '../services/taskEngine.js';
+import { recordAdminAction } from '../helpers/adminAudit.js';
 
 const router = express.Router();
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -106,9 +107,26 @@ router.get('/api/google/status', (req, res) => {
 });
 
 router.post('/api/google/disconnect', requireAuth, (req, res) => {
-    db.prepare('DELETE FROM user_tokens WHERE user_id = ?').run(req.user.id);
-    db.prepare('DELETE FROM calendar_links WHERE user_id = ?').run(req.user.id);
-    res.json({ success: true });
+    try {
+        db.prepare('DELETE FROM user_tokens WHERE user_id = ?').run(req.user.id);
+        db.prepare('DELETE FROM calendar_links WHERE user_id = ?').run(req.user.id);
+        recordAdminAction({
+            req,
+            action: 'google.disconnect',
+            target: req.user.id,
+            status: 'success'
+        });
+        res.json({ success: true });
+    } catch (error) {
+        recordAdminAction({
+            req,
+            action: 'google.disconnect',
+            target: req.user.id,
+            status: 'failure',
+            errorText: error?.message || 'Failed to disconnect Google Calendar'
+        });
+        res.status(500).json({ error: 'Failed to disconnect Google Calendar' });
+    }
 });
 
 // --- Calendar Routes ---
@@ -248,9 +266,23 @@ router.post('/api/google/sync', requireAuth, async (req, res) => {
             },
             onOccurrence: seedEventTasksForOccurrence
         });
+        recordAdminAction({
+            req,
+            action: 'google.sync',
+            target: req.user.id,
+            status: 'success',
+            details: { count: total }
+        });
         res.json({ success: true, count: total });
     } catch (error) {
         console.error('Sync error:', error);
+        recordAdminAction({
+            req,
+            action: 'google.sync',
+            target: req.user?.id || '',
+            status: 'failure',
+            errorText: error?.message || 'Sync failed'
+        });
         res.status(500).json({ error: 'Sync failed' });
     }
 });

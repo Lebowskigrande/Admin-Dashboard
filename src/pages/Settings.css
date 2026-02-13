@@ -54,11 +54,6 @@
     gap: var(--space-md);
 }
 
-.coming-soon {
-    color: var(--color-text-secondary);
-    font-style: italic;
-}
-
 .calendar-selector {
     margin-top: var(--space-xl);
     padding-top: var(--space-lg);
@@ -119,4 +114,9 @@
     flex: 1;
     font-size: 0.95rem;
     color: var(--color-text-main);
+}
+
+.calendar-item > span:last-child {
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
 }
