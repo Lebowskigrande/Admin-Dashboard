@@ -1,5 +1,4 @@
-import { join, extname } from 'path';
-import { mkdir, access } from 'fs/promises';
+import { join } from 'path';
 import { homedir } from 'os';
 import { sqlite as db } from '../db.js';
 

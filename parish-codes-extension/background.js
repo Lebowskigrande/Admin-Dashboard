@@ -440,11 +440,6 @@ async function safeText(res) {
   try { return await res.text(); } catch { return ""; }
 }
 
-/************* DATA FETCH: BUDGET (GViz) *************/
-function budgetGvizUrl() {
-  return `https://docs.google.com/spreadsheets/d/${BUDGET_SHEET_ID}/gviz/tq?sheet=${encodeURIComponent(BUDGET_SHEET_NAME)}&tqx=out:json`;
-}
-
 async function loadBudgetMenuEntries() {
   const token = await getToken();
   if (!token) throw new Error("Missing token for budget codes request");
@@ -464,23 +459,7 @@ async function loadBudgetMenuEntries() {
   return data.entries;
 }
 
-
-function isBudgetHeaderRow(cat, code, line) {
-  const a = (cat || "").toLowerCase();
-  const b = (code || "").toLowerCase();
-  const c = (line || "").toLowerCase();
-  return (
-    (a === "category" || a === "budget category") &&
-    (b === "code" || b === "budget code") &&
-    (c === "line" || c === "description" || c === "budget line")
-  );
-}
-
 /************* DATA FETCH: ENVELOPES (GViz) *************/
-function envGvizUrl() {
-  return `https://docs.google.com/spreadsheets/d/${ENV_SHEET_ID}/gviz/tq?sheet=${encodeURIComponent(ENV_SHEET_NAME)}&tqx=out:json`;
-}
-
 async function loadEnvelopeData() {
   const token = await getToken();
   if (!token) throw new Error("Missing token for envelope numbers request");
@@ -501,23 +480,6 @@ async function loadEnvelopeData() {
   // Optional: sort defensively
   data.entries.sort((a, b) => (String(a.letter).localeCompare(String(b.letter)) || String(a.number).localeCompare(String(b.number))));
   return data.entries;
-}
-
-function getLastName(name) {
-  if (!name) return "";
-  let n = String(name).trim();
-  if (n.includes("/")) n = n.split("/")[0].trim();
-  if (n.includes(",")) return n.split(",")[0].trim();
-
-  const parts = n.split(/\s+/);
-  const suffixes = new Set(["jr", "sr", "ii", "iii", "iv", "v"]);
-
-  while (parts.length > 1) {
-    const last = parts.at(-1).replace(/\./g, "").toLowerCase();
-    if (suffixes.has(last)) parts.pop();
-    else break;
-  }
-  return parts.at(-1) || "";
 }
 
 function formatAlignedTitle(number, name, maxDigits) {
