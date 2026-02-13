@@ -6,6 +6,8 @@ import { __TEST__ } from '../server/services/sharefileEmailRouter.js';
 import { __TEST__ as __CC_TEST__ } from '../server/services/constantContactService.js';
 import { __TEST__ as TASK_ROUTE_TEST } from '../server/routes/tasks.js';
 import { sqlite as db } from '../server/db.js';
+import { validateRuntimeConfig, __TEST__ as configTest } from '../server/config/runtimeConfig.js';
+import { __TEST__ as adminAuditTest } from '../server/helpers/adminAudit.js';
 
 const fixturesDir = join(process.cwd(), 'tests', 'fixtures');
 
@@ -96,6 +98,30 @@ const tests = [
             assert.equal(TASK_ROUTE_TEST.normalizeTaskState('invalid-state', 'blocked'), 'blocked');
             assert.equal(TASK_ROUTE_TEST.normalizeTaskState('', 'open'), 'open');
             assert.equal(TASK_ROUTE_TEST.normalizeTaskState(null, 'not-real'), 'open');
+        }
+    },
+    {
+        name: 'Runtime config strict mode flags missing required variables',
+        run: async () => {
+            const result = validateRuntimeConfig({}, { strict: true });
+            assert.equal(result.ok, false);
+            assert.ok(result.errors.some((item) => item.includes('Missing required environment variable: GOOGLE_CLIENT_ID')));
+        }
+    },
+    {
+        name: 'Runtime config parser reads ShareFile base paths from JSON',
+        run: async () => {
+            const parsed = configTest.parseSharefileRouterBases('{"budget":"C:\\\\AP","envelope":"D:\\\\AR"}');
+            assert.equal(parsed.parseError, '');
+            assert.equal(parsed.bases.budget, 'C:\\AP');
+            assert.equal(parsed.bases.envelope, 'D:\\AR');
+        }
+    },
+    {
+        name: 'Admin confirmation matching is case-insensitive and trimmed',
+        run: async () => {
+            const ok = adminAuditTest.hasRequiredConfirmation('  restore database  ', 'RESTORE DATABASE');
+            assert.equal(ok, true);
         }
     }
 ];

@@ -31,9 +31,17 @@ const Sidebar = () => {
 
     const handleRestart = async () => {
         if (restarting) return;
+        const acknowledged = window.confirm('Restart server + client services now?');
+        if (!acknowledged) return;
+        const confirmPhrase = window.prompt('Type RESTART SERVICES to confirm restart:');
+        if (!confirmPhrase || confirmPhrase.trim().toUpperCase() !== 'RESTART SERVICES') return;
         setRestarting(true);
         try {
-            const response = await fetch(`${API_URL}/dev/restart`, { method: 'POST' });
+            const response = await fetch(`${API_URL}/dev/restart`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirmPhrase })
+            });
             if (!response.ok) throw new Error('Restart failed');
             window.setTimeout(() => {
                 window.location.reload();

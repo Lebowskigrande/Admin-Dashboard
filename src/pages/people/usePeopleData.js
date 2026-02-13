@@ -57,17 +57,25 @@ export const usePeopleData = () => {
                 `Restore the backup from ${timestamp}? This will replace the current database.`
             );
             if (!confirmed) return;
+            const confirmPhrase = window.prompt('Type RESTORE DATABASE to continue:');
+            if (!confirmPhrase || confirmPhrase.trim().toUpperCase() !== 'RESTORE DATABASE') {
+                setBackupError('Restore cancelled. Confirmation phrase did not match.');
+                return;
+            }
 
             const restoreResponse = await fetch(`${API_URL}/db-backups/restore`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: latest.path })
+                body: JSON.stringify({ path: latest.path, confirmPhrase })
             });
-            if (!restoreResponse.ok) throw new Error('Failed to restore backup');
+            if (!restoreResponse.ok) {
+                const payload = await restoreResponse.json().catch(() => ({}));
+                throw new Error(payload?.error || 'Failed to restore backup');
+            }
             window.alert('Backup restored. The server will restart to load the restored database.');
         } catch (err) {
             console.error(err);
-            setBackupError('Unable to restore the database backup.');
+            setBackupError(err?.message || 'Unable to restore the database backup.');
         } finally {
             setBackupBusy(false);
         }

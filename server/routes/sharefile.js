@@ -16,6 +16,11 @@ import {
 } from '../helpers/auth.js';
 import { routeShareFileEmails, routeSharefileMessage, resolveSharefileMessageId, recordSharefileRoutingEvent } from '../services/sharefileEmailRouter.js';
 import { getAuthUrlWithRedirect, getTokensFromCodeWithRedirect, GOOGLE_SCOPES } from '../googleAuth.js';
+import {
+    recordAdminAction,
+    hasRequiredConfirmation,
+    CONFIRM_ROUTE_ALL_PHRASE
+} from '../helpers/adminAudit.js';
 
 const router = express.Router();
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -257,7 +262,22 @@ router.post('/api/sharefile/google/accounts/default', requireAuth, (req, res) =>
     const userId = String(req.body?.userId || '').trim();
     if (!userId) return res.status(400).json({ ok: false, error: 'userId is required' });
     const ok = setDefaultSharefileRoutingAccount(userId);
-    if (!ok) return res.status(404).json({ ok: false, error: 'Account not found' });
+    if (!ok) {
+        recordAdminAction({
+            req,
+            action: 'sharefile.account.default',
+            target: userId,
+            status: 'failure',
+            errorText: 'Account not found'
+        });
+        return res.status(404).json({ ok: false, error: 'Account not found' });
+    }
+    recordAdminAction({
+        req,
+        action: 'sharefile.account.default',
+        target: userId,
+        status: 'success'
+    });
     return res.json({ ok: true });
 });
 
@@ -265,18 +285,57 @@ router.post('/api/sharefile/google/accounts/disconnect', requireAuth, (req, res)
     const userId = String(req.body?.userId || '').trim();
     if (!userId) return res.status(400).json({ ok: false, error: 'userId is required' });
     const ok = removeSharefileRoutingAccount(userId, { removeTokens: true });
-    if (!ok) return res.status(404).json({ ok: false, error: 'Account not found' });
+    if (!ok) {
+        recordAdminAction({
+            req,
+            action: 'sharefile.account.disconnect',
+            target: userId,
+            status: 'failure',
+            errorText: 'Account not found'
+        });
+        return res.status(404).json({ ok: false, error: 'Account not found' });
+    }
+    recordAdminAction({
+        req,
+        action: 'sharefile.account.disconnect',
+        target: userId,
+        status: 'success'
+    });
     return res.json({ ok: true });
 });
 
 router.post('/api/sharefile/route-emails', requireAuth, async (req, res) => {
     try {
+        if (!hasRequiredConfirmation(req.body?.confirmPhrase, CONFIRM_ROUTE_ALL_PHRASE)) {
+            recordAdminAction({
+                req,
+                action: 'sharefile.route_emails',
+                status: 'rejected',
+                errorText: 'Missing confirmation phrase',
+                details: { requiredPhrase: CONFIRM_ROUTE_ALL_PHRASE }
+            });
+            return res.status(400).json({
+                error: `Confirmation required. Send confirmPhrase="${CONFIRM_ROUTE_ALL_PHRASE}" to proceed.`
+            });
+        }
         const result = await routeShareFileEmails({
             archive: true
+        });
+        recordAdminAction({
+            req,
+            action: 'sharefile.route_emails',
+            status: 'success',
+            details: { processed: Number(result?.processed || 0) }
         });
         res.json(result);
     } catch (error) {
         console.error('ShareFile route emails error:', error);
+        recordAdminAction({
+            req,
+            action: 'sharefile.route_emails',
+            status: 'failure',
+            errorText: error?.message || 'Failed to route emails'
+        });
         res.status(500).json({ error: error?.message || 'Failed to route emails' });
     }
 });

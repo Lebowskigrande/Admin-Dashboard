@@ -1,8 +1,15 @@
 import { useState, useEffect } from 'react';
 import Card from '../components/Card';
-import { FaGoogle, FaCheck, FaTimes, FaSync } from 'react-icons/fa';
+import { FaGoogle, FaCheck, FaTimes, FaSync, FaServer } from 'react-icons/fa';
 import { API_BASE, API_URL } from '../services/apiConfig';
 import './Settings.css';
+
+const formatDateTime = (value) => {
+    if (!value) return 'N/A';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'N/A';
+    return date.toLocaleString();
+};
 
 const Settings = () => {
     const [googleConnected, setGoogleConnected] = useState(false);
@@ -14,10 +21,15 @@ const Settings = () => {
     const [sharefileLoading, setSharefileLoading] = useState(true);
     const [sharefileAccounts, setSharefileAccounts] = useState([]);
     const [sharefileActionBusy, setSharefileActionBusy] = useState('');
+    const [opsLoading, setOpsLoading] = useState(true);
+    const [opsError, setOpsError] = useState('');
+    const [opsStatus, setOpsStatus] = useState(null);
+    const [opsActionBusy, setOpsActionBusy] = useState('');
 
     useEffect(() => {
         checkGoogleStatus();
         checkSharefileStatus();
+        checkOpsStatus();
 
         // Check if returning from OAuth
         const returnPath = sessionStorage.getItem('oauthReturnPath');
@@ -27,6 +39,7 @@ const Settings = () => {
             setTimeout(() => {
                 checkGoogleStatus();
                 checkSharefileStatus();
+                checkOpsStatus();
             }, 1000);
         }
     }, []);
@@ -74,6 +87,23 @@ const Settings = () => {
             setSharefileAccounts([]);
         } finally {
             setSharefileLoading(false);
+        }
+    };
+
+    const checkOpsStatus = async () => {
+        setOpsLoading(true);
+        setOpsError('');
+        try {
+            const response = await fetch(`${API_URL}/ops/status`, { credentials: 'include' });
+            if (!response.ok) throw new Error('Failed to load operations status');
+            const data = await response.json();
+            setOpsStatus(data || null);
+        } catch (error) {
+            console.error('Error checking operations status:', error);
+            setOpsStatus(null);
+            setOpsError(error?.message || 'Unable to load operations status');
+        } finally {
+            setOpsLoading(false);
         }
     };
 
@@ -152,6 +182,7 @@ const Settings = () => {
             });
             if (!response.ok) throw new Error('Failed to set default ShareFile account');
             await checkSharefileStatus();
+            await checkOpsStatus();
         } catch (error) {
             console.error('Set default ShareFile account error:', error);
         } finally {
@@ -173,6 +204,7 @@ const Settings = () => {
             });
             if (!response.ok) throw new Error('Failed to disconnect ShareFile account');
             await checkSharefileStatus();
+            await checkOpsStatus();
         } catch (error) {
             console.error('Disconnect ShareFile account error:', error);
         } finally {
@@ -187,8 +219,36 @@ const Settings = () => {
             await fetch(`${API_URL}/google/disconnect`, { method: 'POST', credentials: 'include' });
             setGoogleConnected(false);
             setCalendars([]);
+            await checkOpsStatus();
         } catch (error) {
             console.error('Error disconnecting:', error);
+        }
+    };
+
+    const runSharefileRouterNow = async () => {
+        const acknowledged = window.confirm('Route all pending ShareFile inbox emails now?');
+        if (!acknowledged) return;
+        const confirmPhrase = window.prompt('Type ROUTE SHAREFILE NOW to continue:');
+        if (!confirmPhrase || confirmPhrase.trim().toUpperCase() !== 'ROUTE SHAREFILE NOW') return;
+
+        setOpsActionBusy('route-sharefile');
+        try {
+            const response = await fetch(`${API_URL}/sharefile/route-emails`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ confirmPhrase })
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                throw new Error(payload?.error || 'Failed to route ShareFile emails');
+            }
+            await checkOpsStatus();
+        } catch (error) {
+            console.error('Route ShareFile emails error:', error);
+            window.alert(error?.message || 'Failed to route ShareFile emails');
+        } finally {
+            setOpsActionBusy('');
         }
     };
 
@@ -355,7 +415,117 @@ const Settings = () => {
             </Card>
 
             <Card title="Application Settings">
-                <p className="coming-soon">Additional settings coming soon...</p>
+                <div className="settings-section">
+                    <div className="integration-status">
+                        <div className="status-icon">
+                            <FaServer size={48} color={opsStatus?.ok ? '#16a34a' : '#d97706'} />
+                        </div>
+                        <div className="status-info">
+                            <h3>Operations Readiness</h3>
+                            {opsLoading ? (
+                                <p className="status-text">Loading operations telemetry...</p>
+                            ) : opsError ? (
+                                <p className="status-text status-disconnected">
+                                    <FaTimes /> {opsError}
+                                </p>
+                            ) : (
+                                <>
+                                    <p className={`status-text ${opsStatus?.ok ? 'status-connected' : 'status-disconnected'}`}>
+                                        {opsStatus?.ok ? <FaCheck /> : <FaTimes />}
+                                        {opsStatus?.ok ? 'Ready' : 'Needs attention'}
+                                    </p>
+                                    <p className="status-detail">
+                                        Uptime: {Number(opsStatus?.uptimeSeconds || 0)}s
+                                    </p>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="integration-actions">
+                        <button className="btn-primary" type="button" onClick={checkOpsStatus} disabled={opsLoading}>
+                            <FaSync /> Refresh Ops Status
+                        </button>
+                        <button
+                            className="btn-secondary"
+                            type="button"
+                            onClick={runSharefileRouterNow}
+                            disabled={opsActionBusy === 'route-sharefile'}
+                        >
+                            {opsActionBusy === 'route-sharefile' ? 'Routing...' : 'Run ShareFile Routing Now'}
+                        </button>
+                    </div>
+
+                    {opsStatus && (
+                        <div className="calendar-selector">
+                            <h4>Service Readiness</h4>
+                            <div className="calendar-list">
+                                <div className="calendar-item">
+                                    <span className="calendar-name">Google OAuth</span>
+                                    <span>{opsStatus.services?.google?.ready ? 'Ready' : 'Not ready'}</span>
+                                </div>
+                                <div className="calendar-item">
+                                    <span className="calendar-name">ShareFile Routing</span>
+                                    <span>{opsStatus.services?.sharefile?.ready ? 'Ready' : 'Not ready'}</span>
+                                </div>
+                                <div className="calendar-item">
+                                    <span className="calendar-name">Constant Contact</span>
+                                    <span>{opsStatus.services?.constantContact?.ready ? 'Ready' : 'Not ready'}</span>
+                                </div>
+                            </div>
+
+                            <h4>Sync Status</h4>
+                            <div className="calendar-list">
+                                <div className="calendar-item">
+                                    <span className="calendar-name">Google events</span>
+                                    <span>
+                                        {opsStatus.sync?.googleEvents?.count || 0} items, last update {formatDateTime(opsStatus.sync?.googleEvents?.lastUpdatedAt)}
+                                    </span>
+                                </div>
+                                <div className="calendar-item">
+                                    <span className="calendar-name">ShareFile router</span>
+                                    <span>
+                                        Last success {formatDateTime(opsStatus.sync?.sharefileRouting?.lastSuccessAt)}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <h4>Configuration Validation</h4>
+                            <div className="calendar-list">
+                                {(opsStatus.config?.errors || []).map((error) => (
+                                    <div key={error} className="calendar-item">
+                                        <span className="calendar-name status-disconnected">{error}</span>
+                                    </div>
+                                ))}
+                                {(opsStatus.config?.warnings || []).map((warning) => (
+                                    <div key={warning} className="calendar-item">
+                                        <span className="calendar-name">{warning}</span>
+                                    </div>
+                                ))}
+                                {(opsStatus.config?.errors || []).length === 0 && (opsStatus.config?.warnings || []).length === 0 && (
+                                    <div className="calendar-item">
+                                        <span className="calendar-name status-connected">No config issues detected.</span>
+                                    </div>
+                                )}
+                            </div>
+
+                            <h4>Recent Admin Actions</h4>
+                            <div className="calendar-list">
+                                {(opsStatus.adminActions || []).slice(0, 8).map((action) => (
+                                    <div key={action.id} className="calendar-item">
+                                        <span className="calendar-name">
+                                            {action.action} ({action.status})
+                                        </span>
+                                        <span>{formatDateTime(action.createdAt)}</span>
+                                    </div>
+                                ))}
+                                {(opsStatus.adminActions || []).length === 0 && (
+                                    <p className="no-calendars">No admin actions logged yet.</p>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
             </Card>
         </div>
     );
