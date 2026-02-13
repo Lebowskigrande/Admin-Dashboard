@@ -40,9 +40,10 @@ test('defaults designation to NPO when Bank of America designation is absent', a
     const result = __TEST__.parseContributionFields({
         metadata: {},
         bodyText: text,
-        envelopeFallback: ''
+        envelopeFallback: 'EN-204'
     });
 
     assert.equal(result.donor, 'Sara Edwards');
     assert.equal(result.designation, 'NPO');
+    assert.equal(result.envelopeNumber, 'EN-204');
 });

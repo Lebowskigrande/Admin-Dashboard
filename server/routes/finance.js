@@ -118,6 +118,21 @@ const normalizeJobFiles = (output) => {
     return files;
 };
 
+const isRetriableFailure = ({ status, errorText, output }) => {
+    if (String(status || '').toLowerCase() !== 'failure') return false;
+    const diagnosticsRetriable = Number(output?.diagnostics?.retriable || 0);
+    if (diagnosticsRetriable > 0) return true;
+    const text = String(errorText || '').toLowerCase();
+    return text.includes('timeout')
+        || text.includes('temporar')
+        || text.includes('econnreset')
+        || text.includes('eai_again')
+        || text.includes('enotfound')
+        || text.includes('network')
+        || text.includes('rate limit')
+        || text.includes('429');
+};
+
 router.get('/routing-log', (req, res) => {
     try {
         const codeType = resolveRoutingCodeType(req.query?.type);
@@ -144,13 +159,16 @@ router.get('/routing-log', (req, res) => {
         const eventEntries = eventRows.map((row) => {
             const output = safeParseJson(row.output_json);
             const files = normalizeJobFiles(output);
+            const status = row.status || 'success';
+            const errorText = row.error_text || '';
             return {
                 id: row.id,
                 jobId: row.job_id || null,
                 codeType: row.code_type || '',
                 codeValue: row.code_value || '',
-                status: row.status || 'success',
-                errorText: row.error_text || '',
+                status,
+                errorText,
+                retriable: isRetriableFailure({ status, errorText, output }),
                 createdAt: row.created_at,
                 targetDir: String(output?.targetDir || ''),
                 files
@@ -169,6 +187,7 @@ router.get('/routing-log', (req, res) => {
                     codeValue: row.code_value || '',
                     status: 'success',
                     errorText: '',
+                    retriable: false,
                     createdAt: row.created_at,
                     targetDir: String(output?.targetDir || ''),
                     files
@@ -177,11 +196,18 @@ router.get('/routing-log', (req, res) => {
 
         const entries = [...eventEntries, ...legacyEntries]
             .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+        const diagnostics = {
+            lastRunAt: entries[0]?.createdAt || null,
+            processed: entries.length,
+            failed: entries.filter((entry) => entry.status === 'failure').length,
+            retriable: entries.filter((entry) => entry.retriable).length
+        };
 
         res.json({
             ok: true,
             date: date.key,
             type: String(req.query?.type || 'ap').toLowerCase() === 'ar' ? 'ar' : 'ap',
+            diagnostics,
             entries
         });
     } catch (error) {

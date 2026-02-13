@@ -39,34 +39,77 @@ const summarizeGoogleError = (error) => ({
     message: String(error?.message || '').slice(0, 300)
 });
 
+const getErrorCode = (error) => Number(error?.code || error?.response?.status || 0) || 0;
+
+const isAccountMismatchError = (error) => {
+    const text = String(error?.message || '').toLowerCase();
+    return text.includes('requested entity was not found')
+        || text.includes('invalid id value');
+};
+
+const isCredentialError = (error) => {
+    const code = getErrorCode(error);
+    const text = String(error?.message || '').toLowerCase();
+    if (code === 401 || code === 403) return true;
+    return text.includes('invalid_grant')
+        || text.includes('invalid credentials')
+        || text.includes('unauthorized');
+};
+
+const isRetriableRoutingError = (error) => {
+    const code = getErrorCode(error);
+    if ([408, 409, 425, 429, 500, 502, 503, 504].includes(code)) return true;
+    const text = String(error?.message || '').toLowerCase();
+    return text.includes('timeout')
+        || text.includes('temporar')
+        || text.includes('econnreset')
+        || text.includes('eai_again')
+        || text.includes('enotfound')
+        || text.includes('network');
+};
+
 const getExtensionGmailTokenCandidates = () => {
     const candidates = [];
     const seen = new Set();
-    const pushCandidate = (userId, email, tokens) => {
+    const pushCandidate = (userId, email, tokens, source = 'linked') => {
         if (!tokens) return;
         const key = String(userId || '').trim() || String(email || '').trim();
         if (key && seen.has(key)) return;
         if (key) seen.add(key);
-        candidates.push({ userId: userId || '', email: email || '', tokens });
+        candidates.push({ userId: userId || '', email: email || '', tokens, source });
     };
 
+    // Optional extension hints should influence ordering but never hard-pin routing.
     if (SHAREFILE_EXTENSION_USER_ID) {
-        pushCandidate(SHAREFILE_EXTENSION_USER_ID, '', getUserTokens(SHAREFILE_EXTENSION_USER_ID));
+        pushCandidate(
+            SHAREFILE_EXTENSION_USER_ID,
+            '',
+            getUserTokens(SHAREFILE_EXTENSION_USER_ID),
+            'env-user-id'
+        );
     }
     if (SHAREFILE_EXTENSION_EMAIL) {
         const user = db.prepare('SELECT id FROM users WHERE email = ? LIMIT 1').get(SHAREFILE_EXTENSION_EMAIL);
         if (user?.id) {
-            pushCandidate(user.id, SHAREFILE_EXTENSION_EMAIL, getUserTokens(user.id));
+            pushCandidate(user.id, SHAREFILE_EXTENSION_EMAIL, getUserTokens(user.id), 'env-email');
         }
     }
 
-    const linkedAccounts = getSharefileRoutingAccounts().filter((account) => account.enabled);
+    const linkedAccounts = getSharefileRoutingAccounts()
+        .filter((account) => account.enabled && account.connected)
+        .sort((a, b) => {
+            const defaultDiff = Number(b.isDefault) - Number(a.isDefault);
+            if (defaultDiff !== 0) return defaultDiff;
+            const createdDiff = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+            if (createdDiff !== 0) return createdDiff;
+            return String(a.userId || '').localeCompare(String(b.userId || ''));
+        });
     linkedAccounts.forEach((account) => {
-        pushCandidate(account.userId, account.email, getUserTokens(account.userId));
+        pushCandidate(account.userId, account.email, getUserTokens(account.userId), 'linked');
     });
     if (candidates.length > 0) return candidates;
 
-    pushCandidate('sharefile-gmail', '', getSharefileGmailTokens());
+    pushCandidate('sharefile-gmail', '', getSharefileGmailTokens(), 'legacy-default');
     return candidates;
 };
 
@@ -251,6 +294,7 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
         routeKind: payload.routeKind,
         clientTs: payload.client?.ts || ''
     };
+    const attempts = [];
 
     try {
         const tokenCandidates = getExtensionGmailTokenCandidates();
@@ -267,15 +311,24 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
             extensionEmailOverride: SHAREFILE_EXTENSION_EMAIL || null
         });
         if (!tokenCandidates.length) {
+            const errorText = 'No Gmail tokens configured for ShareFile extension';
             recordSharefileRoutingEvent({
                 messageId: normalizedMessageId,
                 threadId: effectiveThreadId,
                 codeType: extraMeta.codeType,
                 codeValue: extraMeta.codeValue,
                 status: 'failure',
-                errorText: 'No Gmail tokens configured for ShareFile extension'
+                errorText,
+                output: {
+                    diagnostics: {
+                        attempted: 0,
+                        failed: 1,
+                        retriable: 0,
+                        attempts: []
+                    }
+                }
             });
-            return res.status(400).json({ error: 'No Gmail tokens configured for ShareFile extension' });
+            return res.status(400).json({ error: errorText });
         }
         let lastError = null;
         for (const candidate of tokenCandidates) {
@@ -293,46 +346,91 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
                     archive: true,
                     tokensOverride: candidate.tokens
                 });
+                attempts.push({
+                    userId: candidate.userId || '',
+                    email: candidate.email || '',
+                    source: candidate.source || 'linked',
+                    status: 'success',
+                    retriable: false
+                });
+                const failedAttempts = attempts.filter((attempt) => attempt.status === 'failure');
+                const diagnostics = {
+                    attempted: attempts.length,
+                    failed: failedAttempts.length,
+                    retriable: failedAttempts.filter((attempt) => attempt.retriable).length,
+                    attempts
+                };
                 sharefileDebugLog('route-email candidate success', {
                     userId: candidate.userId || '',
                     email: candidate.email || null,
-                    idempotent: !!result?.idempotent
+                    idempotent: !!result?.idempotent,
+                    diagnostics
                 });
                 return res.json({
                     ...result,
                     routedBy: {
                         userId: candidate.userId,
                         email: candidate.email || null
-                    }
+                    },
+                    routingDiagnostics: diagnostics
                 });
             } catch (error) {
                 lastError = error;
+                const retriable = isRetriableRoutingError(error);
+                const accountMismatch = isAccountMismatchError(error);
+                const credentialError = isCredentialError(error);
+                attempts.push({
+                    userId: candidate.userId || '',
+                    email: candidate.email || '',
+                    source: candidate.source || 'linked',
+                    status: 'failure',
+                    retriable,
+                    accountMismatch,
+                    credentialError,
+                    error: summarizeGoogleError(error)
+                });
                 sharefileDebugLog('route-email candidate failed', {
                     userId: candidate.userId || '',
                     email: candidate.email || null,
                     error: summarizeGoogleError(error)
                 });
-                const text = String(error?.message || '');
-                const accountNotMatch = text.includes('Requested entity was not found.') || text.includes('Invalid id value');
-                if (accountNotMatch) continue;
+                if (accountMismatch || credentialError) continue;
                 throw error;
             }
         }
+        const failedAttempts = attempts.filter((attempt) => attempt.status === 'failure');
+        const diagnostics = {
+            attempted: attempts.length,
+            failed: failedAttempts.length,
+            retriable: failedAttempts.filter((attempt) => attempt.retriable).length,
+            attempts
+        };
         sharefileDebugLog('route-email no matching candidate', {
             messageId: normalizedMessageId,
             threadId: effectiveThreadId,
-            lastError: summarizeGoogleError(lastError)
+            lastError: summarizeGoogleError(lastError),
+            diagnostics
         });
         throw lastError || new Error('No matching Gmail account found for this message');
     } catch (error) {
         console.error('ShareFile route email error:', error);
+        const retriable = isRetriableRoutingError(error);
+        const failedAttempts = attempts.filter((attempt) => attempt.status === 'failure');
         recordSharefileRoutingEvent({
             messageId: normalizedMessageId,
             threadId: effectiveThreadId,
             codeType: extraMeta.codeType,
             codeValue: extraMeta.codeValue,
             status: 'failure',
-            errorText: error?.message || 'Failed to route email'
+            errorText: error?.message || 'Failed to route email',
+            output: {
+                diagnostics: {
+                    attempted: attempts.length,
+                    failed: failedAttempts.length || 1,
+                    retriable: failedAttempts.filter((attempt) => attempt.retriable).length || (retriable ? 1 : 0),
+                    attempts
+                }
+            }
         });
         res.status(500).json({ error: error?.message || 'Failed to route email' });
     }
@@ -354,13 +452,18 @@ router.post('/api/sharefile/resolve-message-id', requireSharefileAuth, async (re
         });
         for (const candidate of tokenCandidates) {
             const messageId = await resolveSharefileMessageId(threadId, candidate.tokens).catch((error) => {
+                const accountMismatch = isAccountMismatchError(error);
+                const credentialError = isCredentialError(error);
                 sharefileDebugLog('resolve-message-id candidate failed', {
                     userId: candidate.userId || '',
                     email: candidate.email || null,
                     threadId,
+                    accountMismatch,
+                    credentialError,
                     error: summarizeGoogleError(error)
                 });
-                return null;
+                if (accountMismatch || credentialError) return null;
+                throw error;
             });
             if (messageId) {
                 sharefileDebugLog('resolve-message-id candidate success', {
@@ -466,3 +569,9 @@ router.get('/api/sharefile/envelope-numbers', requireSharefileAuth, (_req, res) 
 });
 
 export default router;
+
+export const __TEST__ = {
+    isAccountMismatchError,
+    isCredentialError,
+    isRetriableRoutingError
+};
