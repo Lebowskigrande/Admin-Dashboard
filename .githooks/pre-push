@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+
+echo "[pre-push] Running stricter checks..."
+npm run test || exit 1
+npm run check:contracts:strict || exit 1
+npm run smoke:routes:strict || exit 1

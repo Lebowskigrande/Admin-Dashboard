@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+
+echo "[pre-commit] Running quick hygiene checks..."
+npm run test:quick || exit 1
+npm run check:contracts || exit 1
+npm run smoke:routes || exit 1

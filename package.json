@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "lint:client": "eslint src --max-warnings=0",
+    "lint:server": "eslint server scripts --max-warnings=0",
+    "lint:extension": "eslint parish-codes-extension --max-warnings=0",
     "preview": "vite preview",
     "dev:client": "vite",
     "dev:server": "node scripts/start-server.js",
@@ -16,7 +19,17 @@
     "tauri:build": "tauri build",
     "db:migrate": "node server/db/migrate.js",
     "db:fix-assignments": "node server/db/fix_assignments.js",
-    "db:merge-people": "node server/db/merge_people.js"
+    "db:merge-people": "node server/db/merge_people.js",
+    "test": "node scripts/run-tests.js",
+    "test:quick": "node scripts/run-tests.js",
+    "check:contracts": "node scripts/check-route-contracts.js",
+    "check:contracts:strict": "node scripts/check-route-contracts.js --strict",
+    "smoke:routes": "node scripts/smoke-route-nav.js",
+    "smoke:routes:strict": "node scripts/smoke-route-nav.js --strict",
+    "hygiene:quick": "npm run test:quick && npm run check:contracts && npm run smoke:routes",
+    "test:db:save": "node scripts/test-db-snapshot.js save",
+    "test:db:restore": "node scripts/test-db-snapshot.js restore",
+    "setup:hooks": "git config core.hooksPath .githooks"
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",

@@ -270,6 +270,8 @@ const normalizeContributionDesignation = (value, fallback = 'Unknown designation
     return raw;
 };
 
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 const extractLabeledBlockFirstLine = (text, label) => {
     const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(
@@ -285,9 +287,20 @@ const extractLabeledBlockFirstLine = (text, label) => {
     return firstLine || '';
 };
 
+const extractInlineLabelValue = (text, label, nextLabels = []) => {
+    const escapedLabel = escapeRegex(label);
+    const next = nextLabels
+        .map((item) => escapeRegex(item))
+        .join('|');
+    const boundary = next ? `(?=\\s+(?:${next})\\s*:|$)` : `(?=$)`;
+    const regex = new RegExp(`\\b${escapedLabel}\\s*:\\s*([\\s\\S]*?)${boundary}`, 'i');
+    const match = String(text || '').match(regex);
+    return compactWhitespace(match?.[1] || '');
+};
+
 const parseBofAContributionPattern = (text) => {
     const match = String(text || '').match(
-        /(?:^|\n)\s*([A-Za-z][A-Za-z'.,\- ]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?\s*\n+([\s\S]*?)(?=\n\s*View your balance\b)/i
+        /(?:^|\s)\s*([A-Za-z][A-Za-z'.,\- ]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?\s*([\s\S]*?)(?=\s*View your balance\b)/i
     );
     if (!match?.[1]) return null;
     const donor = compactWhitespace(match[1]);
@@ -316,8 +329,13 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
         return '';
     };
 
-    const namedDonor = extractLabeledBlockFirstLine(text, 'Name');
-    const allocationDesignation = extractLabeledBlockFirstLine(text, 'I would like my donation to be allocated to');
+    const namedDonor =
+        extractLabeledBlockFirstLine(text, 'Name')
+        || extractInlineLabelValue(text, 'Name', ['Address', 'Email', 'I would like my donation to be allocated to', 'Order', 'Product']);
+
+    const allocationDesignation =
+        extractLabeledBlockFirstLine(text, 'I would like my donation to be allocated to')
+        || extractInlineLabelValue(text, 'I would like my donation to be allocated to', ['Order', 'Product', 'Sub Total', 'Address', 'Email']);
     const bofa = parseBofAContributionPattern(text);
 
     const donor =
@@ -353,6 +371,10 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
         'Unknown envelope';
 
     return { donor, designation, envelopeNumber };
+};
+
+export const __TEST__ = {
+    parseContributionFields
 };
 
 const renderEmailToPdf = async (metadata, bodyText) => {

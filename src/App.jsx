@@ -14,6 +14,7 @@ import Sunday from './pages/Sunday';
 import Communications from './pages/Communications';
 import Vestry from './pages/Vestry';
 import EventTemplates from './pages/EventTemplates';
+import UIMockups from './pages/UIMockups';
 import { EventsProvider } from './context/EventsContext';
 
 function App() {
@@ -33,6 +34,7 @@ function App() {
             <Route path="todo" element={<Todo />} />
             <Route path="task-origins" element={<TaskAdmin />} />
             <Route path="event-templates" element={<EventTemplates />} />
+            <Route path="ui-mockups" element={<UIMockups />} />
             <Route path="settings" element={<Settings />} />
             <Route path="communications" element={<Communications />} />
             <Route path="vestry" element={<Vestry />} />

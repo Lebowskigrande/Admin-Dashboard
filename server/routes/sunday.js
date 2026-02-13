@@ -1,5 +1,8 @@
 import express from 'express';
-import { access } from 'fs/promises';
+import { access, mkdir, readFile, rm, writeFile } from 'fs/promises';
+import { basename, extname, join } from 'path';
+import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
 import { sqlite as db } from '../db.js';
 import { parseNotes, tableExists, tableHasColumn } from '../helpers/db-utils.js';
 import { findBulletinFile, findInsertFile } from '../helpers/file-utils.js';
@@ -8,7 +11,11 @@ import {
     readDocxStatus,
     upsertBulletinStatus,
     clearBulletinStatus,
-    buildDocumentStatus
+    buildDocumentStatus,
+    buildDocumentPreview,
+    convertPubToPdf,
+    resolveSofficePath,
+    runSofficeConvert
 } from '../services/bulletinService.js';
 import {
     TEN_AM_ROLE_KEYS,
@@ -26,11 +33,109 @@ import {
     loadSundayOccurrences
 } from '../helpers/sunday-utils.js';
 import { applyDefaultSundayAssignments } from '../db/default_services.js';
+import { getDropboxAccessToken } from '../helpers/dropbox-utils.js';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import xlsx from 'xlsx';
 import { format } from 'date-fns';
 
 const router = express.Router();
+const DROPBOX_BULLETINS_API_ROOT = process.env.DROPBOX_BULLETINS_API_ROOT || '/Parish Administrator/Bulletins';
+
+const uploadDropboxFile = async (token, path, bytes, mode = 'overwrite') => {
+    const response = await fetch('https://content.dropboxapi.com/2/files/upload', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/octet-stream',
+            'Dropbox-API-Arg': JSON.stringify({
+                path,
+                mode,
+                autorename: mode !== 'overwrite',
+                mute: false
+            })
+        },
+        body: bytes
+    });
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(text || 'Dropbox upload failed');
+    }
+    return response.json().catch(() => ({}));
+};
+
+const createOrGetDropboxSharedLink = async (token, path) => {
+    const listResponse = await fetch('https://api.dropboxapi.com/2/sharing/list_shared_links', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ path, direct_only: true })
+    });
+    if (listResponse.ok) {
+        const payload = await listResponse.json().catch(() => ({}));
+        const existing = Array.isArray(payload.links) ? payload.links[0] : null;
+        if (existing?.url) return existing.url;
+    }
+
+    const createResponse = await fetch('https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ path })
+    });
+    if (!createResponse.ok) {
+        const text = await createResponse.text().catch(() => '');
+        throw new Error(text || 'Dropbox shared link creation failed');
+    }
+    const payload = await createResponse.json().catch(() => ({}));
+    return payload?.url || '';
+};
+
+const toDirectDropboxUrl = (url, kind = 'file') => {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    if (kind === 'image') {
+        return raw.replace('?dl=0', '?raw=1');
+    }
+    return raw.replace('?dl=0', '?dl=1');
+};
+
+const convertDocumentToPdf = async (sourcePath, outputDir) => {
+    const ext = extname(sourcePath || '').toLowerCase();
+    if (ext === '.pdf') return sourcePath;
+
+    const baseName = basename(sourcePath, ext || undefined);
+    const pdfPath = join(outputDir, `${baseName}.pdf`);
+
+    if (ext === '.pub') {
+        const converted = await convertPubToPdf(sourcePath, pdfPath);
+        if (converted) return converted;
+    }
+
+    const sofficePath = await resolveSofficePath();
+    if (!sofficePath) {
+        throw new Error('LibreOffice (soffice) not found');
+    }
+
+    const converted = await runSofficeConvert(sofficePath, [
+        '--headless',
+        '--nologo',
+        '--nodefault',
+        '--norestore',
+        '--convert-to',
+        'pdf',
+        '--outdir',
+        outputDir,
+        sourcePath
+    ]);
+    if (!converted) {
+        throw new Error('Failed to convert bulletin to PDF');
+    }
+    return pdfPath;
+};
 
 router.get('/livestream', (req, res) => {
     const { date } = req.query;
@@ -221,6 +326,67 @@ router.get('/schedule-roles', (req, res) => {
     } catch (error) {
         console.error('Error fetching schedule roles:', error);
         return res.status(500).json({ error: 'Failed to load schedule roles' });
+    }
+});
+
+router.post('/bulletins/upload', async (req, res) => {
+    const sourcePath = String(req.body?.path || '').trim();
+    if (!sourcePath) {
+        return res.status(400).json({ error: 'path is required' });
+    }
+
+    let tempDir = '';
+    try {
+        await access(sourcePath);
+    } catch {
+        return res.status(404).json({ error: 'Source bulletin file not found' });
+    }
+
+    try {
+        const token = await getDropboxAccessToken();
+        if (!token) {
+            return res.status(401).json({ error: 'Dropbox not connected' });
+        }
+
+        tempDir = join(tmpdir(), `bulletin-upload-${randomUUID()}`);
+        await mkdir(tempDir, { recursive: true });
+
+        const now = new Date();
+        const year = String(now.getFullYear());
+        const stamp = format(now, 'yyyy.MM.dd-HHmmss');
+        const sourceExt = extname(sourcePath || '').toLowerCase();
+        const sourceBase = basename(sourcePath, sourceExt || undefined);
+        const safeBase = sourceBase.replace(/[<>:"/\\|?*]+/g, '').trim() || `bulletin-${stamp}`;
+
+        const resolvedPdfPath = await convertDocumentToPdf(sourcePath, tempDir);
+        const pdfBytes = await readFile(resolvedPdfPath);
+        const pdfDropboxPath = `${DROPBOX_BULLETINS_API_ROOT}/${year}/${safeBase}-${stamp}.pdf`;
+        await uploadDropboxFile(token, pdfDropboxPath, pdfBytes, 'overwrite');
+        const pdfShared = await createOrGetDropboxSharedLink(token, pdfDropboxPath);
+
+        let imageUrl = '';
+        const previewDataUrl = await buildDocumentPreview(sourcePath, { force: true });
+        if (previewDataUrl.startsWith('data:image/png;base64,')) {
+            const previewBase64 = previewDataUrl.slice('data:image/png;base64,'.length);
+            const previewBytes = Buffer.from(previewBase64, 'base64');
+            const imageDropboxPath = `${DROPBOX_BULLETINS_API_ROOT}/${year}/preview/${safeBase}-${stamp}.png`;
+            await uploadDropboxFile(token, imageDropboxPath, previewBytes, 'overwrite');
+            const imageShared = await createOrGetDropboxSharedLink(token, imageDropboxPath);
+            imageUrl = toDirectDropboxUrl(imageShared, 'image');
+        }
+
+        return res.json({
+            success: true,
+            url: toDirectDropboxUrl(pdfShared, 'file'),
+            imageUrl
+        });
+    } catch (error) {
+        console.error('Bulletin upload error:', error);
+        return res.status(500).json({ error: error?.message || 'Failed to upload bulletin' });
+    } finally {
+        if (tempDir) {
+            await rm(tempDir, { recursive: true, force: true }).catch(() => { });
+        }
     }
 });
 

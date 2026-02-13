@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun, FaChurch, FaProjectDiagram, FaSyncAlt } from 'react-icons/fa';
+import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun, FaChurch, FaProjectDiagram, FaSyncAlt, FaPalette } from 'react-icons/fa';
 import logo from '../assets/logo.png';
 import { API_URL } from '../services/apiConfig';
 import './Sidebar.css';
@@ -19,6 +19,7 @@ const Sidebar = () => {
         { path: '/todo', label: 'To-Do List', icon: <FaList /> },
         { path: '/task-origins', label: 'Task Origins', icon: <FaProjectDiagram /> },
         { path: '/event-templates', label: 'Event Templates', icon: <FaProjectDiagram /> },
+        { path: '/ui-mockups', label: 'UI Mockups', icon: <FaPalette /> },
         { path: '/settings', label: 'Settings', icon: <FaCog /> },
     ];
 

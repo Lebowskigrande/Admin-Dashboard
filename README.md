@@ -32,3 +32,39 @@ A comprehensive dashboard for Church Administration, built with React and Vite.
     npm run build
     ```
 
+## Engineering Hygiene
+
+1.  **Quick local checks**
+    ```bash
+    npm run hygiene:quick
+    ```
+
+2.  **Route/API contract report**
+    ```bash
+    npm run check:contracts
+    ```
+    Strict mode:
+    ```bash
+    npm run check:contracts:strict
+    ```
+
+3.  **Route/navigation smoke check**
+    ```bash
+    npm run smoke:routes
+    ```
+    Strict mode:
+    ```bash
+    npm run smoke:routes:strict
+    ```
+
+4.  **Enable repo git hooks**
+    ```bash
+    npm run setup:hooks
+    ```
+
+5.  **Database snapshot helpers for testing**
+    ```bash
+    npm run test:db:save
+    npm run test:db:restore
+    ```
+
