@@ -5,6 +5,7 @@ import VestryCertificatePanel from './vestry/VestryCertificatePanel';
 import VestryChecklist from './vestry/VestryChecklist';
 import VestryMembersPanel from './vestry/VestryMembersPanel';
 import VestryPacketBuilder from './vestry/VestryPacketBuilder';
+import VestryWorkflowPanel from './vestry/VestryWorkflowPanel';
 import { useVestryData } from './vestry/useVestryData';
 import './Vestry.css';
 import '../styles/people-shared.css';
@@ -31,6 +32,9 @@ const Vestry = () => {
         previewError,
         previewNotice,
         previewActionBusy,
+        workflow,
+        workflowBusy,
+        workflowError,
         vestryMeetings,
         nextMeeting,
         selectedMeeting,
@@ -57,7 +61,9 @@ const Vestry = () => {
         handlePacketFileUpload,
         clearPacketCache,
         buildPacket,
-        hasPacketFile
+        hasPacketFile,
+        updateWorkflowField,
+        saveWorkflow
     } = useVestryData();
 
     return (
@@ -174,6 +180,14 @@ const Vestry = () => {
                     handlePacketFileUpload={handlePacketFileUpload}
                     reorderPacketItems={reorderPacketItems}
                     hasPacketFile={hasPacketFile}
+                />
+
+                <VestryWorkflowPanel
+                    workflow={workflow}
+                    workflowBusy={workflowBusy}
+                    workflowError={workflowError}
+                    updateWorkflowField={updateWorkflowField}
+                    saveWorkflow={saveWorkflow}
                 />
             </div>
         </div>

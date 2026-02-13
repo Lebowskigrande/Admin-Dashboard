@@ -1,4 +1,4 @@
-import { CATEGORY_LABELS } from './peopleHelpers';
+import { CATEGORY_LABELS, MEMBER_STATUS_LABELS } from './peopleHelpers';
 
 const PeopleFilters = ({
     filters,
@@ -18,7 +18,7 @@ const PeopleFilters = ({
                     id="people-search"
                     className="filter-input"
                     value={filters.search}
-                    placeholder="Search name, email, tags"
+                    placeholder="Search name, email, envelope, tags"
                     onChange={(event) => onFilterChange('search', event.target.value)}
                 />
             </div>
@@ -34,6 +34,22 @@ const PeopleFilters = ({
                     {categories.map((category) => (
                         <option key={category} value={category}>
                             {CATEGORY_LABELS[category] || category}
+                        </option>
+                    ))}
+                </select>
+            </div>
+            <div className="filter-group">
+                <label htmlFor="people-member-status">Member status</label>
+                <select
+                    id="people-member-status"
+                    className="filter-select"
+                    value={filters.memberStatus}
+                    onChange={(event) => onFilterChange('memberStatus', event.target.value)}
+                >
+                    <option value="">All statuses</option>
+                    {Object.entries(MEMBER_STATUS_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>
+                            {label}
                         </option>
                     ))}
                 </select>

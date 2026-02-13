@@ -10,7 +10,11 @@ import {
     normalizeName,
     slugifyName,
     normalizePersonRoles,
-    normalizeTags
+    normalizeTags,
+    normalizeEnvelopeNumber,
+    normalizeMemberStatus,
+    extractEnvelopeNumberFromTags,
+    syncEnvelopeTag
 } from '../helpers/people-utils.js';
 
 const router = express.Router();
@@ -19,7 +23,7 @@ router.get('/', (req, res) => {
     if (!tableExists('people')) {
         return res.json([]);
     }
-    const rows = db.prepare('SELECT * FROM people ORDER BY display_name').all();
+        const rows = db.prepare('SELECT * FROM people ORDER BY display_name').all();
     const people = rows.map((row) => ({
         id: row.id,
         displayName: row.display_name,
@@ -32,6 +36,8 @@ router.get('/', (req, res) => {
         state: row.state || '',
         postalCode: row.postal_code || '',
         category: row.category || '',
+        envelopeNumber: normalizeEnvelopeNumber(row.envelope_number || extractEnvelopeNumberFromTags(row.tags)),
+        memberStatus: normalizeMemberStatus(row.member_status || ''),
         roles: normalizePersonRoles(row.roles),
         tags: parseJsonField(row.tags),
         teams: coerceJsonObject(row.teams)
@@ -51,6 +57,8 @@ router.post('/', (req, res) => {
         state = '',
         postalCode = '',
         category = 'parishioner',
+        envelopeNumber = '',
+        memberStatus = 'unknown',
         roles = [],
         tags = [],
         teams = {}
@@ -64,15 +72,17 @@ router.post('/', (req, res) => {
     const baseId = slugifyName(normalizedName) || `person-${Date.now()}`;
     const id = ensureUniqueId(baseId, 'people');
     const normalizedRoles = normalizePersonRoles(roles);
-    const normalizedTags = normalizeTags(tags);
+    const normalizedEnvelope = normalizeEnvelopeNumber(envelopeNumber);
+    const normalizedMemberStatus = normalizeMemberStatus(memberStatus);
+    const normalizedTags = syncEnvelopeTag({ tags, envelopeNumber: normalizedEnvelope });
 
     db.prepare(`
         INSERT INTO people (
             id, display_name, email, phone_primary, phone_alternate,
             address_line1, address_line2, city, state, postal_code,
-            category, roles, tags, teams
+            category, envelope_number, member_status, roles, tags, teams
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         id,
         normalizedName,
@@ -85,6 +95,8 @@ router.post('/', (req, res) => {
         state,
         postalCode,
         category,
+        normalizedEnvelope,
+        normalizedMemberStatus,
         JSON.stringify(normalizedRoles),
         JSON.stringify(normalizedTags),
         JSON.stringify(coerceJsonObject(teams))
@@ -102,6 +114,8 @@ router.post('/', (req, res) => {
         state,
         postalCode,
         category,
+        envelopeNumber: normalizedEnvelope,
+        memberStatus: normalizedMemberStatus,
         roles: normalizedRoles,
         tags: normalizedTags,
         teams: coerceJsonObject(teams)
@@ -121,6 +135,8 @@ router.put('/:id', (req, res) => {
         state = '',
         postalCode = '',
         category = 'parishioner',
+        envelopeNumber = '',
+        memberStatus = 'unknown',
         roles = [],
         tags = [],
         teams = {}
@@ -137,7 +153,9 @@ router.put('/:id', (req, res) => {
     }
 
     const normalizedRoles = normalizePersonRoles(roles);
-    const normalizedTags = normalizeTags(tags);
+    const normalizedEnvelope = normalizeEnvelopeNumber(envelopeNumber);
+    const normalizedMemberStatus = normalizeMemberStatus(memberStatus);
+    const normalizedTags = syncEnvelopeTag({ tags, envelopeNumber: normalizedEnvelope });
 
     db.prepare(`
         UPDATE people SET
@@ -151,6 +169,8 @@ router.put('/:id', (req, res) => {
             state = ?,
             postal_code = ?,
             category = ?,
+            envelope_number = ?,
+            member_status = ?,
             roles = ?,
             tags = ?,
             teams = ?
@@ -166,6 +186,8 @@ router.put('/:id', (req, res) => {
         state,
         postalCode,
         category,
+        normalizedEnvelope,
+        normalizedMemberStatus,
         JSON.stringify(normalizedRoles),
         JSON.stringify(normalizedTags),
         JSON.stringify(coerceJsonObject(teams)),
@@ -184,6 +206,8 @@ router.put('/:id', (req, res) => {
         state,
         postalCode,
         category,
+        envelopeNumber: normalizedEnvelope,
+        memberStatus: normalizedMemberStatus,
         roles: normalizedRoles,
         tags: normalizedTags,
         teams: coerceJsonObject(teams)

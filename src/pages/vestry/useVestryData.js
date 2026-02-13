@@ -36,6 +36,16 @@ export const useVestryData = () => {
     const [previewError, setPreviewError] = useState('');
     const [previewNotice, setPreviewNotice] = useState('');
     const [previewActionBusy, setPreviewActionBusy] = useState({ save: false, print: false });
+    const [workflow, setWorkflow] = useState({
+        agendaStatus: 'not_started',
+        packetStatus: 'not_started',
+        agendaRef: '',
+        packetRef: '',
+        notes: '',
+        updatedAt: null
+    });
+    const [workflowBusy, setWorkflowBusy] = useState(false);
+    const [workflowError, setWorkflowError] = useState('');
     const [certificateAmounts, setCertificateAmounts] = useState(() => {
         const quarterLabel = getQuarterLabel(null);
         const defaults = buildDefaultReasons(quarterLabel);
@@ -142,6 +152,7 @@ export const useVestryData = () => {
     }, [nextMeeting]);
 
     const quarterLabel = useMemo(() => getQuarterLabel(selectedMeeting), [selectedMeeting]);
+    const selectedMeetingIso = selectedMeeting ? selectedMeeting.toISOString().slice(0, 10) : '';
 
     useEffect(() => {
         const defaults = buildDefaultReasons(quarterLabel);
@@ -162,6 +173,33 @@ export const useVestryData = () => {
             }
         }));
     }, [quarterLabel]);
+
+    useEffect(() => {
+        if (!selectedMeetingIso) return;
+        const loadWorkflow = async () => {
+            try {
+                setWorkflowBusy(true);
+                setWorkflowError('');
+                const response = await fetch(`${API_URL}/vestry/workflow?meetingDate=${encodeURIComponent(selectedMeetingIso)}`);
+                if (!response.ok) throw new Error('Failed to load workflow');
+                const data = await response.json();
+                setWorkflow({
+                    agendaStatus: data?.agendaStatus || 'not_started',
+                    packetStatus: data?.packetStatus || 'not_started',
+                    agendaRef: data?.agendaRef || '',
+                    packetRef: data?.packetRef || '',
+                    notes: data?.notes || '',
+                    updatedAt: data?.updatedAt || null
+                });
+            } catch (error) {
+                console.error('Workflow load error:', error);
+                setWorkflowError('Unable to load workflow state.');
+            } finally {
+                setWorkflowBusy(false);
+            }
+        };
+        loadWorkflow();
+    }, [selectedMeetingIso]);
 
     const otherMeetings = useMemo(() => {
         if (!events.length) return [];
@@ -585,11 +623,61 @@ export const useVestryData = () => {
             const url = URL.createObjectURL(blob);
             setPacketUrl(url);
             setPacketFilename(packetFilenameForMeeting);
+            await saveWorkflow({
+                ...workflow,
+                packetStatus: 'ready',
+                packetRef: packetFilenameForMeeting
+            });
         } catch (error) {
             console.error(error);
             setPacketError('Unable to build the vestry packet.');
         } finally {
             setPacketBusy(false);
+        }
+    };
+
+    const updateWorkflowField = (key, value) => {
+        setWorkflow((prev) => ({ ...prev, [key]: value }));
+    };
+
+    const saveWorkflow = async (updates = null) => {
+        if (!selectedMeetingIso) return null;
+        const nextWorkflow = {
+            ...workflow,
+            ...(updates || {})
+        };
+        try {
+            setWorkflowBusy(true);
+            setWorkflowError('');
+            const response = await fetch(`${API_URL}/vestry/workflow`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    meetingDate: selectedMeetingIso,
+                    agendaStatus: nextWorkflow.agendaStatus,
+                    packetStatus: nextWorkflow.packetStatus,
+                    agendaRef: nextWorkflow.agendaRef,
+                    packetRef: nextWorkflow.packetRef,
+                    notes: nextWorkflow.notes
+                })
+            });
+            if (!response.ok) throw new Error('Failed to save workflow');
+            const data = await response.json();
+            setWorkflow({
+                agendaStatus: data?.agendaStatus || 'not_started',
+                packetStatus: data?.packetStatus || 'not_started',
+                agendaRef: data?.agendaRef || '',
+                packetRef: data?.packetRef || '',
+                notes: data?.notes || '',
+                updatedAt: data?.updatedAt || null
+            });
+            return data;
+        } catch (error) {
+            console.error('Workflow save error:', error);
+            setWorkflowError('Unable to save workflow state.');
+            return null;
+        } finally {
+            setWorkflowBusy(false);
         }
     };
 
@@ -620,6 +708,9 @@ export const useVestryData = () => {
         previewError,
         previewNotice,
         previewActionBusy,
+        workflow,
+        workflowBusy,
+        workflowError,
         vestryMeetings,
         nextMeeting,
         selectedMeeting,
@@ -647,6 +738,8 @@ export const useVestryData = () => {
         handlePacketFileUpload,
         clearPacketCache,
         buildPacket,
-        hasPacketFile
+        hasPacketFile,
+        updateWorkflowField,
+        saveWorkflow
     };
 };

@@ -25,9 +25,10 @@ const BuildingsTickets = ({
     deleteTicketTask,
     addTicketNote
 }) => {
-    const activeTickets = tickets.filter((ticket) => ticket.status !== 'closed');
+    const terminalStatuses = new Set(['done', 'wont_do']);
+    const activeTickets = tickets.filter((ticket) => !terminalStatuses.has(ticket.status));
     const archivedTickets = tickets
-        .filter((ticket) => ticket.status === 'closed')
+        .filter((ticket) => terminalStatuses.has(ticket.status))
         .sort((a, b) => {
             const aRaw = new Date(a.updated_at || a.created_at || 0).getTime();
             const bRaw = new Date(b.updated_at || b.created_at || 0).getTime();
@@ -38,9 +39,11 @@ const BuildingsTickets = ({
 
     const statusOptions = [
         { value: 'new', label: 'New' },
-        { value: 'reviewed', label: 'Reviewed' },
-        { value: 'in_process', label: 'In Process' },
-        { value: 'closed', label: 'Closed' }
+        { value: 'open', label: 'Open' },
+        { value: 'in_progress', label: 'In Progress' },
+        { value: 'blocked', label: 'Blocked' },
+        { value: 'done', label: 'Done' },
+        { value: 'wont_do', label: "Won't Do" }
     ];
 
     const renderTicketStatusStack = (key, selected, onSelect) => {

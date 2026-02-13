@@ -21,6 +21,7 @@ export const usePeopleData = () => {
     const [filters, setFilters] = useState({
         search: '',
         category: '',
+        memberStatus: '',
         role: '',
         tag: '',
         team: ''
@@ -135,11 +136,13 @@ export const usePeopleData = () => {
                 const haystack = [
                     person.displayName,
                     person.email,
+                    person.envelopeNumber,
                     ...(person.tags || [])
                 ].join(' ').toLowerCase();
                 if (!haystack.includes(normalizedSearch)) return false;
             }
             if (filters.category && person.category !== filters.category) return false;
+            if (filters.memberStatus && person.memberStatus !== filters.memberStatus) return false;
             if (filters.role && !(person.roles || []).includes(filters.role)) return false;
             if (filters.tag && !(person.tags || []).includes(filters.tag)) return false;
             if (filters.team && !hasTeamFilter) return false;
@@ -159,7 +162,7 @@ export const usePeopleData = () => {
     };
 
     const resetFilters = () => {
-        setFilters({ search: '', category: '', role: '', tag: '', team: '' });
+        setFilters({ search: '', category: '', memberStatus: '', role: '', tag: '', team: '' });
     };
 
     const beginCreate = () => {
@@ -180,6 +183,8 @@ export const usePeopleData = () => {
             state: person.state || '',
             postalCode: person.postalCode || '',
             category: person.category || 'parishioner',
+            envelopeNumber: person.envelopeNumber || '',
+            memberStatus: person.memberStatus || 'unknown',
             roles: Array.isArray(person.roles) ? [...person.roles] : [],
             tagsText: (person.tags || []).join(', '),
             teams: { ...(person.teams || {}) }
@@ -226,6 +231,8 @@ export const usePeopleData = () => {
             state: editForm.state,
             postalCode: editForm.postalCode,
             category: editForm.category,
+            envelopeNumber: editForm.envelopeNumber,
+            memberStatus: editForm.memberStatus,
             roles: editForm.roles || [],
             tags: parseCommaList(editForm.tagsText),
             teams: editForm.teams || {}
@@ -258,6 +265,8 @@ export const usePeopleData = () => {
             state: createForm.state,
             postalCode: createForm.postalCode,
             category: createForm.category,
+            envelopeNumber: createForm.envelopeNumber,
+            memberStatus: createForm.memberStatus,
             roles: createForm.roles || [],
             tags: parseCommaList(createForm.tagsText),
             teams: createForm.teams || {}

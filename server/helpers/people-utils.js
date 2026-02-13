@@ -57,3 +57,29 @@ export const normalizeTags = (value) => {
         .filter(Boolean);
     return Array.from(new Set(tags));
 };
+
+export const normalizeEnvelopeNumber = (value = '') => String(value || '')
+    .trim()
+    .replace(/\s+/g, '');
+
+export const normalizeMemberStatus = (value = '') => {
+    const raw = String(value || '').trim().toLowerCase();
+    if (!raw) return 'unknown';
+    const normalized = raw.replace(/[\s_-]+/g, '_');
+    const allowed = new Set(['member', 'associate', 'visitor', 'inactive', 'unknown']);
+    return allowed.has(normalized) ? normalized : 'unknown';
+};
+
+export const extractEnvelopeNumberFromTags = (tags = []) => {
+    const normalizedTags = normalizeTags(tags);
+    const match = normalizedTags.find((tag) => /^env-[a-z0-9-]+$/i.test(tag));
+    if (!match) return '';
+    return normalizeEnvelopeNumber(match.replace(/^env-/i, ''));
+};
+
+export const syncEnvelopeTag = ({ tags = [], envelopeNumber = '' }) => {
+    const normalizedEnvelope = normalizeEnvelopeNumber(envelopeNumber);
+    const baseTags = normalizeTags(tags).filter((tag) => !/^env-[a-z0-9-]+$/i.test(tag));
+    if (!normalizedEnvelope) return baseTags;
+    return [...baseTags, `env-${normalizedEnvelope}`];
+};
