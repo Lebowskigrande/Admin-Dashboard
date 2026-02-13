@@ -13,7 +13,11 @@ const SundayLivestreamPanel = ({
     onGenerateAndScheduleEmail,
     schedulingEmail,
     emailError,
-    emailScheduledDate
+    emailScheduledDate,
+    fromEmailOptions,
+    selectedFromEmail,
+    onChangeFromEmail,
+    fromEmailLoading
 }) => (
     <Card className={`sunday-panel livestream-card ${livestreamUrl && details.bulletinUploaded && details.emailCreated && details.emailScheduled && details.emailSent ? 'panel-complete' : ''}`}>
         {renderMilestoneInline('Livestream Email', emailMilestone)}
@@ -84,6 +88,25 @@ const SundayLivestreamPanel = ({
         >
             {schedulingEmail ? 'Scheduling...' : 'Generate + Schedule Email'}
         </button>
+        <div className="email-sender-row">
+            <span className="email-sender-label">From</span>
+            <select
+                className="email-sender-select"
+                value={selectedFromEmail}
+                onChange={(event) => onChangeFromEmail(event.target.value)}
+                disabled={fromEmailLoading || fromEmailOptions.length === 0}
+            >
+                {fromEmailOptions.length === 0 ? (
+                    <option value="">
+                        {fromEmailLoading ? 'Loading sender emails...' : 'Default sender from settings'}
+                    </option>
+                ) : (
+                    fromEmailOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                    ))
+                )}
+            </select>
+        </div>
         {emailScheduledDate && (
             <div className="text-muted">
                 Scheduled for {format(parseISO(emailScheduledDate), 'PPP p')}

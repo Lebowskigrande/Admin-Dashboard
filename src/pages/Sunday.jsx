@@ -49,6 +49,13 @@ const formatServiceTime = (time) => {
     if (trimmed.startsWith('10')) return '10 AM';
     return trimmed || 'Service';
 };
+const normalizeEmailAddress = (value) => String(value || '').trim().toLowerCase();
+const extractCcEmailAddress = (entry) => String(entry?.email_address || entry?.email || entry?.address || '').trim();
+const getCcEmailStatusRank = (entry) => {
+    const status = String(entry?.status || '').toLowerCase();
+    if (status === 'confirmed' || status === 'verified' || status === 'active') return 0;
+    return 1;
+};
 
 const defaultLocationForTime = (time) => (isEightAmService(time) ? 'chapel' : 'sanctuary');
 
@@ -146,6 +153,8 @@ const Sunday = () => {
     const [uploadError, setUploadError] = useState('');
     const [emailScheduling, setEmailScheduling] = useState(false);
     const [emailError, setEmailError] = useState('');
+    const [ccFromEmails, setCcFromEmails] = useState([]);
+    const [ccFromEmailsLoading, setCcFromEmailsLoading] = useState(false);
     const [bulletinDoc, setBulletinDoc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [bulletin8Doc, setBulletin8Doc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [insertDoc, setInsertDoc] = useState({ exists: false, preview: '', path: '', name: '' });
@@ -266,6 +275,88 @@ const Sunday = () => {
             active = false;
         };
     }, []);
+
+    useEffect(() => {
+        let active = true;
+        const loadFromEmails = async () => {
+            if (!currentDate) return;
+            setCcFromEmailsLoading(true);
+            try {
+                const response = await fetch(`${API_URL}/constant-contact/from-emails`);
+                if (response.status === 401) {
+                    if (active) setCcFromEmails([]);
+                    return;
+                }
+                if (!response.ok) throw new Error('Failed to load Constant Contact sender emails');
+                const payload = await response.json().catch(() => ({}));
+                if (active) {
+                    const list = Array.isArray(payload?.emails) ? payload.emails : [];
+                    setCcFromEmails(list);
+                }
+            } catch (err) {
+                console.error(err);
+                if (active) setCcFromEmails([]);
+            } finally {
+                if (active) setCcFromEmailsLoading(false);
+            }
+        };
+        loadFromEmails();
+        return () => {
+            active = false;
+        };
+    }, [currentDate]);
+
+    const fromEmailOptions = useMemo(() => {
+        if (!Array.isArray(ccFromEmails) || ccFromEmails.length === 0) return [];
+        const seen = new Set();
+        return ccFromEmails
+            .map((entry) => ({
+                address: extractCcEmailAddress(entry),
+                status: String(entry?.status || '').trim()
+            }))
+            .filter((entry) => entry.address)
+            .sort((a, b) => {
+                const rankDiff = getCcEmailStatusRank(a) - getCcEmailStatusRank(b);
+                if (rankDiff !== 0) return rankDiff;
+                return a.address.localeCompare(b.address);
+            })
+            .filter((entry) => {
+                const key = normalizeEmailAddress(entry.address);
+                if (!key || seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            })
+            .map((entry) => ({
+                value: entry.address,
+                label: entry.status ? `${entry.address} (${entry.status})` : entry.address
+            }));
+    }, [ccFromEmails]);
+
+    useEffect(() => {
+        if (!currentDate || fromEmailOptions.length === 0) return;
+        const current = String(details?.emailFromAddress || '').trim();
+        const isCurrentValid = current
+            && fromEmailOptions.some((option) => normalizeEmailAddress(option.value) === normalizeEmailAddress(current));
+        if (isCurrentValid) return;
+        const defaultFromEmail = fromEmailOptions[0].value;
+        setDetails((prev) => {
+            if (prev.emailFromAddress === defaultFromEmail) return prev;
+            const next = { ...prev, emailFromAddress: defaultFromEmail };
+            saveSundayDetails(currentDate, next);
+            return next;
+        });
+    }, [currentDate, details?.emailFromAddress, fromEmailOptions]);
+
+    const handleChangeFromEmail = useCallback((value) => {
+        if (!currentDate) return;
+        const nextValue = String(value || '').trim();
+        setDetails((prev) => {
+            if (prev.emailFromAddress === nextValue) return prev;
+            const next = { ...prev, emailFromAddress: nextValue };
+            saveSundayDetails(currentDate, next);
+            return next;
+        });
+    }, [currentDate]);
 
     const milestoneLists = useMemo(() => {
         if (!sundayTemplates.length) return [];
@@ -1506,7 +1597,8 @@ const Sunday = () => {
                     sundayName: liturgicalInfo?.name || liturgicalInfo?.feast || 'Sunday',
                     youtubeLink,
                     pdfUrl,
-                    imageUrl
+                    imageUrl,
+                    fromEmail: String(details?.emailFromAddress || '').trim()
                 })
             });
             const payload = await response.json().catch(() => ({}));
@@ -1733,6 +1825,10 @@ const Sunday = () => {
                     schedulingEmail={emailScheduling}
                     emailError={emailError}
                     emailScheduledDate={details.emailScheduledDate}
+                    fromEmailOptions={fromEmailOptions}
+                    selectedFromEmail={String(details?.emailFromAddress || '').trim()}
+                    onChangeFromEmail={handleChangeFromEmail}
+                    fromEmailLoading={ccFromEmailsLoading}
                 />
             </div>
 
