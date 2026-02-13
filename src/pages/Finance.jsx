@@ -107,6 +107,13 @@ const formatLogTime = (isoValue) => {
     });
 };
 
+const emptyRoutingDiagnostics = {
+    lastRunAt: null,
+    processed: 0,
+    failed: 0,
+    retriable: 0
+};
+
 const Finance = () => {
     const [checks, setChecks] = useState(() => {
         const saved = loadSavedChecks();
@@ -141,8 +148,12 @@ const Finance = () => {
     const [uploadResetKey, setUploadResetKey] = useState(0);
     const [apDate, setApDate] = useState(() => formatDateKey(new Date()));
     const [arDate, setArDate] = useState(() => formatDateKey(new Date()));
-    const [apLog, setApLog] = useState({ loading: false, error: '', notice: '', entries: [], revealBusyKey: '' });
-    const [arLog, setArLog] = useState({ loading: false, error: '', notice: '', entries: [], revealBusyKey: '' });
+    const [apLog, setApLog] = useState({
+        loading: false, error: '', notice: '', entries: [], revealBusyKey: '', diagnostics: emptyRoutingDiagnostics
+    });
+    const [arLog, setArLog] = useState({
+        loading: false, error: '', notice: '', entries: [], revealBusyKey: '', diagnostics: emptyRoutingDiagnostics
+    });
 
     const updateCheck = (index, field, value) => {
         setChecks((prev) => {
@@ -439,7 +450,11 @@ const Finance = () => {
                 ...prev,
                 loading: false,
                 error: '',
-                entries: Array.isArray(payload.entries) ? payload.entries : []
+                entries: Array.isArray(payload.entries) ? payload.entries : [],
+                diagnostics: {
+                    ...emptyRoutingDiagnostics,
+                    ...(payload.diagnostics || {})
+                }
             }));
         } catch (error) {
             console.error('Routing log load error:', error);
@@ -447,6 +462,7 @@ const Finance = () => {
                 ...prev,
                 loading: false,
                 entries: [],
+                diagnostics: emptyRoutingDiagnostics,
                 error: error?.message || 'Failed to load routing log'
             }));
         }
@@ -523,6 +539,12 @@ const Finance = () => {
                             </button>
                         </div>
                     </div>
+                    <div className="routing-log-diagnostics" role="status" aria-label="AP routing diagnostics">
+                        <div><span>Last run</span><strong>{apLog.diagnostics.lastRunAt ? formatLogTime(apLog.diagnostics.lastRunAt) : 'None'}</strong></div>
+                        <div><span>Processed</span><strong>{apLog.diagnostics.processed}</strong></div>
+                        <div><span>Failed</span><strong>{apLog.diagnostics.failed}</strong></div>
+                        <div><span>Retriable</span><strong>{apLog.diagnostics.retriable}</strong></div>
+                    </div>
                     <div className="routing-log-body">
                         {apLog.loading && <p className="text-muted">Loading AP log...</p>}
                         {!apLog.loading && apLog.entries.length === 0 && !apLog.error && (
@@ -593,6 +615,12 @@ const Finance = () => {
                                 Next day
                             </button>
                         </div>
+                    </div>
+                    <div className="routing-log-diagnostics" role="status" aria-label="AR routing diagnostics">
+                        <div><span>Last run</span><strong>{arLog.diagnostics.lastRunAt ? formatLogTime(arLog.diagnostics.lastRunAt) : 'None'}</strong></div>
+                        <div><span>Processed</span><strong>{arLog.diagnostics.processed}</strong></div>
+                        <div><span>Failed</span><strong>{arLog.diagnostics.failed}</strong></div>
+                        <div><span>Retriable</span><strong>{arLog.diagnostics.retriable}</strong></div>
                     </div>
                     <div className="routing-log-body">
                         {arLog.loading && <p className="text-muted">Loading AR log...</p>}
