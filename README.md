@@ -68,3 +68,16 @@ A comprehensive dashboard for Church Administration, built with React and Vite.
     npm run test:db:restore
     ```
 
+## Platform Notes
+
+1.  **Startup environment validation**
+    - Server boot now validates env consistency via `server/env.js`.
+    - Optional integrations may be fully unset in local/dev.
+    - Partial OAuth/integration config fails fast with a clear error list.
+    - `NODE_ENV=production` requires `CLIENT_ORIGIN`.
+    - `SERVER_PORT` must be numeric when provided.
+
+2.  **Lint baseline vs strict**
+    - `npm run lint` runs baseline lint and allows existing warning backlog.
+    - `npm run lint:strict` enforces zero warnings (`--max-warnings=0`) and is expected to fail until warning backlog is reduced.
+
