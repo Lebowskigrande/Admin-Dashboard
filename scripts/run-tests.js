@@ -95,6 +95,21 @@ const tests = [
             assert.equal(result.designation, '2026 pledge');
             assert.equal(result.amount, '100.00');
         }
+    },
+    {
+        name: 'Contribution auto-detect recognizes office sender and BofA body',
+        run: async () => {
+            const fromOffice = __TEST__.isContributionEmail(
+                { from: 'Office <office@saintedmunds.com>' },
+                'Any body'
+            );
+            const bofaBody = __TEST__.isContributionEmail(
+                { from: 'alerts@example.com' },
+                'Sara Edwards sent you $1,000.00 View your balance'
+            );
+            assert.equal(fromOffice, true);
+            assert.equal(bofaBody, true);
+        }
     }
 ];
 

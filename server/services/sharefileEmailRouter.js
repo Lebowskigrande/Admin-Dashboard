@@ -168,6 +168,16 @@ const normalizeRouteKind = (value) => {
     return 'BILL';
 };
 
+const isContributionEmail = (metadata, bodyText) => {
+    const from = String(metadata?.from || '').toLowerCase();
+    const body = String(bodyText || '').toLowerCase();
+    if (from.includes('office@saintedmunds.com')) return true;
+    if (from.includes('bank of america') || from.includes('customerservice@ealerts.bankofamerica.com')) return true;
+    if (body.includes('i would like my donation to be allocated to')) return true;
+    if (body.includes('sent you $') && body.includes('view your balance')) return true;
+    return false;
+};
+
 const ensureUniquePath = async (dir, filename) => {
     const base = filename.replace(/\.pdf$/i, '');
     const ext = '.pdf';
@@ -430,7 +440,8 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
 export const __TEST__ = {
     parseContributionFields,
     buildNoteText,
-    formatContributionFilenameBase
+    formatContributionFilenameBase,
+    isContributionEmail
 };
 
 const renderEmailToPdf = async (metadata, bodyText) => {
@@ -709,7 +720,18 @@ export const routeShareFileEmails = async ({
         });
         const message = messageResponse.data;
         const metadata = parseEmailMetadata(message);
-        const noteText = buildNoteText(metadata);
+        const bodyText = extractGmailMessageText(message) || message.snippet || '';
+        const routeKind = isContributionEmail(metadata, bodyText) ? 'CONTRIBUTION' : 'BILL';
+        const contributionMeta = routeKind === 'CONTRIBUTION'
+            ? parseContributionFields({ metadata, bodyText, envelopeFallback: '' })
+            : null;
+        const noteText = buildNoteText(metadata, {
+            routeKind,
+            donor: contributionMeta?.donor || '',
+            envelopeNumber: contributionMeta?.envelopeNumber || '',
+            designation: contributionMeta?.designation || '',
+            amount: contributionMeta?.amount || ''
+        });
         const attachments = collectAttachments(message.payload);
         const routingTimestamp = new Date(Number(message?.internalDate) || Date.now());
 
@@ -719,7 +741,6 @@ export const routeShareFileEmails = async ({
 
         try {
             if (attachments.length === 0) {
-                const bodyText = extractGmailMessageText(message) || message.snippet || '';
                 const htmlBody = extractGmailMessageHtml(message);
                 let pdfBytes;
                 try {
@@ -730,9 +751,11 @@ export const routeShareFileEmails = async ({
                     pdfBytes = await renderEmailToPdf(metadata, bodyText);
                 }
                 const { filename, targetPath } = await buildInvoiceFilename({
-                    kind: 'BILL',
+                    kind: routeKind,
                     timestamp: routingTimestamp,
-                    targetDir: rootPath
+                    targetDir: rootPath,
+                    donor: contributionMeta?.donor || '',
+                    amount: contributionMeta?.amount || ''
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);
@@ -755,9 +778,11 @@ export const routeShareFileEmails = async ({
                     const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
                     const pdfBytes = await readFile(pdfPath);
                     const { filename, targetPath } = await buildInvoiceFilename({
-                        kind: 'BILL',
+                        kind: routeKind,
                         timestamp: routingTimestamp,
-                        targetDir: rootPath
+                        targetDir: rootPath,
+                        donor: contributionMeta?.donor || '',
+                        amount: contributionMeta?.amount || ''
                     });
                     const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                     const tempPath = join(tempDir, filename);
@@ -862,8 +887,9 @@ export const routeSharefileMessage = async ({
     }
     messageId = effectiveMessageId;
     const metadata = parseEmailMetadata(message);
-    const routeKind = normalizeRouteKind(extraMeta.routeKind);
     const bodyText = extractGmailMessageText(message) || message.snippet || '';
+    const inferredRouteKind = isContributionEmail(metadata, bodyText) ? 'CONTRIBUTION' : 'BILL';
+    const routeKind = normalizeRouteKind(extraMeta.routeKind || inferredRouteKind);
     const contributionMeta = routeKind === 'CONTRIBUTION'
         ? parseContributionFields({
             bodyText,
