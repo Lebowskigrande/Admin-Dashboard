@@ -25,6 +25,8 @@ import {
     loadSundayOccurrences
 } from '../helpers/sunday-utils.js';
 import { uploadBulletinToDropbox } from '../services/bulletinUploadService.js';
+import { createAndScheduleConstantContactEmail } from '../services/constantContactService.js';
+import { getCcUserId } from '../helpers/communications-utils.js';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import xlsx from 'xlsx';
 import { format } from 'date-fns';
@@ -222,7 +224,7 @@ router.get('/sunday/schedule-roles', (req, res) => {
     }
 });
 
-router.post('/bulletins/upload', async (req, res) => {
+router.post('/sunday/bulletins/upload', async (req, res) => {
     try {
         const result = await uploadBulletinToDropbox(req.body?.path || '');
         return res.json(result);
@@ -230,6 +232,20 @@ router.post('/bulletins/upload', async (req, res) => {
         console.error('Bulletin upload error:', error);
         const statusCode = Number(error?.statusCode || 500);
         return res.status(statusCode).json({ error: error?.message || 'Failed to upload bulletin' });
+    }
+});
+
+router.post('/sunday/constant-contact/email', async (req, res) => {
+    try {
+        const result = await createAndScheduleConstantContactEmail({
+            userId: getCcUserId(req),
+            input: req.body || {}
+        });
+        return res.json(result);
+    } catch (error) {
+        console.error('Sunday Constant Contact email error:', error);
+        const statusCode = Number(error?.statusCode || 500);
+        return res.status(statusCode).json({ error: error?.message || 'Failed to schedule Sunday email' });
     }
 });
 

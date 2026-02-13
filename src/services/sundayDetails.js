@@ -14,6 +14,8 @@ const defaultDetails = {
     bulletinImageUrl: '',
     emailCreated: false,
     emailScheduled: false,
+    emailActivityId: '',
+    emailScheduledDate: '',
     emailSent: false,
     sundayMilestones: {},
     staffHours: [],

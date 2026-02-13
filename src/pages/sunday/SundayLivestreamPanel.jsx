@@ -1,5 +1,6 @@
 import Card from '../../components/Card';
 import { FaYoutube } from 'react-icons/fa';
+import { format, parseISO } from 'date-fns';
 
 const SundayLivestreamPanel = ({
     renderMilestoneInline,
@@ -8,7 +9,11 @@ const SundayLivestreamPanel = ({
     livestreamUrl,
     details,
     toggleEmailChecklistItem,
-    livestreamError
+    livestreamError,
+    onGenerateAndScheduleEmail,
+    schedulingEmail,
+    emailError,
+    emailScheduledDate
 }) => (
     <Card className={`sunday-panel livestream-card ${livestreamUrl && details.bulletinUploaded && details.emailCreated && details.emailScheduled && details.emailSent ? 'panel-complete' : ''}`}>
         {renderMilestoneInline('Livestream Email', emailMilestone)}
@@ -47,26 +52,18 @@ const SundayLivestreamPanel = ({
                     </span>
                     <span>Bulletin uploaded</span>
                 </button>
-                <button
-                    type="button"
-                    className={`check-item check-action ${details.emailCreated ? 'done' : ''}`}
-                    onClick={() => toggleEmailChecklistItem('emailCreated')}
-                >
+                <div className={`check-item ${details.emailCreated ? 'done' : ''}`}>
                     <span className={`check-badge check-badge--sm ${details.emailCreated ? '' : 'check-badge--empty'}`} aria-hidden="true">
                         {details.emailCreated ? '\u2713' : ''}
                     </span>
                     <span>Email created</span>
-                </button>
-                <button
-                    type="button"
-                    className={`check-item check-action ${details.emailScheduled ? 'done' : ''}`}
-                    onClick={() => toggleEmailChecklistItem('emailScheduled')}
-                >
+                </div>
+                <div className={`check-item ${details.emailScheduled ? 'done' : ''}`}>
                     <span className={`check-badge check-badge--sm ${details.emailScheduled ? '' : 'check-badge--empty'}`} aria-hidden="true">
                         {details.emailScheduled ? '\u2713' : ''}
                     </span>
                     <span>Email scheduled</span>
-                </button>
+                </div>
                 <button
                     type="button"
                     className={`check-item check-action ${details.emailSent ? 'done' : ''}`}
@@ -79,6 +76,20 @@ const SundayLivestreamPanel = ({
                 </button>
             </div>
         </div>
+        <button
+            type="button"
+            className="btn-primary"
+            onClick={onGenerateAndScheduleEmail}
+            disabled={schedulingEmail}
+        >
+            {schedulingEmail ? 'Scheduling...' : 'Generate + Schedule Email'}
+        </button>
+        {emailScheduledDate && (
+            <div className="text-muted">
+                Scheduled for {format(parseISO(emailScheduledDate), 'PPP p')}
+            </div>
+        )}
+        {emailError && <div className="text-muted">{emailError}</div>}
         {livestreamError && <div className="text-muted">{livestreamError}</div>}
     </Card>
 );
