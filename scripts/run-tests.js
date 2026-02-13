@@ -75,6 +75,26 @@ const tests = [
             });
             assert.equal(base, '2026.02.13 Elizabeth Woodall 1000.00');
         }
+    },
+    {
+        name: 'Website contribution parser ignores HTML entities and captures amount',
+        run: async () => {
+            const text = [
+                'Name:&nbsp;',
+                'Elizabeth Woodall',
+                'I would like my donation to be allocated to:&nbsp;',
+                '2026 Pledge Payment',
+                'Sub Total&nbsp;$100.00'
+            ].join('\n');
+            const result = __TEST__.parseContributionFields({
+                metadata: {},
+                bodyText: text,
+                envelopeFallback: 'EN-204'
+            });
+            assert.equal(result.donor, 'Elizabeth Woodall');
+            assert.equal(result.designation, '2026 pledge');
+            assert.equal(result.amount, '100.00');
+        }
     }
 ];
 
