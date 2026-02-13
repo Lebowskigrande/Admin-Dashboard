@@ -105,12 +105,53 @@ const decodeAttachmentData = (data) => {
     return Buffer.from(padded, 'base64');
 };
 
+const compactWhitespace = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+const sanitizeContributionToken = (value, fallback) => {
+    const cleaned = compactWhitespace(value)
+        .replace(/[<>:"/\\|?*]/g, '')
+        .split('')
+        .filter((ch) => ch.charCodeAt(0) >= 32)
+        .join('')
+        .trim();
+    return cleaned || fallback;
+};
+
+const normalizeCurrencyAmount = (value) => {
+    const raw = String(value || '').replace(/\$/g, '').replace(/,/g, '').trim();
+    if (!raw) return '';
+    const parsed = Number.parseFloat(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) return '';
+    return parsed.toFixed(2);
+};
+
+const normalizeContributionText = (value) => String(value || '')
+    .replace(/\r/g, '\n')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+
+const formatContributionFilenameBase = ({ timestamp, donor, amount }) => {
+    const time = timestamp instanceof Date && !Number.isNaN(timestamp.getTime())
+        ? timestamp
+        : new Date();
+    const datePart = formatDate(time, 'yyyy.MM.dd');
+    const donorPart = sanitizeContributionToken(donor, 'Unknown Donor').slice(0, 120);
+    const amountPart = normalizeCurrencyAmount(amount) || 'Unknown Amount';
+    return `${datePart} ${donorPart} ${amountPart}`;
+};
+
 const buildNoteText = (_metadata, extra = {}) => {
     if (String(extra?.routeKind || '').toUpperCase() === 'CONTRIBUTION') {
-        const donor = String(extra?.donor || '').trim() || 'Unknown donor';
-        const envelopeNumber = String(extra?.envelopeNumber || extra?.codeValue || '').trim() || 'Unknown envelope';
-        const designation = String(extra?.designation || '').trim() || 'Unknown designation';
-        return `${donor}, ${envelopeNumber}, ${designation}`;
+        const envelopeNumber = sanitizeContributionToken(
+            extra?.envelopeNumber || extra?.codeValue,
+            'Unknown envelope'
+        );
+        const designation = sanitizeContributionToken(extra?.designation, 'Unknown designation');
+        return `Envelope: ${envelopeNumber} | Designation: ${designation}`;
     }
 
     const code = String(extra?.codeValue || '').trim() || 'unknown';
@@ -147,7 +188,8 @@ const buildInvoiceFilename = async ({
     kind,
     timestamp,
     targetDir,
-    donor
+    donor,
+    amount
 }) => {
     const time = timestamp instanceof Date && !Number.isNaN(timestamp.getTime())
         ? timestamp
@@ -155,14 +197,7 @@ const buildInvoiceFilename = async ({
     let baseName = '';
 
     if (String(kind || '').toUpperCase() === 'CONTRIBUTION') {
-        const datePart = formatDate(time, 'yyyy.MM.dd');
-        const donorRaw = String(donor || '').trim() || 'Unknown Donor';
-        const donorPart = donorRaw
-            .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 120) || 'Unknown Donor';
-        baseName = `${datePart} ${donorPart}`;
+        baseName = formatContributionFilenameBase({ timestamp: time, donor, amount });
     } else {
         const yearMonth = formatDate(time, 'yyyy.MM');
         const hhmmss = formatDate(time, 'HHmmss');
@@ -260,8 +295,6 @@ const parseNameFromContributionPatterns = (text) => {
     return '';
 };
 
-const compactWhitespace = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-
 const normalizeContributionDesignation = (value, fallback = 'Unknown designation') => {
     const raw = compactWhitespace(value);
     if (!raw) return fallback;
@@ -300,24 +333,29 @@ const extractInlineLabelValue = (text, label, nextLabels = []) => {
 
 const parseBofAContributionPattern = (text) => {
     const match = String(text || '').match(
-        /(?:^|\s)\s*([A-Za-z][A-Za-z'.,\- ]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?\s*([\s\S]*?)(?=\s*View your balance\b)/i
+        /(?:^|\s)\s*([A-Za-z][A-Za-z'., -]{1,120})\s+sent you\s+\$([0-9,]+(?:\.[0-9]{2})?)\s*([\s\S]*?)(?=\s*View your balance\b)/i
     );
     if (!match?.[1]) return null;
     const donor = compactWhitespace(match[1]);
-    const between = String(match[2] || '')
+    const amount = normalizeCurrencyAmount(match[2]);
+    const between = String(match[3] || '')
         .split('\n')
         .map((line) => line.trim())
         .filter(Boolean)
         .join(' ');
-    const designation = normalizeContributionDesignation(between, 'NPO');
+    const blockedDesignation = /^(?:view your balance|please allow up to)/i;
+    const designation = blockedDesignation.test(between)
+        ? 'NPO'
+        : normalizeContributionDesignation(between, 'NPO');
     return {
         donor: donor || '',
-        designation
+        designation,
+        amount
     };
 };
 
 const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
-    const text = String(bodyText || '').replace(/\r/g, '\n');
+    const text = normalizeContributionText(bodyText);
     const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
     const findLabeledValue = (patterns) => {
         for (const line of lines) {
@@ -337,6 +375,20 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
         extractLabeledBlockFirstLine(text, 'I would like my donation to be allocated to')
         || extractInlineLabelValue(text, 'I would like my donation to be allocated to', ['Order', 'Product', 'Sub Total', 'Address', 'Email']);
     const bofa = parseBofAContributionPattern(text);
+
+    const extractWebsiteAmount = () => {
+        const subtotalMatch = text.match(/Sub\s*Total\s*\$([0-9,]+(?:\.[0-9]{2})?)/i);
+        if (subtotalMatch?.[1]) return normalizeCurrencyAmount(subtotalMatch[1]);
+        const donationIndex = lines.findIndex((line) => /^Donation Amount\s*:?\s*$/i.test(line) || /^Donation Amount\s*:/i.test(line));
+        if (donationIndex >= 0) {
+            const nearby = lines.slice(donationIndex, donationIndex + 10).join('\n');
+            const amountMatches = [...nearby.matchAll(/\$([0-9,]+(?:\.[0-9]{2})?)/g)];
+            const last = amountMatches.at(-1)?.[1] || '';
+            return normalizeCurrencyAmount(last);
+        }
+        const allAmounts = [...text.matchAll(/\$([0-9,]+(?:\.[0-9]{2})?)/g)];
+        return normalizeCurrencyAmount(allAmounts.at(-1)?.[1] || '');
+    };
 
     const donor =
         namedDonor ||
@@ -370,11 +422,15 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
         lookupEnvelopeNumberByDonorName(donor) ||
         'Unknown envelope';
 
-    return { donor, designation, envelopeNumber };
+    const amount = bofa?.amount || extractWebsiteAmount() || '';
+
+    return { donor, designation, envelopeNumber, amount };
 };
 
 export const __TEST__ = {
-    parseContributionFields
+    parseContributionFields,
+    buildNoteText,
+    formatContributionFilenameBase
 };
 
 const renderEmailToPdf = async (metadata, bodyText) => {
@@ -810,7 +866,6 @@ export const routeSharefileMessage = async ({
     const bodyText = extractGmailMessageText(message) || message.snippet || '';
     const contributionMeta = routeKind === 'CONTRIBUTION'
         ? parseContributionFields({
-            metadata,
             bodyText,
             envelopeFallback: extraMeta.codeValue
         })
@@ -820,7 +875,8 @@ export const routeSharefileMessage = async ({
         routeKind,
         donor: contributionMeta?.donor || '',
         envelopeNumber: contributionMeta?.envelopeNumber || '',
-        designation: contributionMeta?.designation || ''
+        designation: contributionMeta?.designation || '',
+        amount: contributionMeta?.amount || ''
     });
     const attachments = collectAttachments(message.payload);
     const clientTsDate = extraMeta?.clientTs ? new Date(extraMeta.clientTs) : null;
@@ -868,7 +924,8 @@ export const routeSharefileMessage = async ({
                 kind: routeKind,
                 timestamp: routingTimestamp,
                 targetDir: resolvedRoot,
-                donor: contributionMeta?.donor || ''
+                donor: contributionMeta?.donor || '',
+                amount: contributionMeta?.amount || ''
             });
             const notedBytes = await addNoteToPdf(pdfBytes, noteText);
             const tempPath = join(tempDir, filename);
@@ -894,7 +951,8 @@ export const routeSharefileMessage = async ({
                     kind: routeKind,
                     timestamp: routingTimestamp,
                     targetDir: resolvedRoot,
-                    donor: contributionMeta?.donor || ''
+                    donor: contributionMeta?.donor || '',
+                    amount: contributionMeta?.amount || ''
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);

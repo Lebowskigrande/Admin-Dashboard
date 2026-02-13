@@ -3,6 +3,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 
 import { __TEST__ } from '../server/services/sharefileEmailRouter.js';
+import { sqlite as db } from '../server/db.js';
 
 const fixturesDir = join(process.cwd(), 'tests', 'fixtures');
 
@@ -20,6 +21,7 @@ const tests = [
             });
             assert.equal(result.donor, 'Elizabeth Woodall');
             assert.equal(result.designation, '2026 pledge');
+            assert.equal(result.amount, '100.00');
         }
     },
     {
@@ -33,6 +35,7 @@ const tests = [
             });
             assert.equal(result.donor, 'Sara Edwards');
             assert.equal(result.designation, 'Pledge for January');
+            assert.equal(result.amount, '1000.00');
         }
     },
     {
@@ -42,15 +45,56 @@ const tests = [
             const result = __TEST__.parseContributionFields({
                 metadata: {},
                 bodyText: text,
-                envelopeFallback: ''
+                envelopeFallback: 'EN-204'
             });
             assert.equal(result.donor, 'Sara Edwards');
             assert.equal(result.designation, 'NPO');
+            assert.equal(result.envelopeNumber, 'EN-204');
+            assert.equal(result.amount, '1000.00');
+        }
+    },
+    {
+        name: 'Contribution note format includes clean envelope and designation',
+        run: async () => {
+            const note = __TEST__.buildNoteText({}, {
+                routeKind: 'CONTRIBUTION',
+                donor: 'Ignored Donor',
+                envelopeNumber: 'EN-204',
+                designation: 'Pledge for January'
+            });
+            assert.equal(note, 'Envelope: EN-204 | Designation: Pledge for January');
+        }
+    },
+    {
+        name: 'Contribution filename base includes date donor and amount',
+        run: async () => {
+            const base = __TEST__.formatContributionFilenameBase({
+                timestamp: new Date('2026-02-13T10:15:00.000Z'),
+                donor: 'Elizabeth Woodall',
+                amount: '1000.00'
+            });
+            assert.equal(base, '2026.02.13 Elizabeth Woodall 1000.00');
         }
     }
 ];
 
+const ensureTestSchema = () => {
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS people (
+            id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            envelope_number TEXT,
+            tags TEXT
+        )
+    `);
+    const columns = db.prepare('PRAGMA table_info(people)').all().map((row) => row.name);
+    if (!columns.includes('tags')) {
+        db.exec('ALTER TABLE people ADD COLUMN tags TEXT');
+    }
+};
+
 const run = async () => {
+    ensureTestSchema();
     let failed = 0;
     for (const testCase of tests) {
         try {
