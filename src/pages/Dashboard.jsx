@@ -4,7 +4,7 @@ import Card from '../components/Card';
 import { format, isSameDay, addDays, startOfDay } from 'date-fns';
 import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
-import { getTaskProgressMeta, getTaskProgressLabel } from '../utils/taskProgress';
+import { getTaskProgressLabel } from '../utils/taskProgress';
 import './Dashboard.css';
 
 const WEATHER_CENTER = {

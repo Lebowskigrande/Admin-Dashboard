@@ -1,4 +1,4 @@
-import { join, extname, basename } from 'path';
+import { join, extname } from 'path';
 import { access, mkdir, readdir, stat } from 'fs/promises';
 import { homedir } from 'os';
 

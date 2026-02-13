@@ -158,7 +158,10 @@ const buildInvoiceFilename = async ({
         const datePart = formatDate(time, 'yyyy.MM.dd');
         const donorRaw = String(donor || '').trim() || 'Unknown Donor';
         const donorPart = donorRaw
-            .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+            .replace(/[<>:"/\\|?*]/g, '')
+            .split('')
+            .filter((ch) => ch.charCodeAt(0) >= 32)
+            .join('')
             .replace(/\s+/g, ' ')
             .trim()
             .slice(0, 120) || 'Unknown Donor';
@@ -170,15 +173,6 @@ const buildInvoiceFilename = async ({
     }
 
     return ensureUniquePath(targetDir, baseName);
-};
-
-const parseDisplayNameFromFromHeader = (fromHeader) => {
-    const raw = String(fromHeader || '').trim();
-    if (!raw) return '';
-    const match = raw.match(/^(.*?)\s*<[^>]+>\s*$/);
-    if (match?.[1]) return match[1].trim().replace(/^"|"$/g, '');
-    if (!raw.includes('@')) return raw.replace(/^"|"$/g, '');
-    return '';
 };
 
 const normalizePersonName = (value) => String(value || '')
@@ -271,9 +265,9 @@ const parseNameFromContributionPatterns = (text) => {
     if (!full) return '';
 
     const patterns = [
-        /contributor\s*[:\-]?\s*([A-Za-z][A-Za-z'.,\- ]{1,120})/i,
-        /you received\s+\$[0-9,]+(?:\.[0-9]{2})?\s+from\s+([A-Za-z][A-Za-z'.,\- ]{1,120})/i,
-        /([A-Za-z][A-Za-z'.,\- ]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?/i
+        /contributor\s*[:-]?\s*([A-Za-z][A-Za-z'., -]{1,120})/i,
+        /you received\s+\$[0-9,]+(?:\.[0-9]{2})?\s+from\s+([A-Za-z][A-Za-z'., -]{1,120})/i,
+        /([A-Za-z][A-Za-z'., -]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?/i
     ];
 
     for (const regex of patterns) {
@@ -326,7 +320,7 @@ const extractInlineLabelValue = (text, label, nextLabels = []) => {
 
 const parseBofAContributionPattern = (text) => {
     const match = String(text || '').match(
-        /(?:^|\s)\s*([A-Za-z][A-Za-z'.,\- ]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?\s*([\s\S]*?)(?=\s*View your balance\b)/i
+        /(?:^|\s)\s*([A-Za-z][A-Za-z'., -]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?\s*([\s\S]*?)(?=\s*View your balance\b)/i
     );
     if (!match?.[1]) return null;
     const donor = compactWhitespace(match[1]);
@@ -342,7 +336,7 @@ const parseBofAContributionPattern = (text) => {
     };
 };
 
-const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
+const parseContributionFields = ({ bodyText, envelopeFallback }) => {
     const text = String(bodyText || '').replace(/\r/g, '\n');
     const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
     const findLabeledValue = (patterns) => {
@@ -367,9 +361,9 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
     const donor =
         namedDonor ||
         findLabeledValue([
-            /^donor\s*[:\-]\s*(.+)$/i,
-            /^name\s*[:\-]\s*(.+)$/i,
-            /^contributor\s*[:\-]?\s*(.+)$/i
+            /^donor\s*[:-]\s*(.+)$/i,
+            /^name\s*[:-]\s*(.+)$/i,
+            /^contributor\s*[:-]?\s*(.+)$/i
         ]) ||
         parseNameFromContributionPatterns(text) ||
         (bofa?.donor || '') ||
@@ -378,9 +372,9 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
     const designation = normalizeContributionDesignation(
         allocationDesignation ||
         findLabeledValue([
-            /^designation\s*[:\-]\s*(.+)$/i,
-            /^fund\s*[:\-]\s*(.+)$/i,
-            /^purpose\s*[:\-]\s*(.+)$/i,
+            /^designation\s*[:-]\s*(.+)$/i,
+            /^fund\s*[:-]\s*(.+)$/i,
+            /^purpose\s*[:-]\s*(.+)$/i,
             /^i would like my donation to be allocated to:\s*(.+)$/i
         ]) ||
         (bofa?.designation || ''),
@@ -389,8 +383,8 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
 
     const envelopeNumber =
         findLabeledValue([
-            /^envelope(?:\s*number|\s*#)?\s*[:\-]\s*([A-Za-z0-9-]+)$/i,
-            /^env(?:elope)?(?:\s*#|\s*number)?\s*[:\-]\s*([A-Za-z0-9-]+)$/i
+            /^envelope(?:\s*number|\s*#)?\s*[:-]\s*([A-Za-z0-9-]+)$/i,
+            /^env(?:elope)?(?:\s*#|\s*number)?\s*[:-]\s*([A-Za-z0-9-]+)$/i
         ]) ||
         String(envelopeFallback || '').trim() ||
         lookupEnvelopeNumberByDonorName(donor) ||
@@ -408,7 +402,7 @@ const renderEmailToPdf = async (metadata, bodyText) => {
     const font = await doc.embedFont(StandardFonts.Helvetica);
     const bold = await doc.embedFont(StandardFonts.HelveticaBold);
     let page = doc.addPage();
-    let { width, height } = page.getSize();
+    let { height } = page.getSize();
     const margin = 50;
     const lineHeight = 14;
     let cursorY = height - margin;
@@ -421,7 +415,7 @@ const renderEmailToPdf = async (metadata, bodyText) => {
     lines.forEach((line) => {
         if (cursorY < margin) {
             page = doc.addPage();
-            ({ width, height } = page.getSize());
+            ({ height } = page.getSize());
             cursorY = height - margin;
         }
         page.drawText(line, { x: margin, y: cursorY, size: 10, font, color: rgb(0.15, 0.15, 0.15) });

@@ -181,7 +181,7 @@ export const createAndScheduleConstantContactEmail = async ({ userId, input }) =
             method: 'POST',
             body: JSON.stringify(campaignPayload)
         });
-    } catch (error) {
+    } catch {
         console.error('Constant Contact create payload fallback:', campaignPayload);
         campaign = await fetchCcJson(`${CC_API_BASE}/emails`, tokens, {
             method: 'POST',

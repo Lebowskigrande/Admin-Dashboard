@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { sqlite as db } from '../db.js';
 import { coerceJsonArray, coerceJsonObject } from './db-utils.js';
-import { format, isSunday, parseISO, addMonths } from 'date-fns';
+import { format, isSunday, parseISO } from 'date-fns';
 
 export const DEFAULT_LOCATION_BY_TIME = {
     '08:00': 'chapel',
@@ -172,7 +172,7 @@ export const mergeReadingFragments = (list) => {
     list.forEach((item) => {
         const trimmed = String(item || '').trim();
         if (!trimmed) return;
-        const isContinuation = /^(?:\d+\s*[:\[]|\[\d|\(\d|or\b)/i.test(trimmed);
+        const isContinuation = /^(?:\d+\s*[:[]|\[\d|\(\d|or\b)/i.test(trimmed);
         if (isContinuation && merged.length > 0) {
             merged[merged.length - 1] = `${merged[merged.length - 1]}; ${trimmed}`;
             return;

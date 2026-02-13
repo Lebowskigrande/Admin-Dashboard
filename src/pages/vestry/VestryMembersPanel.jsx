@@ -22,8 +22,8 @@ const VestryMembersPanel = ({ vestryMembers, sortedVestryMembers }) => {
         if (!person) return null;
         const tags = person.tags || [];
         const extensionTag = tags.find((tag) => tag.startsWith('ext-'));
-        const phoneTag = tags.find((tag) => /^phone[:\-]/i.test(tag)) || tags.find((tag) => /^tel[:\-]/i.test(tag));
-        const rawPhone = phoneTag ? phoneTag.replace(/^phone[:\-]\s*/i, '').replace(/^tel[:\-]\s*/i, '').trim() : '';
+        const phoneTag = tags.find((tag) => /^phone[:-]/i.test(tag)) || tags.find((tag) => /^tel[:-]/i.test(tag));
+        const rawPhone = phoneTag ? phoneTag.replace(/^phone[:-]\s*/i, '').replace(/^tel[:-]\s*/i, '').trim() : '';
         const barePhoneTag = tags.find((tag) => !tag.startsWith('ext-') && /\d{3}[^0-9]?\d{3}[^0-9]?\d{4}/.test(tag || ''));
         const phoneLabel = rawPhone || barePhoneTag || (extensionTag ? `Ext ${extensionTag.replace(/^ext-/, '')}` : '');
         const titleTags = tags.filter((tag) => tag && tag !== extensionTag);

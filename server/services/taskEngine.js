@@ -1,15 +1,15 @@
 import { randomUUID } from 'crypto';
 import { sqlite as db } from '../db.js';
-import { tableExists, tableHasColumn, parseJsonField, ensureUniqueId } from '../helpers/db-utils.js';
-import { toEntityLinkId, upsertEntityLink, deleteEntityLinks } from '../helpers/entity-utils.js';
+import { tableExists, tableHasColumn, parseJsonField as _PARSE_JSON_FIELD, ensureUniqueId as _ENSURE_UNIQUE_ID } from '../helpers/db-utils.js';
+import { toEntityLinkId as _TO_ENTITY_LINK_ID, upsertEntityLink, deleteEntityLinks } from '../helpers/entity-utils.js';
 import {
     formatTaskInstanceRow,
     sortTasksByPriority,
     getPriorityTier,
     getDefaultPriorityBase,
-    getSundayDocumentStatusRank,
-    getSundayTaskStepRank,
-    isSundayTaskAutoComplete
+    getSundayDocumentStatusRank as _GET_SUNDAY_DOCUMENT_STATUS_RANK,
+    getSundayTaskStepRank as _GET_SUNDAY_TASK_STEP_RANK,
+    isSundayTaskAutoComplete as _IS_SUNDAY_TASK_AUTO_COMPLETE
 } from '../helpers/task-utils.js';
 
 const ensureTaskInstanceNotes = () => {
@@ -77,7 +77,7 @@ const listRecurringTemplates = (originType, originId = null) => {
 };
 
 const normalizeListKey = (value) => String(value || '').trim().toLowerCase();
-const isSpecialEventsList = (listKey) => normalizeListKey(listKey) === 'special-events';
+const _IS_SPECIAL_EVENTS_LIST = (listKey) => normalizeListKey(listKey) === 'special-events';
 
 const ensureProgressiveTemplateModes = () => {
     if (!tableExists('recurring_task_templates')) return;
@@ -989,7 +989,7 @@ export const seedTaskEngine = () => {
     seedEventTasksFromTemplates();
 };
 
-const auditAndCleanupOrphanTasks = () => {
+const _AUDIT_AND_CLEANUP_ORPHAN_TASKS = () => {
     if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
 
     const removeTaskInstance = (taskInstanceId) => {
@@ -1069,7 +1069,7 @@ const auditAndCleanupOrphanTasks = () => {
     }
 };
 
-const repairMissingOrigins = () => {
+const _REPAIR_MISSING_ORIGINS = () => {
     if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
     if (!tableExists('task_origins')) return;
 
@@ -1134,7 +1134,7 @@ const repairMissingOrigins = () => {
     });
 };
 
-const purgeTemplateOrphanTasks = () => {
+const _PURGE_TEMPLATE_ORPHAN_TASKS = () => {
     if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
     const templateKeys = tableExists('recurring_task_templates')
         ? db.prepare('SELECT list_key FROM recurring_task_templates WHERE active = 1').all()

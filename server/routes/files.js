@@ -1,5 +1,5 @@
 import express from 'express';
-import { dirname, resolve } from 'path';
+import { resolve } from 'path';
 import { access, stat } from 'fs/promises';
 import { execFile } from 'child_process';
 import { promisify } from 'util';

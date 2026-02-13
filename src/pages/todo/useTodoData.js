@@ -6,7 +6,6 @@ import { getTaskProgressMeta, getTaskNextStepLabel } from '../../utils/taskProgr
 import {
     PRIORITY_OPTIONS,
     isDateString,
-    isMonthString,
     normalizeOriginKey,
     getListKey,
     parseDueDate,
@@ -527,7 +526,7 @@ export const useTodoData = () => {
 
     useEffect(() => {
         setTaskNotesDraft(selectedTask?.notes || '');
-    }, [selectedTask?.id]);
+    }, [selectedTask]);
 
     const selectedTaskKey = selectedTask?.id || selectedTaskId || '';
 

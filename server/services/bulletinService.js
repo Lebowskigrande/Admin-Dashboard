@@ -1,6 +1,6 @@
 import { join, basename, extname, dirname } from 'path';
-import { access, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
-import { tmpdir, homedir } from 'os';
+import { access, copyFile, mkdir, readFile, readdir, rm, stat } from 'fs/promises';
+import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';

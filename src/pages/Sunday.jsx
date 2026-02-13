@@ -159,7 +159,6 @@ const Sunday = () => {
     const [bulletin8Doc, setBulletin8Doc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [insertDoc, setInsertDoc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [statusDrafts, setStatusDrafts] = useState({});
-    const [statusExpandedKey, setStatusExpandedKey] = useState(null);
     const [bulletinPrintCopies, setBulletinPrintCopies] = useState({ bulletin10: 1, bulletin8: 1, insert: 1 });
     const [selectedEventId, setSelectedEventId] = useState(null);
     const [hgkItemNames, setHgkItemNames] = useState([]);
@@ -790,7 +789,7 @@ const Sunday = () => {
         } finally {
             setDocsLoading(false);
         }
-    }, [currentDate, liturgicalInfo?.feast, liturgicalInfo?.name, syncMilestoneFromStatus]);
+    }, [currentDate, liturgicalInfo?.feast, liturgicalInfo?.name]);
 
     const refreshDocPreviews = useCallback(async (docKey) => {
         if (!currentDate) return;
@@ -1133,8 +1132,8 @@ const Sunday = () => {
         if (!person) return null;
         const tags = person.tags || [];
         const extensionTag = tags.find((tag) => tag.startsWith('ext-'));
-        const phoneTag = tags.find((tag) => /^phone[:\-]/i.test(tag)) || tags.find((tag) => /^tel[:\-]/i.test(tag));
-        const rawPhone = phoneTag ? phoneTag.replace(/^phone[:\-]\s*/i, '').replace(/^tel[:\-]\s*/i, '').trim() : '';
+        const phoneTag = tags.find((tag) => /^phone[:-]/i.test(tag)) || tags.find((tag) => /^tel[:-]/i.test(tag));
+        const rawPhone = phoneTag ? phoneTag.replace(/^phone[:-]\s*/i, '').replace(/^tel[:-]\s*/i, '').trim() : '';
         const barePhoneTag = tags.find((tag) => !tag.startsWith('ext-') && /\d{3}[^0-9]?\d{3}[^0-9]?\d{4}/.test(tag || ''));
         const phoneLabel = rawPhone || barePhoneTag || (extensionTag ? `Ext ${extensionTag.replace(/^ext-/, '')}` : '');
         const titleTags = tags.filter((tag) => tag && tag !== extensionTag);

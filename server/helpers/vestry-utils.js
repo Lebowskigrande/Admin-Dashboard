@@ -1,7 +1,7 @@
 import { join, dirname, resolve, basename, extname } from 'path';
 import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
-import { mkdir, readFile, writeFile, rm, access, copyFile } from 'fs/promises';
+import { mkdir, readFile, writeFile, rm, access } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
@@ -11,7 +11,6 @@ import { tableExists } from './db-utils.js';
 import { normalizePersonRoles } from './people-utils.js';
 import { parseJsonField } from './db-utils.js';
 import {
-    parseCurrencyOverride,
     formatCurrencyValue,
     sumCurrencyValues,
     getDefaultPrinterName

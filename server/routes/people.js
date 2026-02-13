@@ -10,7 +10,6 @@ import {
     normalizeName,
     slugifyName,
     normalizePersonRoles,
-    normalizeTags,
     normalizeEnvelopeNumber,
     normalizeMemberStatus,
     extractEnvelopeNumberFromTags,
