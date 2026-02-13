@@ -49,7 +49,7 @@ else {
     $noteLines += "- none"
 }
 
-$content = @(
+$contentLines = @(
     "# Agent Report: $Agent",
     "",
     "## Summary",
@@ -58,15 +58,18 @@ $content = @(
     "- Head: $Head",
     "- Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")",
     "",
-    "## Tickets",
-    $ticketLines,
-    "",
-    "## Checks",
-    $checkLines,
-    "",
-    "## Notes",
-    $noteLines
-) -join [Environment]::NewLine
+    "## Tickets"
+)
+
+$contentLines += $ticketLines
+$contentLines += ""
+$contentLines += "## Checks"
+$contentLines += $checkLines
+$contentLines += ""
+$contentLines += "## Notes"
+$contentLines += $noteLines
+
+$content = $contentLines -join [Environment]::NewLine
 
 Set-Content -Path $outputPath -Value $content -Encoding UTF8
 Write-Host "[agent-report] OK path=$outputPath"
