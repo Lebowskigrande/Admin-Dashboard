@@ -1,21 +1,19 @@
 # Agent A Packet
 
 ## Identity
-Agent A: Sunday / Bulletins / Communications
+Agent A: Sunday + Constant Contact Automation
 
 ## Branch
 `agent-a-sunday-comms`
 
 ## Tickets (Sprint 1)
 1. `AGENT-A-001` Fix bulletin upload contract mismatch
-2. `AGENT-A-002` Wire Communications page to backend (replace local-only state)
-3. `AGENT-A-003` Integrate Constant Contact flow into UI
+2. `AGENT-A-002` Remove standalone Communications/Bulletins page flow from product surface
+3. `AGENT-A-003` Integrate Constant Contact module into Sunday workflow
 
 ## Boundaries
 1. In scope:
 - `src/pages/Sunday.jsx`
-- `src/pages/Communications.jsx`
-- related components/styles
 - `server/routes/sunday.js`
 - `server/routes/communications.js`
 - supporting service/helper files
@@ -37,8 +35,8 @@ npm run smoke:routes:strict
 ```
 
 ## Done Criteria
-1. No local-state-only core comms workflow remains.
-2. Sunday bulletin upload and email-related paths work end-to-end.
+1. No standalone Communications/Bulletins page workflow remains.
+2. Sunday bulletin upload and Constant Contact scheduling path work end-to-end.
 3. API contracts remain stable or are documented in report.
 
 ## Report Template

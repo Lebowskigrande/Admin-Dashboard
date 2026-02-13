@@ -18,18 +18,18 @@ Close critical contract gaps, stabilize core workflows, and establish a clean in
 - Agent F: `agent-f-platform-quality`
 - Agent G: `integration/finalization` (integration agent)
 
-## Agent A: Sunday / Bulletins / Communications
+## Agent A: Sunday + Constant Contact Automation
 1. `AGENT-A-001` Fix bulletin upload contract mismatch
 - Deliverable: frontend and backend use one canonical upload endpoint.
 - Acceptance: Sunday bulletin upload succeeds end-to-end with persisted result.
 
-2. `AGENT-A-002` Wire Communications page to backend (replace local-only state)
-- Deliverable: mail log + checklist persistence via API.
-- Acceptance: reload retains data, create/update/delete flows work.
+2. `AGENT-A-002` Remove standalone Communications/Bulletins page flow from product surface
+- Deliverable: no separate app routes/pages for Communications or Bulletins; workflow lives in Sunday planning only.
+- Acceptance: route/nav checks pass and no dead imports remain.
 
-3. `AGENT-A-003` Integrate Constant Contact flow into UI
-- Deliverable: connect status, list selection, schedule/send feedback.
-- Acceptance: manual test can create and schedule one email successfully.
+3. `AGENT-A-003` Integrate Constant Contact module into Sunday workflow
+- Deliverable: procedurally generate full email payload (template-driven) and schedule send from Sunday planning flow.
+- Acceptance: manual test can create and schedule one complete email successfully.
 
 ## Agent B: Finance / ShareFile
 1. `AGENT-B-001` Finalize multi-account candidate routing behavior

@@ -10,8 +10,5 @@ export const ROUTE_MANIFEST = [
     { key: 'todo', path: '/todo', routePath: 'todo', label: 'To-Do List', icon: 'list', showInNav: true },
     { key: 'taskOrigins', path: '/task-origins', routePath: 'task-origins', label: 'Task Origins', icon: 'project', showInNav: true },
     { key: 'eventTemplates', path: '/event-templates', routePath: 'event-templates', label: 'Event Templates', icon: 'project', showInNav: true },
-    { key: 'uiMockups', path: '/ui-mockups', routePath: 'ui-mockups', label: 'UI Mockups', icon: 'palette', showInNav: true },
-    { key: 'settings', path: '/settings', routePath: 'settings', label: 'Settings', icon: 'cog', showInNav: true },
-    { key: 'communications', path: '/communications', routePath: 'communications', label: 'Communications', icon: 'project', showInNav: false },
-    { key: 'bulletins', path: '/bulletins', routePath: 'bulletins', label: 'Bulletins', icon: 'project', showInNav: false }
+    { key: 'settings', path: '/settings', routePath: 'settings', label: 'Settings', icon: 'cog', showInNav: true }
 ];

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun, FaChurch, FaProjectDiagram, FaSyncAlt, FaPalette } from 'react-icons/fa';
+import { FaHome, FaCalendarAlt, FaMoneyBillWave, FaList, FaBuilding, FaUsers, FaCog, FaClipboardCheck, FaSun, FaChurch, FaProjectDiagram, FaSyncAlt } from 'react-icons/fa';
 import logo from '../assets/logo.png';
 import { API_URL } from '../services/apiConfig';
 import { ROUTE_MANIFEST } from '../config/routeManifest';
@@ -19,7 +19,6 @@ const Sidebar = () => {
         users: <FaUsers />,
         list: <FaList />,
         project: <FaProjectDiagram />,
-        palette: <FaPalette />,
         cog: <FaCog />
     };
     const navItems = ROUTE_MANIFEST

@@ -3,7 +3,6 @@ import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Calendar from './pages/Calendar';
 import LiturgicalSchedule from './pages/LiturgicalSchedule';
-import Bulletins from './pages/Bulletins';
 import Finance from './pages/Finance';
 import Todo from './pages/Todo';
 import TaskAdmin from './pages/TaskAdmin';
@@ -11,10 +10,8 @@ import Buildings from './pages/Buildings';
 import People from './pages/People';
 import Settings from './pages/Settings';
 import Sunday from './pages/Sunday';
-import Communications from './pages/Communications';
 import Vestry from './pages/Vestry';
 import EventTemplates from './pages/EventTemplates';
-import UIMockups from './pages/UIMockups';
 import { EventsProvider } from './context/EventsContext';
 import { ROUTE_MANIFEST } from './config/routeManifest';
 
@@ -30,10 +27,7 @@ const PAGE_COMPONENTS = {
   todo: Todo,
   taskOrigins: TaskAdmin,
   eventTemplates: EventTemplates,
-  uiMockups: UIMockups,
   settings: Settings,
-  communications: Communications,
-  bulletins: Bulletins,
 };
 
 function App() {
