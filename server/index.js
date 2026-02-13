@@ -2,10 +2,12 @@ import dotenv from 'dotenv';
 
 import { runBootstrap } from './bootstrap.js';
 import { createApp } from './app.js';
+import { validateStartupEnv } from './env.js';
 import { startSharefilePoller } from './services/sharefilePoller.js';
 
 dotenv.config({ path: './server/.env' });
 
+validateStartupEnv();
 runBootstrap();
 
 const PORT = Number(process.env.SERVER_PORT || 3001);

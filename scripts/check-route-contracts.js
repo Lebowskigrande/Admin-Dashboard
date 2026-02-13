@@ -73,11 +73,7 @@ const parseRouteMethods = (source) => {
     return routes;
 };
 
-const buildServerApiPatterns = async () => {
-    const appPath = join(SERVER_DIR, 'app.js');
-    const appRaw = await readFile(appPath, 'utf8');
-    const patterns = new Set();
-
+const analyzeRouteMounts = (appRaw) => {
     const routeImports = new Map();
     const importPattern = /import\s+([A-Za-z0-9_]+)\s+from\s+['"]\.\/routes\/([^'"]+)['"]/g;
     let importMatch = importPattern.exec(appRaw);
@@ -86,15 +82,15 @@ const buildServerApiPatterns = async () => {
         importMatch = importPattern.exec(appRaw);
     }
 
-    const mounts = new Map();
+    const mountsByVar = new Map();
     const useWithMountPattern = /app\.use\(\s*['"`]([^'"`]+)['"`]\s*,\s*([A-Za-z0-9_]+)\s*\)/g;
     let mountMatch = useWithMountPattern.exec(appRaw);
     while (mountMatch) {
         const mount = normalize(mountMatch[1]);
         const varName = mountMatch[2];
-        const current = mounts.get(varName) || [];
+        const current = mountsByVar.get(varName) || [];
         current.push(mount);
-        mounts.set(varName, current);
+        mountsByVar.set(varName, current);
         mountMatch = useWithMountPattern.exec(appRaw);
     }
 
@@ -102,11 +98,54 @@ const buildServerApiPatterns = async () => {
     let directMatch = useDirectPattern.exec(appRaw);
     while (directMatch) {
         const varName = directMatch[1];
-        const current = mounts.get(varName) || [];
+        const current = mountsByVar.get(varName) || [];
         current.push('');
-        mounts.set(varName, current);
+        mountsByVar.set(varName, current);
         directMatch = useDirectPattern.exec(appRaw);
     }
+
+    if (mountsByVar.size === 0) {
+        const mountPolicyPattern = /\{\s*key:\s*['"`]([^'"`]+)['"`]\s*,\s*mount:\s*(null|['"`][^'"`]*['"`])\s*,\s*router:\s*([A-Za-z0-9_]+)\s*\}/g;
+        let policyMatch = mountPolicyPattern.exec(appRaw);
+        while (policyMatch) {
+            const mountToken = String(policyMatch[2] || 'null').trim();
+            const mount = mountToken === 'null' ? '' : normalize(mountToken.slice(1, -1));
+            const varName = policyMatch[3];
+            const current = mountsByVar.get(varName) || [];
+            current.push(mount);
+            mountsByVar.set(varName, current);
+            policyMatch = mountPolicyPattern.exec(appRaw);
+        }
+    }
+
+    const duplicateMounts = [];
+    for (const [varName, mounts] of mountsByVar.entries()) {
+        const seen = new Set();
+        mounts.forEach((mount) => {
+            const key = mount || '<root>';
+            if (seen.has(key)) {
+                duplicateMounts.push({ varName, mount: key });
+            }
+            seen.add(key);
+        });
+    }
+
+    const mountCountByRouteFile = new Map();
+    for (const [varName, importRel] of routeImports.entries()) {
+        const routeFile = importRel.replace(/\.js$/i, '');
+        const count = (mountsByVar.get(varName) || []).length;
+        mountCountByRouteFile.set(routeFile, count);
+    }
+
+    return { routeImports, mountsByVar, duplicateMounts, mountCountByRouteFile };
+};
+
+const buildServerApiPatterns = async () => {
+    const appPath = join(SERVER_DIR, 'app.js');
+    const appRaw = await readFile(appPath, 'utf8');
+    const patterns = new Set();
+    const mountAnalysis = analyzeRouteMounts(appRaw);
+    const { routeImports, mountsByVar: mounts } = mountAnalysis;
 
     // Include direct app routes from index.js
     parseRouteMethods(appRaw)
@@ -140,15 +179,21 @@ const buildServerApiPatterns = async () => {
         }
     }
 
-    return [...patterns].sort();
+    return {
+        serverPatterns: [...patterns].sort(),
+        mountAnalysis
+    };
 };
 
 const run = async () => {
     const frontendPaths = await extractFrontendApiPaths();
-    const serverPatterns = await buildServerApiPatterns();
+    const { serverPatterns, mountAnalysis } = await buildServerApiPatterns();
     const serverRegex = serverPatterns.map((pattern) => ({ pattern, regex: patternToRegex(pattern) }));
 
     const missing = frontendPaths.filter((path) => !serverRegex.some((entry) => entry.regex.test(path)));
+    const duplicateMounts = mountAnalysis.duplicateMounts;
+    const sundayMountCount = mountAnalysis.mountCountByRouteFile.get('sunday') || 0;
+    const sharefileMountCount = mountAnalysis.mountCountByRouteFile.get('sharefile') || 0;
 
     console.log(`[contracts] Frontend API paths: ${frontendPaths.length}`);
     console.log(`[contracts] Server API patterns: ${serverPatterns.length}`);
@@ -159,8 +204,25 @@ const run = async () => {
     } else {
         console.log('[contracts] No missing paths found.');
     }
+    if (duplicateMounts.length > 0) {
+        console.log('[contracts] Duplicate route mounts in server/app.js:');
+        duplicateMounts.forEach((entry) => console.log(` - ${entry.varName} @ ${entry.mount}`));
+    }
+    if (sundayMountCount !== 1 || sharefileMountCount !== 1) {
+        console.log('[contracts] Route mount policy violation: Sunday and ShareFile must each be mounted exactly once.');
+        console.log(` - sunday mounts: ${sundayMountCount}`);
+        console.log(` - sharefile mounts: ${sharefileMountCount}`);
+    }
 
-    if (STRICT && missing.length > 0) {
+    if (
+        STRICT
+        && (
+            missing.length > 0
+            || duplicateMounts.length > 0
+            || sundayMountCount !== 1
+            || sharefileMountCount !== 1
+        )
+    ) {
         process.exitCode = 1;
     }
 };
