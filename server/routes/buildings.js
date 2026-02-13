@@ -11,6 +11,18 @@ const router = express.Router();
 const DROPBOX_ROOT = process.env.DB_BACKUP_DIR ? join(process.env.DB_BACKUP_DIR, '..') : 'C:\\Users\\Secretary\\Dropbox\\MacMini';
 
 const TICKET_STATUSES = ['new', 'open', 'in_progress', 'blocked', 'done', 'wont_do'];
+const LEGACY_TICKET_STATUS_MAP = {
+    reviewed: 'open',
+    in_process: 'in_progress',
+    closed: 'done'
+};
+
+const normalizeTicketStatus = (status = '') => {
+    const raw = String(status || '').trim().toLowerCase();
+    if (!raw) return 'new';
+    const mapped = LEGACY_TICKET_STATUS_MAP[raw] || raw;
+    return TICKET_STATUSES.includes(mapped) ? mapped : null;
+};
 
 const buildBuildingMapId = (name = '') => {
     const normalized = slugifyName(name);
@@ -286,7 +298,7 @@ const buildTicketResponse = (ticketRow) => {
         id: ticketRow.id,
         title: ticketRow.title,
         description: ticketRow.description || '',
-        status: ticketRow.status,
+        status: normalizeTicketStatus(ticketRow.status) || 'new',
         notes: parseJsonField(ticketRow.notes),
         areas,
         tasks,
@@ -330,7 +342,8 @@ router.post('/tickets', (req, res) => {
         return res.status(400).json({ error: 'Title is required' });
     }
 
-    if (!TICKET_STATUSES.includes(status)) {
+    const normalizedStatus = normalizeTicketStatus(status);
+    if (!normalizedStatus) {
         return res.status(400).json({ error: 'Invalid status' });
     }
 
@@ -345,7 +358,7 @@ router.post('/tickets', (req, res) => {
         id,
         normalizedTitle,
         description,
-        status,
+        normalizedStatus,
         JSON.stringify(Array.isArray(notes) ? notes : []),
         now,
         now
@@ -379,7 +392,8 @@ router.put('/tickets/:id', (req, res) => {
         return res.status(400).json({ error: 'Title is required' });
     }
 
-    if (!TICKET_STATUSES.includes(status)) {
+    const normalizedStatus = normalizeTicketStatus(status);
+    if (!normalizedStatus) {
         return res.status(400).json({ error: 'Invalid status' });
     }
 
@@ -396,7 +410,7 @@ router.put('/tickets/:id', (req, res) => {
     `).run(
         normalizedTitle,
         description,
-        status,
+        normalizedStatus,
         JSON.stringify(updatedNotes),
         new Date().toISOString(),
         id

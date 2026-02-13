@@ -1,7 +1,7 @@
 import { formatPhone } from '../utils/formatters';
 import { ROLE_OPTIONS } from '../utils/constants';
 import PeopleDetailPanel from './people/PeopleDetailPanel';
-import { CATEGORY_LABELS } from './people/peopleHelpers';
+import { CATEGORY_LABELS, MEMBER_STATUS_LABELS } from './people/peopleHelpers';
 import { usePeopleData } from './people/usePeopleData';
 import './People.css';
 
@@ -66,7 +66,7 @@ const People = () => {
                             id="people-search"
                             className="filter-input"
                             value={filters.search}
-                            placeholder="Search name, email, tags"
+                            placeholder="Search name, email, envelope, tags"
                             onChange={(event) => handleFilterChange('search', event.target.value)}
                         />
                     </div>
@@ -82,6 +82,22 @@ const People = () => {
                             {categories.map((category) => (
                                 <option key={category} value={category}>
                                     {CATEGORY_LABELS[category] || category}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                    <div className="filter-group">
+                        <label htmlFor="people-member-status">Member status</label>
+                        <select
+                            id="people-member-status"
+                            className="filter-select"
+                            value={filters.memberStatus}
+                            onChange={(event) => handleFilterChange('memberStatus', event.target.value)}
+                        >
+                            <option value="">All statuses</option>
+                            {Object.entries(MEMBER_STATUS_LABELS).map(([value, label]) => (
+                                <option key={value} value={value}>
+                                    {label}
                                 </option>
                             ))}
                         </select>
@@ -172,9 +188,8 @@ const People = () => {
                                     <div className="people-list-row">
                                         <div className="people-list-cell people-list-env">
                                             {(() => {
-                                                const envelopeTag = (person.tags || []).find((tag) => /^env-\d+/i.test(tag));
-                                                if (!envelopeTag) return null;
-                                                const label = envelopeTag.replace(/^env-/i, '');
+                                                const label = person.envelopeNumber || '';
+                                                if (!label) return null;
                                                 return <span className="env-chip env-chip--list">{label}</span>;
                                             })()}
                                         </div>

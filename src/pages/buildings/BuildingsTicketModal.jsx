@@ -41,9 +41,11 @@ const BuildingsTicketModal = ({
                     onChange={(event) => setNewTicket({ ...newTicket, status: event.target.value })}
                 >
                     <option value="new">New</option>
-                    <option value="reviewed">Reviewed</option>
-                    <option value="in_process">In Process</option>
-                    <option value="closed">Closed</option>
+                    <option value="open">Open</option>
+                    <option value="in_progress">In Progress</option>
+                    <option value="blocked">Blocked</option>
+                    <option value="done">Done</option>
+                    <option value="wont_do">Won&apos;t Do</option>
                 </select>
             </div>
             <div className="form-group">

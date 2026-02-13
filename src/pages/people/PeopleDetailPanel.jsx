@@ -131,9 +131,8 @@ const PeopleDetailPanel = ({
                 <div className="panel-title-row">
                     <h2 className="panel-title">{selectedPerson.displayName}</h2>
                     {(() => {
-                        const envelopeTag = (selectedPerson.tags || []).find((tag) => /^env-\d+/i.test(tag));
-                        if (!envelopeTag) return null;
-                        const label = envelopeTag.replace(/^env-/i, '');
+                        const label = selectedPerson.envelopeNumber || '';
+                        if (!label) return null;
                         return <span className="env-chip">{label}</span>;
                     })()}
                 </div>

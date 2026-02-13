@@ -197,18 +197,39 @@ const extractEnvelopeFromTags = (tagsValue) => {
     return envTag.replace(/^env-/i, '').trim();
 };
 
+const normalizeEnvelopeFromColumn = (value) => String(value || '')
+    .trim()
+    .replace(/\s+/g, '');
+
+const hasPeopleColumn = (name) => {
+    try {
+        const columns = db.prepare('PRAGMA table_info(people)').all().map((column) => column.name);
+        return columns.includes(name);
+    } catch {
+        return false;
+    }
+};
+
 const lookupEnvelopeNumberByDonorName = (donorName) => {
     const normalizedDonor = normalizePersonName(donorName);
     if (!normalizedDonor) return '';
 
     let rows = [];
     try {
-        rows = db.prepare(`
-            SELECT display_name, tags
-            FROM people
-            WHERE tags IS NOT NULL
-              AND tags <> ''
-        `).all();
+        const includeEnvelopeColumn = hasPeopleColumn('envelope_number');
+        rows = includeEnvelopeColumn
+            ? db.prepare(`
+                SELECT display_name, tags, envelope_number
+                FROM people
+                WHERE (tags IS NOT NULL AND tags <> '')
+                   OR (envelope_number IS NOT NULL AND envelope_number <> '')
+            `).all()
+            : db.prepare(`
+                SELECT display_name, tags, '' AS envelope_number
+                FROM people
+                WHERE tags IS NOT NULL
+                  AND tags <> ''
+            `).all();
     } catch {
         return '';
     }
@@ -217,7 +238,7 @@ const lookupEnvelopeNumberByDonorName = (donorName) => {
         const normalizedDisplay = normalizePersonName(row.display_name || '');
         if (!normalizedDisplay) continue;
         if (normalizedDisplay === normalizedDonor) {
-            return extractEnvelopeFromTags(row.tags);
+            return normalizeEnvelopeFromColumn(row.envelope_number) || extractEnvelopeFromTags(row.tags);
         }
     }
 
@@ -225,7 +246,7 @@ const lookupEnvelopeNumberByDonorName = (donorName) => {
         const normalizedDisplay = normalizePersonName(row.display_name || '');
         if (!normalizedDisplay) continue;
         if (normalizedDisplay.includes(normalizedDonor) || normalizedDonor.includes(normalizedDisplay)) {
-            const envelope = extractEnvelopeFromTags(row.tags);
+            const envelope = normalizeEnvelopeFromColumn(row.envelope_number) || extractEnvelopeFromTags(row.tags);
             if (envelope) return envelope;
         }
     }
@@ -237,7 +258,7 @@ const lookupEnvelopeNumberByDonorName = (donorName) => {
         if (!normalizedDisplay) continue;
         const displayLast = normalizedDisplay.split(' ').filter(Boolean).at(-1) || '';
         if (displayLast && displayLast === donorLast) {
-            const envelope = extractEnvelopeFromTags(row.tags);
+            const envelope = normalizeEnvelopeFromColumn(row.envelope_number) || extractEnvelopeFromTags(row.tags);
             if (envelope) return envelope;
         }
     }

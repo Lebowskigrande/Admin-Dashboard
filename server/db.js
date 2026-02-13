@@ -127,6 +127,8 @@ const ensurePeopleColumns = () => {
     addColumn('city');
     addColumn('state');
     addColumn('postal_code');
+    addColumn('envelope_number');
+    addColumn('member_status');
 };
 
 ensurePeopleColumns();

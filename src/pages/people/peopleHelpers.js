@@ -6,6 +6,14 @@ export const CATEGORY_LABELS = {
     parishioner: 'Parishioner'
 };
 
+export const MEMBER_STATUS_LABELS = {
+    member: 'Member',
+    associate: 'Associate',
+    visitor: 'Visitor',
+    inactive: 'Inactive',
+    unknown: 'Unknown'
+};
+
 const getLastName = (name = '') => {
     const raw = String(name || '').trim();
     if (!raw) return '';
@@ -80,6 +88,8 @@ export const defaultPersonForm = () => ({
     state: '',
     postalCode: '',
     category: 'parishioner',
+    envelopeNumber: '',
+    memberStatus: 'unknown',
     roles: [],
     tagsText: '',
     teams: {}

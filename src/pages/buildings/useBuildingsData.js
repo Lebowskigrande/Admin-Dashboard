@@ -11,6 +11,8 @@ const slugify = (value = '') => value
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 
+const TICKET_TERMINAL_STATUSES = new Set(['done', 'wont_do']);
+
 export const useBuildingsData = () => {
     const location = useLocation();
     const [searchParams] = useSearchParams();
@@ -450,7 +452,7 @@ export const useBuildingsData = () => {
     const activeAreaTickets = useMemo(() => {
         if (!activeDetails?.id) return [];
         return tickets.filter((ticket) => (
-            (ticket.areas || []).includes(activeDetails.id) && ticket.status !== 'closed'
+            (ticket.areas || []).includes(activeDetails.id) && !TICKET_TERMINAL_STATUSES.has(ticket.status)
         ));
     }, [activeDetails, tickets]);
 
@@ -470,7 +472,7 @@ export const useBuildingsData = () => {
                 const data = await response.json();
                 setTickets(Array.isArray(data) ? data : []);
                 if (!selectedTicketId && Array.isArray(data) && data.length > 0) {
-                    const firstActive = data.find((ticket) => ticket.status !== 'closed') || data[0];
+                    const firstActive = data.find((ticket) => !TICKET_TERMINAL_STATUSES.has(ticket.status)) || data[0];
                     setSelectedTicketId(firstActive.id);
                 }
             } catch (error) {

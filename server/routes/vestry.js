@@ -20,6 +20,50 @@ import {
 
 const router = express.Router();
 const vestryUpload = multer({ dest: join(tmpdir(), 'vestry-packet-uploads') });
+const VESTRY_WORKFLOW_STATUSES = ['not_started', 'in_progress', 'ready', 'sent'];
+
+const normalizeWorkflowStatus = (value, fallback = 'not_started') => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) return fallback;
+    return VESTRY_WORKFLOW_STATUSES.includes(normalized) ? normalized : fallback;
+};
+
+const normalizeMeetingDate = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toISOString().slice(0, 10);
+};
+
+const readWorkflowState = (meetingDate) => {
+    const normalizedDate = normalizeMeetingDate(meetingDate);
+    if (!normalizedDate) return null;
+    const row = db.prepare(`
+        SELECT meeting_date, agenda_status, packet_status, agenda_ref, packet_ref, notes, updated_at
+        FROM vestry_workflow
+        WHERE meeting_date = ?
+        LIMIT 1
+    `).get(normalizedDate);
+    if (!row) return {
+        meetingDate: normalizedDate,
+        agendaStatus: 'not_started',
+        packetStatus: 'not_started',
+        agendaRef: '',
+        packetRef: '',
+        notes: '',
+        updatedAt: null
+    };
+    return {
+        meetingDate: row.meeting_date,
+        agendaStatus: normalizeWorkflowStatus(row.agenda_status),
+        packetStatus: normalizeWorkflowStatus(row.packet_status),
+        agendaRef: row.agenda_ref || '',
+        packetRef: row.packet_ref || '',
+        notes: row.notes || '',
+        updatedAt: row.updated_at || null
+    };
+};
 
 // --- Vestry Packet Builder ---
 
@@ -285,6 +329,73 @@ router.get('/checklist', (req, res) => {
     } catch (error) {
         console.error('Vestry checklist error:', error);
         res.status(500).json({ error: 'Failed to load vestry checklist' });
+    }
+});
+
+// --- Vestry Workflow ---
+
+router.get('/workflow', (req, res) => {
+    try {
+        const meetingDate = normalizeMeetingDate(req.query.meetingDate);
+        if (!meetingDate) {
+            return res.status(400).json({ error: 'meetingDate query param is required' });
+        }
+        const state = readWorkflowState(meetingDate);
+        return res.json(state);
+    } catch (error) {
+        console.error('Vestry workflow read error:', error);
+        return res.status(500).json({ error: 'Failed to load vestry workflow state' });
+    }
+});
+
+router.put('/workflow', (req, res) => {
+    try {
+        const meetingDate = normalizeMeetingDate(req.body?.meetingDate);
+        if (!meetingDate) {
+            return res.status(400).json({ error: 'meetingDate is required' });
+        }
+        const existing = readWorkflowState(meetingDate) || {};
+        const agendaStatus = normalizeWorkflowStatus(req.body?.agendaStatus, existing.agendaStatus || 'not_started');
+        const packetStatus = normalizeWorkflowStatus(req.body?.packetStatus, existing.packetStatus || 'not_started');
+        const agendaRef = String(req.body?.agendaRef ?? existing.agendaRef ?? '').trim();
+        const packetRef = String(req.body?.packetRef ?? existing.packetRef ?? '').trim();
+        const notes = String(req.body?.notes ?? existing.notes ?? '').trim();
+        const updatedAt = new Date().toISOString();
+
+        db.prepare(`
+            INSERT INTO vestry_workflow (
+                meeting_date, agenda_status, packet_status, agenda_ref, packet_ref, notes, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(meeting_date) DO UPDATE SET
+                agenda_status = excluded.agenda_status,
+                packet_status = excluded.packet_status,
+                agenda_ref = excluded.agenda_ref,
+                packet_ref = excluded.packet_ref,
+                notes = excluded.notes,
+                updated_at = excluded.updated_at
+        `).run(
+            meetingDate,
+            agendaStatus,
+            packetStatus,
+            agendaRef,
+            packetRef,
+            notes,
+            updatedAt
+        );
+
+        return res.json({
+            meetingDate,
+            agendaStatus,
+            packetStatus,
+            agendaRef,
+            packetRef,
+            notes,
+            updatedAt
+        });
+    } catch (error) {
+        console.error('Vestry workflow save error:', error);
+        return res.status(500).json({ error: 'Failed to save vestry workflow state' });
     }
 });
 

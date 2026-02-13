@@ -59,6 +59,8 @@ export const people = sqliteTable('people', {
     state: text('state'),
     postalCode: text('postal_code'),
     category: text('category'),
+    envelopeNumber: text('envelope_number'),
+    memberStatus: text('member_status'),
     roles: text('roles'),
     tags: text('tags'),
     teams: text('teams')
@@ -259,3 +261,13 @@ export const bulletinStatus = sqliteTable('bulletin_status', {
 }, (table) => ({
     pk: primaryKey({ columns: [table.date, table.docKey] })
 }));
+
+export const vestryWorkflow = sqliteTable('vestry_workflow', {
+    meetingDate: text('meeting_date').primaryKey(),
+    agendaStatus: text('agenda_status').notNull().default('not_started'),
+    packetStatus: text('packet_status').notNull().default('not_started'),
+    agendaRef: text('agenda_ref'),
+    packetRef: text('packet_ref'),
+    notes: text('notes'),
+    updatedAt: text('updated_at').notNull()
+});

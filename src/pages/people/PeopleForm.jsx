@@ -1,5 +1,5 @@
 import { ROLE_OPTIONS } from '../../utils/constants';
-import { CATEGORY_LABELS, formatTeams, roleLabel } from './peopleHelpers';
+import { CATEGORY_LABELS, MEMBER_STATUS_LABELS, formatTeams, roleLabel } from './peopleHelpers';
 
 const PeopleForm = ({
     idPrefix,
@@ -109,6 +109,28 @@ const PeopleForm = ({
                     ))}
                 </select>
             </div>
+            <div className="form-group">
+                <label htmlFor={`${idPrefix}-member-status`}>Member status</label>
+                <select
+                    id={`${idPrefix}-member-status`}
+                    value={formData.memberStatus || 'unknown'}
+                    onChange={(event) => setFormData((prev) => ({ ...prev, memberStatus: event.target.value }))}
+                >
+                    {Object.entries(MEMBER_STATUS_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                    ))}
+                </select>
+            </div>
+            <div className="form-group">
+                <label htmlFor={`${idPrefix}-envelope`}>Envelope #</label>
+                <input
+                    id={`${idPrefix}-envelope`}
+                    value={formData.envelopeNumber || ''}
+                    onChange={(event) => setFormData((prev) => ({ ...prev, envelopeNumber: event.target.value }))}
+                />
+            </div>
+        </div>
+        <div className="form-row">
             <div className="form-group">
                 <label htmlFor={`${idPrefix}-tags`}>Tags (comma separated)</label>
                 <input
