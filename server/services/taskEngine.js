@@ -850,7 +850,42 @@ export const listTaskInstances = (whereClause = '', params = []) => {
             LEFT JOIN event_categories ec ON et.category_id = ec.id
             ${whereClause}
         `).all(...params);
-        return rows.map(formatTaskInstanceRow);
+        const formatted = rows.map(formatTaskInstanceRow);
+        if (!formatted.length || !tableExists('entity_links')) {
+            return formatted;
+        }
+
+        const taskIds = formatted.map((row) => row.id).filter(Boolean);
+        if (!taskIds.length) return formatted;
+        const placeholders = taskIds.map(() => '?').join(', ');
+        const ownerRows = tableExists('people')
+            ? db.prepare(`
+                SELECT
+                    l.from_id AS task_instance_id,
+                    l.to_id AS owner_person_id,
+                    p.display_name AS owner_name
+                FROM entity_links l
+                LEFT JOIN people p ON p.id = l.to_id
+                WHERE l.from_type = 'task_instance'
+                  AND l.role = 'owner'
+                  AND l.to_type = 'person'
+                  AND l.from_id IN (${placeholders})
+                ORDER BY l.created_at DESC
+            `).all(...taskIds)
+            : [];
+        const ownerMap = new Map();
+        ownerRows.forEach((row) => {
+            if (!row?.task_instance_id || ownerMap.has(row.task_instance_id)) return;
+            ownerMap.set(row.task_instance_id, {
+                owner_person_id: row.owner_person_id || null,
+                owner_name: row.owner_name || ''
+            });
+        });
+        return formatted.map((task) => ({
+            ...task,
+            owner_person_id: ownerMap.get(task.id)?.owner_person_id || null,
+            owner_name: ownerMap.get(task.id)?.owner_name || ''
+        }));
     }
     return [];
 };
