@@ -201,12 +201,17 @@ const lookupEnvelopeNumberByDonorName = (donorName) => {
     const normalizedDonor = normalizePersonName(donorName);
     if (!normalizedDonor) return '';
 
-    const rows = db.prepare(`
-        SELECT display_name, tags
-        FROM people
-        WHERE tags IS NOT NULL
-          AND tags <> ''
-    `).all();
+    let rows = [];
+    try {
+        rows = db.prepare(`
+            SELECT display_name, tags
+            FROM people
+            WHERE tags IS NOT NULL
+              AND tags <> ''
+        `).all();
+    } catch {
+        return '';
+    }
 
     for (const row of rows) {
         const normalizedDisplay = normalizePersonName(row.display_name || '');
