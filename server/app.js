@@ -32,6 +32,48 @@ const backupDir = process.env.DB_BACKUP_DIR || 'C:\\Users\\jclar\\Dropbox\\Paris
 const backupPattern = /^church-db-.*\.db$/;
 const dbPath = join(__dirname, 'church.db');
 
+const ROUTER_MOUNTS = [
+    { key: 'auth', mount: '/api', router: authRouter },
+    { key: 'people', mount: '/api/people', router: peopleRouter },
+    { key: 'buildings', mount: '/api', router: buildingsRouter },
+    { key: 'google', mount: null, router: googleRouter },
+    { key: 'dropbox', mount: null, router: dropboxRouter },
+    { key: 'youtube', mount: null, router: youtubeRouter },
+    { key: 'hgk', mount: null, router: hgkRouter },
+    { key: 'communications', mount: null, router: communicationsRouter },
+    { key: 'finance', mount: '/api/deposit-slip', router: financeRouter },
+    { key: 'vestry', mount: '/api/vestry', router: vestryRouter },
+    { key: 'sunday', mount: '/api', router: sundayRouter },
+    { key: 'files', mount: '/api/files', router: filesRouter },
+    { key: 'sharefile', mount: null, router: sharefileRouter },
+    { key: 'tasks', mount: '/api', router: tasksRouter },
+    { key: 'events', mount: '/api', router: eventsRouter }
+];
+
+const registerRouteMounts = (app) => {
+    const seenKeys = new Set();
+    const seenMounts = new Set();
+
+    for (const entry of ROUTER_MOUNTS) {
+        if (seenKeys.has(entry.key)) {
+            throw new Error(`Duplicate router key in mount policy: ${entry.key}`);
+        }
+        seenKeys.add(entry.key);
+
+        const mountFingerprint = `${entry.key}:${entry.mount || '<root>'}`;
+        if (seenMounts.has(mountFingerprint)) {
+            throw new Error(`Duplicate router mount in mount policy: ${mountFingerprint}`);
+        }
+        seenMounts.add(mountFingerprint);
+
+        if (entry.mount) {
+            app.use(entry.mount, entry.router);
+        } else {
+            app.use(entry.router);
+        }
+    }
+};
+
 const findLatestDbBackup = async () => {
     try {
         const entries = await readdir(backupDir);
@@ -68,21 +110,7 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
         next();
     });
 
-    app.use('/api', authRouter);
-    app.use('/api/people', peopleRouter);
-    app.use('/api', buildingsRouter);
-    app.use(googleRouter);
-    app.use(dropboxRouter);
-    app.use(youtubeRouter);
-    app.use(hgkRouter);
-    app.use(communicationsRouter);
-    app.use('/api/deposit-slip', financeRouter);
-    app.use('/api/vestry', vestryRouter);
-    app.use('/api', sundayRouter);
-    app.use('/api/files', filesRouter);
-    app.use(sharefileRouter);
-    app.use('/api', tasksRouter);
-    app.use('/api', eventsRouter);
+    registerRouteMounts(app);
 
     app.get('/api/db-backups/latest', async (_req, res) => {
         try {

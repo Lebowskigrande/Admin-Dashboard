@@ -1,5 +1,5 @@
 import { join, basename, extname, dirname } from 'path';
-import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
+import { access, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir, homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';

@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { sqlite } from './db.js';
 import { tableExists, parseNotes } from './helpers/db-utils.js';
 import { isSundayDate } from './helpers/sunday-utils.js';
 
@@ -647,4 +648,3 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
 
     return totalSynced;
 };
-
