@@ -144,6 +144,8 @@ const Sunday = () => {
     });
     const [uploadingBulletin, setUploadingBulletin] = useState(false);
     const [uploadError, setUploadError] = useState('');
+    const [emailScheduling, setEmailScheduling] = useState(false);
+    const [emailError, setEmailError] = useState('');
     const [bulletinDoc, setBulletinDoc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [bulletin8Doc, setBulletin8Doc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [insertDoc, setInsertDoc] = useState({ exists: false, preview: '', path: '', name: '' });
@@ -976,7 +978,7 @@ const Sunday = () => {
         setUploadingBulletin(true);
         setUploadError('');
         try {
-            const response = await fetch(`${API_URL}/bulletins/upload`, {
+            const response = await fetch(`${API_URL}/sunday/bulletins/upload`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: bulletinDoc.path })
@@ -1479,6 +1481,57 @@ const Sunday = () => {
     const insertMilestone = milestoneLookup.find(['insert'], ['insert']);
     const emailMilestone = milestoneLookup.find(['email', 'livestream-email', 'livestream'], ['email']);
 
+    const handleGenerateAndScheduleEmail = async () => {
+        if (emailScheduling || !currentDate) return;
+        const youtubeLink = String(livestreamUrl || '').trim();
+        const pdfUrl = String(details?.bulletinUploadUrl || '').trim();
+        const imageUrl = String(details?.bulletinImageUrl || '').trim();
+        if (!youtubeLink) {
+            setEmailError('Livestream URL is required before scheduling email.');
+            return;
+        }
+        if (!pdfUrl || !imageUrl) {
+            setEmailError('Upload bulletin and preview image before scheduling email.');
+            return;
+        }
+
+        setEmailScheduling(true);
+        setEmailError('');
+        try {
+            const response = await fetch(`${API_URL}/sunday/constant-contact/email`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    date: format(currentDate, 'MMMM d, yyyy'),
+                    sundayName: liturgicalInfo?.name || liturgicalInfo?.feast || 'Sunday',
+                    youtubeLink,
+                    pdfUrl,
+                    imageUrl
+                })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payload?.error || 'Failed to schedule email');
+            }
+            setDetails((prev) => {
+                const next = {
+                    ...prev,
+                    emailCreated: true,
+                    emailScheduled: true,
+                    emailActivityId: payload?.activityId || '',
+                    emailScheduledDate: payload?.scheduledDate || ''
+                };
+                saveSundayDetails(currentDate, next);
+                return next;
+            });
+        } catch (err) {
+            console.error(err);
+            setEmailError(err?.message || 'Unable to create and schedule email.');
+        } finally {
+            setEmailScheduling(false);
+        }
+    };
+
     const roleProgress = useMemo(() => {
         if (!services.length) return null;
         const optionalRoles = new Set(['childcare']);
@@ -1676,6 +1729,10 @@ const Sunday = () => {
                     details={details}
                     toggleEmailChecklistItem={toggleEmailChecklistItem}
                     livestreamError={livestreamError}
+                    onGenerateAndScheduleEmail={handleGenerateAndScheduleEmail}
+                    schedulingEmail={emailScheduling}
+                    emailError={emailError}
+                    emailScheduledDate={details.emailScheduledDate}
                 />
             </div>
 

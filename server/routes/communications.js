@@ -14,12 +14,9 @@ import {
     saveCcTokens,
     ensureCcAccessToken,
     fetchCcJson,
-    fetchCcFromEmails,
-    findCcListId,
-    getNextSaturdayAtSix,
-    loadEmailTemplate,
-    sanitizeEmailHtml
+    fetchCcFromEmails
 } from '../helpers/communications-utils.js';
+import { createAndScheduleConstantContactEmail } from '../services/constantContactService.js';
 
 const router = express.Router();
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
@@ -168,164 +165,15 @@ router.get('/auth/constant-contact/callback', async (req, res) => {
 
 router.post('/api/constant-contact/email', async (req, res) => {
     try {
-        const userId = getCcUserId(req);
-        const tokens = await ensureCcAccessToken(userId);
-        if (!tokens?.access_token) {
-            return res.status(401).json({ error: 'Constant Contact not connected' });
-        }
-
-        const {
-            date,
-            sundayName,
-            youtubeLink,
-            pdfUrl,
-            imageUrl,
-            testEmpty,
-            fromEmail: requestedFromEmail
-        } = req.body || {};
-
-        if (!testEmpty && (!date || !sundayName || !youtubeLink || !pdfUrl || !imageUrl)) {
-            return res.status(400).json({ error: 'Missing email data' });
-        }
-
-        let listId = await findCcListId(tokens, 'Active Members');
-        if (!listId) {
-            const listData = await fetchCcJson(`${CC_API_BASE}/contact_lists`, tokens);
-            const lists = Array.isArray(listData?.lists) ? listData.lists : [];
-            listId = lists[0]?.list_id || null;
-        }
-        if (!listId) {
-            return res.status(404).json({ error: 'No Constant Contact lists available' });
-        }
-
-        const template = testEmpty ? '' : await loadEmailTemplate();
-        const html = testEmpty
-            ? '<html><body><p>Test email</p></body></html>'
-            : sanitizeEmailHtml(template
-                .replace(/\[\[\[DATE\]\]\]/g, date)
-                .replace(/\[\[\[SUNDAY_NAME\]\]\]/g, sundayName)
-                .replace(/\[\[\[YOUTUBE_LINK\]\]\]/g, youtubeLink)
-                .replace(/\[\[\[IMG_SRC\]\]\]/g, imageUrl)
-                .replace(/\[\[\[PDF_SRC\]\]\]/g, pdfUrl));
-        const minimalHtml = testEmpty ? html : `
-<html>
-  <body>
-    <h1>${sundayName}</h1>
-    <p>${date}</p>
-    <p><a href="${youtubeLink}">Watch the livestream</a></p>
-    <p><a href="${pdfUrl}">Download the bulletin</a></p>
-    <img src="${imageUrl}" alt="Sunday Bulletin preview" />
-  </body>
-</html>`;
-
-        const normalizeEmail = (value) => (value || '').trim().toLowerCase();
-        const allowedEmails = await fetchCcFromEmails(tokens).catch(() => []);
-        const confirmedEmails = allowedEmails.filter((entry) => {
-            const status = (entry?.status || '').toLowerCase();
-            return status === 'confirmed' || status === 'verified' || status === 'active';
+        const result = await createAndScheduleConstantContactEmail({
+            userId: getCcUserId(req),
+            input: req.body || {}
         });
-        const pickFirstEmail = (list) => {
-            for (const entry of list) {
-                const candidate = entry?.email_address || entry?.email || entry?.address || '';
-                if (candidate) return candidate;
-            }
-            return '';
-        };
-        const allowedSet = new Set(
-            allowedEmails.map((entry) => normalizeEmail(entry?.email_address || entry?.email || entry?.address))
-        );
-        let fromEmail = requestedFromEmail || process.env.CC_FROM_EMAIL || '';
-        if (fromEmail && allowedSet.size > 0 && !allowedSet.has(normalizeEmail(fromEmail))) {
-            fromEmail = pickFirstEmail(confirmedEmails) || pickFirstEmail(allowedEmails) || fromEmail;
-        }
-        if (!fromEmail) {
-            fromEmail = pickFirstEmail(confirmedEmails) || pickFirstEmail(allowedEmails);
-        }
-        const fromName = process.env.CC_FROM_NAME || 'St Edmunds';
-        const replyTo = process.env.CC_REPLY_TO_EMAIL || fromEmail;
-        if (!fromEmail) {
-            return res.status(500).json({ error: 'CC_FROM_EMAIL not configured' });
-        }
-        const normalizeEntryEmail = (entry) => normalizeEmail(entry?.email_address || entry?.email || entry?.address);
-        const fromEntry = allowedEmails.find((entry) => normalizeEntryEmail(entry) === normalizeEmail(fromEmail));
-        const replyEntry = allowedEmails.find((entry) => normalizeEntryEmail(entry) === normalizeEmail(replyTo));
-
-        const baseActivity = {
-            format_type: 'HTML',
-            from_email: fromEmail,
-            from_name: fromName,
-            reply_to_email: replyTo,
-            subject: testEmpty ? 'Test Email' : 'Sunday Livestream',
-            html_content: html,
-            contact_list_ids: [listId]
-        };
-        if (fromEntry?.email_id) {
-            baseActivity.from_email_id = fromEntry.email_id;
-        }
-        if (replyEntry?.email_id) {
-            baseActivity.reply_to_email_id = replyEntry.email_id;
-        }
-        const campaignPayload = {
-            name: testEmpty ? `Test Email ${new Date().toISOString()}` : 'Sunday Bulletin',
-            email_campaign_activities: [baseActivity]
-        };
-        console.log('Constant Contact email meta', { testEmpty: !!testEmpty, fromEmail, replyTo, listId });
-
-        let campaign;
-        try {
-            campaign = await fetchCcJson(`${CC_API_BASE}/emails`, tokens, {
-                method: 'POST',
-                body: JSON.stringify(campaignPayload)
-            });
-        } catch (error) {
-            console.error('Constant Contact create payload:', campaignPayload);
-            console.error('Constant Contact HTML length:', html.length);
-            campaign = await fetchCcJson(`${CC_API_BASE}/emails`, tokens, {
-                method: 'POST',
-                body: JSON.stringify({
-                    ...campaignPayload,
-                    email_campaign_activities: [
-                        {
-                            ...baseActivity,
-                            html_content: minimalHtml
-                        }
-                    ]
-                })
-            });
-        }
-
-        const activity = campaign?.email_campaign_activities?.[0];
-        const activityId = activity?.activity_id;
-        if (!activityId) {
-            return res.status(500).json({ error: 'Failed to create Constant Contact email activity' });
-        }
-
-        const attachedLists = Array.isArray(activity?.contact_list_ids) ? activity.contact_list_ids : [];
-        if (!attachedLists.includes(listId)) {
-            try {
-                await fetchCcJson(`${CC_API_BASE}/emails/activities/${activityId}/contact_lists`, tokens, {
-                    method: 'POST',
-                    body: JSON.stringify({ contact_list_ids: [listId] })
-                });
-            } catch (error) {
-                console.error('Constant Contact list attach failed:', error?.message || error);
-                throw error;
-            }
-        }
-
-        const scheduledDate = getNextSaturdayAtSix().toISOString();
-        await fetchCcJson(`${CC_API_BASE}/emails/activities/${activityId}/schedules`, tokens, {
-            method: 'POST',
-            body: JSON.stringify({ scheduled_date: scheduledDate })
-        });
-
-        res.json({ success: true, activityId, scheduledDate });
+        res.json(result);
     } catch (error) {
         console.error('Constant Contact email failed:', error?.message || error);
-        if (error?.message?.includes('Constant Contact request failed')) {
-            console.error('Constant Contact email error detail:', error.message);
-        }
-        res.status(500).json({ error: 'Failed to create Constant Contact email' });
+        const statusCode = Number(error?.statusCode || 500);
+        res.status(statusCode).json({ error: error?.message || 'Failed to create Constant Contact email' });
     }
 });
 
