@@ -33,6 +33,20 @@ git push -u origin agent-e-settings-ops
 git push -u origin agent-f-platform-quality
 git push -u origin integration/finalization
 ```
+4. Bootstrap local ignores for worktrees:
+```powershell
+.\scripts\agent-ignore-bootstrap.ps1
+```
+
+## Unexpected Change Guard
+1. If only `AGENT_INSTRUCTIONS.md` appears unexpectedly, continue work.
+2. If tracked files change unexpectedly, pause and collect:
+```bash
+git status --short
+git diff --name-only
+```
+3. Report those outputs to the coordinator before taking further action.
+4. Never reset or revert changes without coordinator instruction.
 
 ## Coordination Workflow
 1. Assign tickets exactly as listed in `SPRINT_1_AGENT_BACKLOG.md`.
