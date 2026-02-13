@@ -106,6 +106,13 @@ const decodeAttachmentData = (data) => {
 };
 
 const buildNoteText = (_metadata, extra = {}) => {
+    if (String(extra?.routeKind || '').toUpperCase() === 'CONTRIBUTION') {
+        const donor = String(extra?.donor || '').trim() || 'Unknown donor';
+        const envelopeNumber = String(extra?.envelopeNumber || extra?.codeValue || '').trim() || 'Unknown envelope';
+        const designation = String(extra?.designation || '').trim() || 'Unknown designation';
+        return `${donor}, ${envelopeNumber}, ${designation}`;
+    }
+
     const code = String(extra?.codeValue || '').trim() || 'unknown';
     const timestamp = extra?.clientTs ? new Date(extra.clientTs) : new Date();
     const date = timestamp.toLocaleDateString();
@@ -139,15 +146,213 @@ const ensureUniquePath = async (dir, filename) => {
 const buildInvoiceFilename = async ({
     kind,
     timestamp,
-    targetDir
+    targetDir,
+    donor
 }) => {
     const time = timestamp instanceof Date && !Number.isNaN(timestamp.getTime())
         ? timestamp
         : new Date();
-    const yearMonth = formatDate(time, 'yyyy.MM');
-    const hhmmss = formatDate(time, 'HHmmss');
-    const baseName = `${yearMonth} SEEC ${kind} ${hhmmss}`;
+    let baseName = '';
+
+    if (String(kind || '').toUpperCase() === 'CONTRIBUTION') {
+        const datePart = formatDate(time, 'yyyy.MM.dd');
+        const donorRaw = String(donor || '').trim() || 'Unknown Donor';
+        const donorPart = donorRaw
+            .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 120) || 'Unknown Donor';
+        baseName = `${datePart} ${donorPart}`;
+    } else {
+        const yearMonth = formatDate(time, 'yyyy.MM');
+        const hhmmss = formatDate(time, 'HHmmss');
+        baseName = `${yearMonth} SEEC ${kind} ${hhmmss}`;
+    }
+
     return ensureUniquePath(targetDir, baseName);
+};
+
+const parseDisplayNameFromFromHeader = (fromHeader) => {
+    const raw = String(fromHeader || '').trim();
+    if (!raw) return '';
+    const match = raw.match(/^(.*?)\s*<[^>]+>\s*$/);
+    if (match?.[1]) return match[1].trim().replace(/^"|"$/g, '');
+    if (!raw.includes('@')) return raw.replace(/^"|"$/g, '');
+    return '';
+};
+
+const normalizePersonName = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/['".,]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const extractEnvelopeFromTags = (tagsValue) => {
+    const tags = String(tagsValue || '')
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+    const envTag = tags.find((tag) => /^env-\d+/i.test(tag));
+    if (!envTag) return '';
+    return envTag.replace(/^env-/i, '').trim();
+};
+
+const lookupEnvelopeNumberByDonorName = (donorName) => {
+    const normalizedDonor = normalizePersonName(donorName);
+    if (!normalizedDonor) return '';
+
+    const rows = db.prepare(`
+        SELECT display_name, tags
+        FROM people
+        WHERE tags IS NOT NULL
+          AND tags <> ''
+    `).all();
+
+    for (const row of rows) {
+        const normalizedDisplay = normalizePersonName(row.display_name || '');
+        if (!normalizedDisplay) continue;
+        if (normalizedDisplay === normalizedDonor) {
+            return extractEnvelopeFromTags(row.tags);
+        }
+    }
+
+    for (const row of rows) {
+        const normalizedDisplay = normalizePersonName(row.display_name || '');
+        if (!normalizedDisplay) continue;
+        if (normalizedDisplay.includes(normalizedDonor) || normalizedDonor.includes(normalizedDisplay)) {
+            const envelope = extractEnvelopeFromTags(row.tags);
+            if (envelope) return envelope;
+        }
+    }
+
+    const donorLast = normalizedDonor.split(' ').filter(Boolean).at(-1) || '';
+    if (!donorLast) return '';
+    for (const row of rows) {
+        const normalizedDisplay = normalizePersonName(row.display_name || '');
+        if (!normalizedDisplay) continue;
+        const displayLast = normalizedDisplay.split(' ').filter(Boolean).at(-1) || '';
+        if (displayLast && displayLast === donorLast) {
+            const envelope = extractEnvelopeFromTags(row.tags);
+            if (envelope) return envelope;
+        }
+    }
+
+    return '';
+};
+
+const parseNameFromContributionPatterns = (text) => {
+    const full = String(text || '');
+    if (!full) return '';
+
+    const patterns = [
+        /contributor\s*[:\-]?\s*([A-Za-z][A-Za-z'.,\- ]{1,120})/i,
+        /you received\s+\$[0-9,]+(?:\.[0-9]{2})?\s+from\s+([A-Za-z][A-Za-z'.,\- ]{1,120})/i,
+        /([A-Za-z][A-Za-z'.,\- ]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?/i
+    ];
+
+    for (const regex of patterns) {
+        const match = full.match(regex);
+        if (match?.[1]) {
+            return match[1].replace(/\s+/g, ' ').trim();
+        }
+    }
+
+    return '';
+};
+
+const compactWhitespace = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+const normalizeContributionDesignation = (value, fallback = 'Unknown designation') => {
+    const raw = compactWhitespace(value);
+    if (!raw) return fallback;
+    const pledgeMatch = raw.match(/^(\d{4})\s+pledge(?:\s+payment)?$/i);
+    if (pledgeMatch?.[1]) return `${pledgeMatch[1]} pledge`;
+    return raw;
+};
+
+const extractLabeledBlockFirstLine = (text, label) => {
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(
+        `(?:^|\\n)\\s*${escapedLabel}\\s*:\\s*(?:\\n+)?([\\s\\S]*?)(?=\\n\\s*[A-Za-z][A-Za-z0-9 /&()#,'-]{1,80}:\\s*(?:\\n|$)|\\n\\s*Order\\b|\\n\\s*Product\\b|\\n\\s*Sub\\s*Total\\b|$)`,
+        'i'
+    );
+    const match = String(text || '').match(regex);
+    if (!match?.[1]) return '';
+    const firstLine = match[1]
+        .split('\n')
+        .map((line) => line.trim())
+        .find(Boolean);
+    return firstLine || '';
+};
+
+const parseBofAContributionPattern = (text) => {
+    const match = String(text || '').match(
+        /(?:^|\n)\s*([A-Za-z][A-Za-z'.,\- ]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?\s*\n+([\s\S]*?)(?=\n\s*View your balance\b)/i
+    );
+    if (!match?.[1]) return null;
+    const donor = compactWhitespace(match[1]);
+    const between = String(match[2] || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(' ');
+    const designation = normalizeContributionDesignation(between, 'NPO');
+    return {
+        donor: donor || '',
+        designation
+    };
+};
+
+const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
+    const text = String(bodyText || '').replace(/\r/g, '\n');
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const findLabeledValue = (patterns) => {
+        for (const line of lines) {
+            for (const pattern of patterns) {
+                const match = line.match(pattern);
+                if (match?.[1]) return match[1].trim();
+            }
+        }
+        return '';
+    };
+
+    const namedDonor = extractLabeledBlockFirstLine(text, 'Name');
+    const allocationDesignation = extractLabeledBlockFirstLine(text, 'I would like my donation to be allocated to');
+    const bofa = parseBofAContributionPattern(text);
+
+    const donor =
+        namedDonor ||
+        findLabeledValue([
+            /^donor\s*[:\-]\s*(.+)$/i,
+            /^name\s*[:\-]\s*(.+)$/i,
+            /^contributor\s*[:\-]?\s*(.+)$/i
+        ]) ||
+        parseNameFromContributionPatterns(text) ||
+        (bofa?.donor || '') ||
+        'Unknown donor';
+
+    const designation = normalizeContributionDesignation(
+        allocationDesignation ||
+        findLabeledValue([
+            /^designation\s*[:\-]\s*(.+)$/i,
+            /^fund\s*[:\-]\s*(.+)$/i,
+            /^purpose\s*[:\-]\s*(.+)$/i,
+            /^i would like my donation to be allocated to:\s*(.+)$/i
+        ]) ||
+        (bofa?.designation || ''),
+        bofa ? 'NPO' : 'Unknown designation'
+    );
+
+    const envelopeNumber =
+        findLabeledValue([
+            /^envelope(?:\s*number|\s*#)?\s*[:\-]\s*([A-Za-z0-9-]+)$/i,
+            /^env(?:elope)?(?:\s*#|\s*number)?\s*[:\-]\s*([A-Za-z0-9-]+)$/i
+        ]) ||
+        String(envelopeFallback || '').trim() ||
+        lookupEnvelopeNumberByDonorName(donor) ||
+        'Unknown envelope';
+
+    return { donor, designation, envelopeNumber };
 };
 
 const renderEmailToPdf = async (metadata, bodyText) => {
@@ -552,15 +757,49 @@ export const routeSharefileMessage = async ({
 
     const gmail = getGmailClient(tokens);
     const labelId = await ensureLabel(gmail, PROCESSED_LABEL);
+    let effectiveMessageId = messageId;
+    let message;
+    try {
+        const messageResponse = await gmail.users.messages.get({
+            userId: 'me',
+            id: effectiveMessageId,
+            format: 'full'
+        });
+        message = messageResponse.data;
+    } catch (error) {
+        const status = Number(error?.code || error?.response?.status || 0);
+        const notFound = status === 404 || String(error?.message || '').includes('Requested entity was not found.');
+        if (!notFound || !threadId) throw error;
 
-    const messageResponse = await gmail.users.messages.get({
-        userId: 'me',
-        id: messageId,
-        format: 'full'
-    });
-    const message = messageResponse.data;
+        const resolvedMessageId = await resolveSharefileMessageId(threadId, tokens);
+        if (!resolvedMessageId || resolvedMessageId === effectiveMessageId) throw error;
+
+        const retryResponse = await gmail.users.messages.get({
+            userId: 'me',
+            id: resolvedMessageId,
+            format: 'full'
+        });
+        effectiveMessageId = resolvedMessageId;
+        message = retryResponse.data;
+    }
+    messageId = effectiveMessageId;
     const metadata = parseEmailMetadata(message);
-    const noteText = buildNoteText(metadata, extraMeta);
+    const routeKind = normalizeRouteKind(extraMeta.routeKind);
+    const bodyText = extractGmailMessageText(message) || message.snippet || '';
+    const contributionMeta = routeKind === 'CONTRIBUTION'
+        ? parseContributionFields({
+            metadata,
+            bodyText,
+            envelopeFallback: extraMeta.codeValue
+        })
+        : null;
+    const noteText = buildNoteText(metadata, {
+        ...extraMeta,
+        routeKind,
+        donor: contributionMeta?.donor || '',
+        envelopeNumber: contributionMeta?.envelopeNumber || '',
+        designation: contributionMeta?.designation || ''
+    });
     const attachments = collectAttachments(message.payload);
     const clientTsDate = extraMeta?.clientTs ? new Date(extraMeta.clientTs) : null;
     const routingTimestamp = clientTsDate && !Number.isNaN(clientTsDate.getTime())
@@ -593,9 +832,7 @@ export const routeSharefileMessage = async ({
         }
 
         const outputFiles = [];
-        const routeKind = normalizeRouteKind(extraMeta.routeKind);
     if (attachments.length === 0) {
-            const bodyText = extractGmailMessageText(message) || message.snippet || '';
             const htmlBody = extractGmailMessageHtml(message);
             let pdfBytes;
             try {
@@ -608,7 +845,8 @@ export const routeSharefileMessage = async ({
             const { filename, targetPath } = await buildInvoiceFilename({
                 kind: routeKind,
                 timestamp: routingTimestamp,
-                targetDir: resolvedRoot
+                targetDir: resolvedRoot,
+                donor: contributionMeta?.donor || ''
             });
             const notedBytes = await addNoteToPdf(pdfBytes, noteText);
             const tempPath = join(tempDir, filename);
@@ -633,7 +871,8 @@ export const routeSharefileMessage = async ({
                 const { filename, targetPath } = await buildInvoiceFilename({
                     kind: routeKind,
                     timestamp: routingTimestamp,
-                    targetDir: resolvedRoot
+                    targetDir: resolvedRoot,
+                    donor: contributionMeta?.donor || ''
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);

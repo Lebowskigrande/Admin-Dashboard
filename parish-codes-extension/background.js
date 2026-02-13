@@ -446,7 +446,15 @@ function budgetGvizUrl() {
 }
 
 async function loadBudgetMenuEntries() {
-  const res = await fetch(BUDGET_CODES_URL, { cache: "no-store" });
+  const token = await getToken();
+  if (!token) throw new Error("Missing token for budget codes request");
+
+  const res = await fetch(BUDGET_CODES_URL, {
+    cache: "no-store",
+    headers: {
+      "Authorization": `Bearer ${token}`
+    }
+  });
   if (!res.ok) throw new Error(`Budget codes HTTP ${res.status}`);
 
   const data = await res.json();
@@ -474,7 +482,15 @@ function envGvizUrl() {
 }
 
 async function loadEnvelopeData() {
-  const res = await fetch(ENVELOPE_NUMBERS_URL, { cache: "no-store" });
+  const token = await getToken();
+  if (!token) throw new Error("Missing token for envelope numbers request");
+
+  const res = await fetch(ENVELOPE_NUMBERS_URL, {
+    cache: "no-store",
+    headers: {
+      "Authorization": `Bearer ${token}`
+    }
+  });
   if (!res.ok) throw new Error(`Envelope numbers HTTP ${res.status}`);
 
   const data = await res.json();

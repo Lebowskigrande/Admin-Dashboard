@@ -12,6 +12,8 @@ const Settings = () => {
     const [sharefileConnected, setSharefileConnected] = useState(false);
     const [sharefileAccount, setSharefileAccount] = useState(null);
     const [sharefileLoading, setSharefileLoading] = useState(true);
+    const [sharefileAccounts, setSharefileAccounts] = useState([]);
+    const [sharefileActionBusy, setSharefileActionBusy] = useState('');
 
     useEffect(() => {
         checkGoogleStatus();
@@ -59,14 +61,17 @@ const Settings = () => {
                 const data = await response.json();
                 setSharefileConnected(!!data.connected);
                 setSharefileAccount(data.account || null);
+                setSharefileAccounts(Array.isArray(data.accounts) ? data.accounts : []);
             } else {
                 setSharefileConnected(false);
                 setSharefileAccount(null);
+                setSharefileAccounts([]);
             }
         } catch (error) {
             console.error('Error checking ShareFile Gmail status:', error);
             setSharefileConnected(false);
             setSharefileAccount(null);
+            setSharefileAccounts([]);
         } finally {
             setSharefileLoading(false);
         }
@@ -131,6 +136,47 @@ const Settings = () => {
             window.location.href = data.url;
         } catch (error) {
             console.error('ShareFile Gmail connect error:', error);
+        }
+    };
+
+    const setSharefileDefault = async (userId) => {
+        const id = String(userId || '').trim();
+        if (!id) return;
+        setSharefileActionBusy(`default:${id}`);
+        try {
+            const response = await fetch(`${API_URL}/sharefile/google/accounts/default`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ userId: id })
+            });
+            if (!response.ok) throw new Error('Failed to set default ShareFile account');
+            await checkSharefileStatus();
+        } catch (error) {
+            console.error('Set default ShareFile account error:', error);
+        } finally {
+            setSharefileActionBusy('');
+        }
+    };
+
+    const disconnectSharefileAccount = async (userId) => {
+        const id = String(userId || '').trim();
+        if (!id) return;
+        if (!confirm('Disconnect this ShareFile routing account?')) return;
+        setSharefileActionBusy(`disconnect:${id}`);
+        try {
+            const response = await fetch(`${API_URL}/sharefile/google/accounts/disconnect`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ userId: id })
+            });
+            if (!response.ok) throw new Error('Failed to disconnect ShareFile account');
+            await checkSharefileStatus();
+        } catch (error) {
+            console.error('Disconnect ShareFile account error:', error);
+        } finally {
+            setSharefileActionBusy('');
         }
     };
 
@@ -262,8 +308,48 @@ const Settings = () => {
 
                     <div className="integration-actions">
                         <button className="btn-primary" onClick={connectSharefileGmail}>
-                            <FaGoogle /> Connect ShareFile Gmail
+                            <FaGoogle /> Link ShareFile Gmail Account
                         </button>
+                    </div>
+
+                    <div className="calendar-selector">
+                        <h4>Linked ShareFile Routing Accounts</h4>
+                        {sharefileLoading ? (
+                            <p className="loading-text">Loading linked accounts...</p>
+                        ) : sharefileAccounts.length === 0 ? (
+                            <p className="no-calendars">No ShareFile routing accounts linked.</p>
+                        ) : (
+                            <div className="calendar-list">
+                                {sharefileAccounts.map((account) => {
+                                    const id = account.userId;
+                                    const defaultBusy = sharefileActionBusy === `default:${id}`;
+                                    const disconnectBusy = sharefileActionBusy === `disconnect:${id}`;
+                                    return (
+                                        <div key={id} className="calendar-item">
+                                            <span className="calendar-name">
+                                                {account.email || account.displayName || id}
+                                            </span>
+                                            <button
+                                                className="btn-secondary"
+                                                type="button"
+                                                disabled={account.isDefault || defaultBusy}
+                                                onClick={() => setSharefileDefault(id)}
+                                            >
+                                                {account.isDefault ? 'Default' : (defaultBusy ? 'Saving...' : 'Set default')}
+                                            </button>
+                                            <button
+                                                className="btn-secondary"
+                                                type="button"
+                                                disabled={disconnectBusy}
+                                                onClick={() => disconnectSharefileAccount(id)}
+                                            >
+                                                {disconnectBusy ? 'Disconnecting...' : 'Disconnect'}
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </div>
                 </div>
             </Card>

@@ -73,6 +73,13 @@ sqlite.exec(`
         output_json TEXT,
         created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS sharefile_routing_accounts (
+        user_id TEXT PRIMARY KEY,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
 `);
 
 const seedVestryChecklist = () => {
