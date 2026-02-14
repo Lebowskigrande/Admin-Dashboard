@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import { randomUUID } from 'crypto';
-import { join, extname, dirname } from 'path';
+import { join, extname, dirname, resolve } from 'path';
 import { mkdir, writeFile, rm, readFile, stat, copyFile, unlink, access } from 'fs/promises';
 import { tmpdir } from 'os';
 import { PDFDocument, StandardFonts, rgb, PDFName, PDFString, PDFArray } from 'pdf-lib';
@@ -8,6 +8,7 @@ import { chromium } from 'playwright';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { format as formatDate } from 'date-fns';
+import xlsx from 'xlsx';
 
 import { createOAuthClient, setStoredCredentials } from '../googleAuth.js';
 import { getSharefileGmailTokens } from '../helpers/auth.js';
@@ -106,6 +107,7 @@ const decodeAttachmentData = (data) => {
 };
 
 const compactWhitespace = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+const escapeGmailSearchPhrase = (value) => String(value || '').replace(/"/g, '\\"').trim();
 
 const sanitizeContributionToken = (value, fallback) => {
     const cleaned = compactWhitespace(value)
@@ -125,7 +127,85 @@ const normalizeCurrencyAmount = (value) => {
     return parsed.toFixed(2);
 };
 
+const MONTH_INDEX = {
+    jan: 0,
+    january: 0,
+    feb: 1,
+    february: 1,
+    mar: 2,
+    march: 2,
+    apr: 3,
+    april: 3,
+    may: 4,
+    jun: 5,
+    june: 5,
+    jul: 6,
+    july: 6,
+    aug: 7,
+    august: 7,
+    sep: 8,
+    sept: 8,
+    september: 8,
+    oct: 9,
+    october: 9,
+    nov: 10,
+    november: 10,
+    dec: 11,
+    december: 11
+};
+
+const parseHeaderCalendarDate = (rawValue) => {
+    const raw = String(rawValue || '').trim();
+    if (!raw) return null;
+
+    const monthDayYear = raw.match(/\b([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})\b/);
+    if (monthDayYear) {
+        const month = MONTH_INDEX[String(monthDayYear[1] || '').toLowerCase()];
+        const day = Number(monthDayYear[2]);
+        const year = Number(monthDayYear[3]);
+        if (Number.isInteger(month) && Number.isFinite(day) && Number.isFinite(year)) {
+            return new Date(year, month, day, 12, 0, 0, 0);
+        }
+    }
+
+    const dayMonthYear = raw.match(/\b(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})\b/);
+    if (dayMonthYear) {
+        const day = Number(dayMonthYear[1]);
+        const month = MONTH_INDEX[String(dayMonthYear[2] || '').toLowerCase()];
+        const year = Number(dayMonthYear[3]);
+        if (Number.isInteger(month) && Number.isFinite(day) && Number.isFinite(year)) {
+            return new Date(year, month, day, 12, 0, 0, 0);
+        }
+    }
+
+    const isoDate = raw.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+    if (isoDate) {
+        const year = Number(isoDate[1]);
+        const month = Number(isoDate[2]) - 1;
+        const day = Number(isoDate[3]);
+        if (Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)) {
+            return new Date(year, month, day, 12, 0, 0, 0);
+        }
+    }
+
+    const usDate = raw.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
+    if (usDate) {
+        const month = Number(usDate[1]) - 1;
+        const day = Number(usDate[2]);
+        let year = Number(usDate[3]);
+        if (year < 100) year += 2000;
+        if (Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)) {
+            return new Date(year, month, day, 12, 0, 0, 0);
+        }
+    }
+
+    return null;
+};
+
 const parseEmailHeaderTimestamp = (dateHeader, fallback = new Date()) => {
+    const fromCalendar = parseHeaderCalendarDate(dateHeader);
+    if (fromCalendar && !Number.isNaN(fromCalendar.getTime())) return fromCalendar;
+
     const parsed = new Date(String(dateHeader || '').trim());
     if (!Number.isNaN(parsed.getTime())) return parsed;
     return fallback instanceof Date && !Number.isNaN(fallback.getTime()) ? fallback : new Date();
@@ -169,6 +249,146 @@ const normalizeContributionText = (value) => String(value || '')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'");
 
+const stripQuotePrefix = (line) => String(line || '').replace(/^\s*>+\s?/, '').trimEnd();
+
+const extractForwardedContributionContext = (bodyText) => {
+    const normalized = normalizeContributionText(bodyText);
+    const markerRegex = /(?:^|\n)\s*(?:-{2,}\s*Forwarded message\s*-{2,}|Begin forwarded message:)\s*(?:\n|$)/ig;
+    let marker = markerRegex.exec(normalized);
+    let lastMarker = null;
+    while (marker) {
+        lastMarker = marker;
+        marker = markerRegex.exec(normalized);
+    }
+    if (!lastMarker) {
+        return {
+            usedForwarded: false,
+            metadata: {},
+            bodyText: normalized
+        };
+    }
+
+    const forwardedRaw = normalized.slice(lastMarker.index + lastMarker[0].length).trim();
+    if (!forwardedRaw) {
+        return {
+            usedForwarded: false,
+            metadata: {},
+            bodyText: normalized
+        };
+    }
+
+    const lines = forwardedRaw.split('\n').map(stripQuotePrefix);
+    const header = {};
+    let bodyStart = 0;
+    for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i].trim();
+        if (!line) {
+            bodyStart = i + 1;
+            break;
+        }
+        const m = line.match(/^(from|date|subject|to)\s*:\s*(.+)$/i);
+        if (m?.[1]) {
+            header[m[1].toLowerCase()] = m[2].trim();
+            bodyStart = i + 1;
+            continue;
+        }
+        if (i > 6) {
+            bodyStart = i;
+            break;
+        }
+    }
+
+    const forwardedBody = lines.slice(bodyStart).join('\n').trim() || forwardedRaw;
+    return {
+        usedForwarded: true,
+        metadata: {
+            from: header.from || '',
+            date: header.date || '',
+            subject: header.subject || ''
+        },
+        bodyText: forwardedBody
+    };
+};
+
+const resolveContributionContext = (metadata, bodyText) => {
+    const forwarded = extractForwardedContributionContext(bodyText);
+    const resolvedMetadata = {
+        ...metadata,
+        from: forwarded.metadata.from || metadata?.from || '',
+        date: forwarded.metadata.date || metadata?.date || '',
+        subject: forwarded.metadata.subject || metadata?.subject || ''
+    };
+    return {
+        metadata: resolvedMetadata,
+        bodyText: forwarded.bodyText || normalizeContributionText(bodyText),
+        usedForwarded: forwarded.usedForwarded
+    };
+};
+
+const selectThreadMessageForRouting = (messages, { requireContribution = false } = {}) => {
+    const ordered = (Array.isArray(messages) ? messages : [])
+        .slice()
+        .sort((a, b) => Number(a?.internalDate || 0) - Number(b?.internalDate || 0));
+    if (ordered.length === 0) return null;
+    if (!requireContribution) return ordered[0];
+
+    const firstContribution = ordered.find((msg) => {
+        const metadata = parseEmailMetadata(msg);
+        const bodyText = extractGmailMessageText(msg) || msg?.snippet || '';
+        const context = resolveContributionContext(metadata, bodyText);
+        return isContributionEmail(context.metadata, context.bodyText);
+    });
+    return firstContribution || ordered[0];
+};
+
+const sortMessagesByInternalDate = (messages) => (Array.isArray(messages) ? messages : [])
+    .slice()
+    .sort((a, b) => Number(a?.internalDate || 0) - Number(b?.internalDate || 0));
+
+const isPdfAttachment = (attachment) => {
+    const filename = String(attachment?.filename || '').toLowerCase();
+    const mimeType = String(attachment?.mimeType || '').toLowerCase();
+    if (filename.endsWith('.pdf')) return true;
+    if (mimeType.includes('pdf')) return true;
+    return false;
+};
+
+const collectThreadPdfAttachments = (messages) => {
+    const ordered = sortMessagesByInternalDate(messages);
+    const collected = [];
+    const seen = new Set();
+    for (const message of ordered) {
+        const list = collectAttachments(message?.payload).filter(isPdfAttachment);
+        for (const attachment of list) {
+            const key = `${message?.id || ''}:${attachment?.attachmentId || ''}`;
+            if (!attachment?.attachmentId || seen.has(key)) continue;
+            seen.add(key);
+            collected.push({
+                messageId: String(message?.id || '').trim(),
+                attachmentId: String(attachment.attachmentId || '').trim(),
+                filename: attachment.filename || 'attachment.pdf'
+            });
+        }
+    }
+    return collected;
+};
+
+const buildConversationText = (messages) => {
+    const ordered = sortMessagesByInternalDate(messages);
+    if (ordered.length === 0) return '';
+    return ordered.map((message, index) => {
+        const metadata = parseEmailMetadata(message);
+        const body = extractGmailMessageText(message) || message?.snippet || '';
+        const headerLines = [
+            `Message ${index + 1} of ${ordered.length}`,
+            `From: ${metadata.from || ''}`,
+            `Date: ${metadata.date || ''}`,
+            `Subject: ${metadata.subject || ''}`
+        ];
+        return `${headerLines.join('\n')}\n\n${body}`;
+    }).join('\n\n------------------------------------------------------------\n\n');
+};
+
 const formatContributionFilenameBase = ({ timestamp, donor, amount, sourceToken = '' }) => {
     const time = timestamp instanceof Date && !Number.isNaN(timestamp.getTime())
         ? timestamp
@@ -176,18 +396,23 @@ const formatContributionFilenameBase = ({ timestamp, donor, amount, sourceToken 
     const datePart = formatDate(time, 'yyyy.MM.dd');
     const donorPart = sanitizeContributionToken(extractDonorLastName(donor), 'Unknown Donor').slice(0, 120);
     const sourcePart = sanitizeContributionToken(sourceToken, '');
-    const amountPart = normalizeCurrencyAmount(amount) || 'Unknown Amount';
+    const normalizedAmount = normalizeCurrencyAmount(amount);
+    const displayAmount = normalizedAmount
+        ? (normalizedAmount.endsWith('.00') ? normalizedAmount.slice(0, -3) : normalizedAmount)
+        : '';
+    const amountPart = displayAmount ? `$${displayAmount}` : 'Unknown Amount';
     const parts = [datePart, sourcePart, donorPart, amountPart].filter(Boolean);
     return parts.join(' ');
 };
 
 const buildNoteText = (_metadata, extra = {}) => {
     if (String(extra?.routeKind || '').toUpperCase() === 'CONTRIBUTION') {
-        const envelopeNumber = sanitizeContributionToken(
-            extra?.envelopeNumber || extra?.codeValue,
-            'Unknown envelope'
-        );
+        const envelopeRaw = compactWhitespace(extra?.envelopeNumber || extra?.codeValue || '');
         const designation = sanitizeContributionToken(extra?.designation, 'Unknown designation');
+        if (!envelopeRaw) {
+            return `Designation: ${designation}`;
+        }
+        const envelopeNumber = sanitizeContributionToken(envelopeRaw, 'Unknown envelope');
         return `Envelope: ${envelopeNumber} | Designation: ${designation}`;
     }
 
@@ -270,14 +495,107 @@ const normalizePersonName = (value) => String(value || '')
     .replace(/\s+/g, ' ')
     .trim();
 
+const normalizePersonToken = (value) => normalizePersonName(value)
+    .replace(/[^a-z0-9 -]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const splitNameTokens = (value) => normalizePersonToken(value)
+    .split(' ')
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+const ENVELOPE_NAME_CONNECTORS = new Set([
+    'and',
+    '&',
+    'the',
+    'mr',
+    'mrs',
+    'ms',
+    'dr'
+]);
+
+const getDonorFirstLast = (nameValue) => {
+    const tokens = splitNameTokens(nameValue).filter((token) => !ENVELOPE_NAME_CONNECTORS.has(token));
+    if (tokens.length === 0) return { first: '', last: '' };
+    return {
+        first: tokens[0] || '',
+        last: tokens[tokens.length - 1] || ''
+    };
+};
+
+const normalizeEnvelopeDirectoryName = (value) => String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const envelopeDirectoryCache = {
+    loaded: false,
+    rows: []
+};
+
+const loadEnvelopeDirectoryRows = () => {
+    if (envelopeDirectoryCache.loaded) return envelopeDirectoryCache.rows;
+    envelopeDirectoryCache.loaded = true;
+    try {
+        const filePath = resolve(process.cwd(), 'envelope_numbers.xlsx');
+        const workbook = xlsx.readFile(filePath);
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+        envelopeDirectoryCache.rows = rows
+            .map((row) => {
+                const number = String(row[0] || '').trim();
+                const rawName = normalizeEnvelopeDirectoryName(row[1] || '');
+                if (!number || !rawName) return null;
+
+                const normalized = normalizePersonToken(rawName);
+                const commaIndex = rawName.indexOf(',');
+                const lastName = commaIndex >= 0
+                    ? splitNameTokens(rawName.slice(0, commaIndex)).at(-1) || ''
+                    : splitNameTokens(rawName).at(-1) || '';
+                const afterComma = commaIndex >= 0 ? rawName.slice(commaIndex + 1) : rawName;
+                const firstCandidates = splitNameTokens(afterComma)
+                    .filter((token) => !ENVELOPE_NAME_CONNECTORS.has(token));
+                return {
+                    number,
+                    rawName,
+                    normalized,
+                    lastName,
+                    firstCandidates
+                };
+            })
+            .filter(Boolean);
+    } catch {
+        envelopeDirectoryCache.rows = [];
+    }
+    return envelopeDirectoryCache.rows;
+};
+
 const extractEnvelopeFromTags = (tagsValue) => {
-    const tags = String(tagsValue || '')
-        .split(',')
-        .map((tag) => tag.trim())
-        .filter(Boolean);
-    const envTag = tags.find((tag) => /^env-\d+/i.test(tag));
-    if (!envTag) return '';
-    return envTag.replace(/^env-/i, '').trim();
+    let tags = [];
+    if (Array.isArray(tagsValue)) {
+        tags = tagsValue;
+    } else {
+        const raw = String(tagsValue || '').trim();
+        if (!raw) return '';
+        try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                tags = parsed;
+            } else {
+                tags = [raw];
+            }
+        } catch {
+            tags = raw.split(',');
+        }
+    }
+
+    for (const tag of tags) {
+        const value = String(tag || '').trim();
+        if (!value) continue;
+        const match = value.match(/env-\s*([A-Za-z0-9-]+)/i);
+        if (match?.[1]) return match[1].trim();
+    }
+    return '';
 };
 
 const lookupEnvelopeNumberByDonorName = (donorName) => {
@@ -320,6 +638,30 @@ const lookupEnvelopeNumberByDonorName = (donorName) => {
         }
     }
 
+    const envelopeRows = loadEnvelopeDirectoryRows();
+    if (envelopeRows.length === 0) return '';
+
+    const donor = getDonorFirstLast(donorName);
+    const donorNormalized = normalizePersonToken(donorName);
+    if (!donorNormalized) return '';
+
+    const exact = envelopeRows.find((row) => row.normalized === donorNormalized);
+    if (exact) return exact.number;
+
+    const contained = envelopeRows.find((row) => (
+        row.normalized.includes(donorNormalized) || donorNormalized.includes(row.normalized)
+    ));
+    if (contained) return contained.number;
+
+    if (donor.last) {
+        const sameLast = envelopeRows.filter((row) => row.lastName === donor.last);
+        if (donor.first) {
+            const sameLastFirst = sameLast.find((row) => row.firstCandidates.includes(donor.first));
+            if (sameLastFirst) return sameLastFirst.number;
+        }
+        if (sameLast.length === 1) return sameLast[0].number;
+    }
+
     return '';
 };
 
@@ -344,11 +686,14 @@ const parseNameFromContributionPatterns = (text) => {
 };
 
 const normalizeContributionDesignation = (value, fallback = 'Unknown designation') => {
-    const raw = compactWhitespace(value);
+    const raw = compactWhitespace(value)
+        .split(/\b(?:begin forwarded message|forwarded message|from:|sent:|to:|subject:|on .+ wrote:)\b/i)[0]
+        .trim();
     if (!raw) return fallback;
     const pledgeMatch = raw.match(/^(\d{4})\s+pledge(?:\s+payment)?$/i);
     if (pledgeMatch?.[1]) return `${pledgeMatch[1]} pledge`;
-    return raw;
+    const clipped = raw.slice(0, 120).trim();
+    return clipped || fallback;
 };
 
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -402,7 +747,7 @@ const parseBofAContributionPattern = (text) => {
     };
 };
 
-const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
+const parseContributionFields = ({ metadata, bodyText, envelopeFallback, designationFallback = '' }) => {
     const text = normalizeContributionText(bodyText);
     const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
     const findLabeledValue = (patterns) => {
@@ -450,6 +795,7 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
         'Unknown donor';
 
     const designation = normalizeContributionDesignation(
+        designationFallback ||
         allocationDesignation ||
         findLabeledValue([
             /^designation\s*[:\-]\s*(.+)$/i,
@@ -461,14 +807,16 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback }) => {
         bofa ? 'NPO' : 'Unknown designation'
     );
 
-    const envelopeNumber =
+    const envelopeFromEmailOrLookup =
         findLabeledValue([
             /^envelope(?:\s*number|\s*#)?\s*[:\-]\s*([A-Za-z0-9-]+)$/i,
             /^env(?:elope)?(?:\s*#|\s*number)?\s*[:\-]\s*([A-Za-z0-9-]+)$/i
         ]) ||
         String(envelopeFallback || '').trim() ||
-        lookupEnvelopeNumberByDonorName(donor) ||
-        'Unknown envelope';
+        lookupEnvelopeNumberByDonorName(donor);
+
+    const isRentDesignation = /\brent\b/i.test(String(designation || ''));
+    const envelopeNumber = envelopeFromEmailOrLookup || (isRentDesignation ? '' : 'Unknown envelope');
 
     const amount = bofa?.amount || extractWebsiteAmount() || '';
 
@@ -481,7 +829,13 @@ export const __TEST__ = {
     formatContributionFilenameBase,
     isContributionEmail,
     getContributionSourceToken,
-    extractDonorLastName
+    extractDonorLastName,
+    extractEnvelopeFromTags,
+    resolveContributionContext,
+    selectThreadMessageForRouting,
+    parseEmailHeaderTimestamp,
+    collectThreadPdfAttachments,
+    buildConversationText
 };
 
 const renderEmailToPdf = async (metadata, bodyText) => {
@@ -520,6 +874,68 @@ const extractGmailMessageHtml = (message) => {
         return htmlParts.map(decodeGmailBody).join('\n');
     }
     return '';
+};
+
+const collectInlineCidParts = (part, collected = []) => {
+    if (!part) return collected;
+    const headers = Array.isArray(part.headers) ? part.headers : [];
+    const cidHeader = headers.find((header) => String(header?.name || '').toLowerCase() === 'content-id');
+    const contentIdRaw = String(cidHeader?.value || '').trim();
+    const contentId = contentIdRaw
+        .replace(/^cid:/i, '')
+        .replace(/^<|>$/g, '')
+        .trim();
+    if (contentId && part.body?.attachmentId) {
+        collected.push({
+            attachmentId: part.body.attachmentId,
+            contentId,
+            mimeType: part.mimeType || 'application/octet-stream'
+        });
+    }
+    if (Array.isArray(part.parts)) {
+        part.parts.forEach((child) => collectInlineCidParts(child, collected));
+    }
+    return collected;
+};
+
+const resolveMessageHtmlForRender = async (gmail, message) => {
+    const htmlBody = extractGmailMessageHtml(message);
+    if (!htmlBody) {
+        const textBody = extractGmailMessageText(message) || message?.snippet || '';
+        return `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(textBody)}</pre>`;
+    }
+
+    if (!/cid:/i.test(htmlBody)) {
+        return htmlBody;
+    }
+
+    const inlineParts = collectInlineCidParts(message?.payload);
+    if (inlineParts.length === 0) {
+        return htmlBody;
+    }
+
+    let resolvedHtml = htmlBody;
+    for (const inlinePart of inlineParts) {
+        try {
+            const response = await gmail.users.messages.attachments.get({
+                userId: 'me',
+                messageId: String(message?.id || '').trim(),
+                id: inlinePart.attachmentId
+            });
+            const data = response.data?.data;
+            if (!data) continue;
+            const bytes = decodeAttachmentData(data);
+            const mimeType = String(inlinePart.mimeType || 'application/octet-stream').trim() || 'application/octet-stream';
+            const dataUri = `data:${mimeType};base64,${bytes.toString('base64')}`;
+            const cid = escapeRegex(inlinePart.contentId);
+            const cidPattern = new RegExp(`cid:\\s*<?${cid}>?`, 'gi');
+            resolvedHtml = resolvedHtml.replace(cidPattern, dataUri);
+        } catch (error) {
+            console.warn('Failed to inline cid attachment for email PDF render:', error?.message || error);
+        }
+    }
+
+    return resolvedHtml;
 };
 
 const escapeHtml = (value) => String(value || '')
@@ -563,6 +979,55 @@ const buildEmailHtml = (metadata, htmlBody, fallbackText) => {
                 </div>
             </div>
             <div class="body">${body}</div>
+        </body>
+        </html>
+    `;
+};
+
+const buildConversationHtml = async (gmail, messages) => {
+    const ordered = sortMessagesByInternalDate(messages);
+    const sections = [];
+    for (let index = 0; index < ordered.length; index += 1) {
+        const message = ordered[index];
+        const metadata = parseEmailMetadata(message);
+        const htmlBody = await resolveMessageHtmlForRender(gmail, message);
+        sections.push(`
+            <section class="message-block">
+                <div class="message-header">
+                    <div class="message-index">Message ${index + 1} of ${ordered.length}</div>
+                    <div class="message-meta">
+                        ${metadata.from ? `<span><strong>From:</strong> ${escapeHtml(metadata.from)}</span>` : ''}
+                        ${metadata.date ? `<span><strong>Date:</strong> ${escapeHtml(metadata.date)}</span>` : ''}
+                        ${metadata.subject ? `<span><strong>Subject:</strong> ${escapeHtml(metadata.subject)}</span>` : ''}
+                    </div>
+                </div>
+                <div class="message-body">${htmlBody}</div>
+            </section>
+        `);
+    }
+
+    return `
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset="utf-8" />
+            <title>Email conversation</title>
+            <style>
+                body { font-family: "Segoe UI", Arial, sans-serif; color: #1f2933; margin: 24px; }
+                .message-block { border: 1px solid #d9dee2; border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
+                .message-header { background: #f8fafc; border-bottom: 1px solid #d9dee2; padding: 10px 12px; }
+                .message-index { font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 4px; }
+                .message-meta { font-size: 12px; color: #475569; line-height: 1.45; }
+                .message-meta span { display: block; }
+                .message-body { padding: 12px; font-size: 13px; line-height: 1.45; }
+                img { max-width: 100%; height: auto; }
+                table { border-collapse: collapse; max-width: 100%; }
+                td, th { border: 1px solid #e1e6ea; padding: 6px 8px; }
+                pre { white-space: pre-wrap; }
+            </style>
+        </head>
+        <body>
+            ${sections.join('\n')}
         </body>
         </html>
     `;
@@ -627,6 +1092,37 @@ const moveFileSafe = async (sourcePath, targetPath) => {
     await mkdir(dirname(targetPath), { recursive: true });
     await copyFile(sourcePath, targetPath);
     await unlink(sourcePath);
+};
+
+const resolveOutputFilePath = (output, fileEntry) => {
+    const targetDir = String(output?.targetDir || '').trim();
+    if (typeof fileEntry === 'string') {
+        const raw = fileEntry.trim();
+        if (!raw) return '';
+        return raw;
+    }
+    if (!fileEntry || typeof fileEntry !== 'object') return '';
+    const explicitPath = String(fileEntry.path || fileEntry.filePath || fileEntry.file_path || '').trim();
+    if (explicitPath) return explicitPath;
+    const name = String(fileEntry.name || fileEntry.fileName || fileEntry.filename || '').trim();
+    if (!name || !targetDir) return '';
+    return join(targetDir, name);
+};
+
+const hasExistingOutputFiles = async (output) => {
+    const files = Array.isArray(output?.files) ? output.files : [];
+    if (files.length === 0) return false;
+    for (const fileEntry of files) {
+        const resolvedPath = resolveOutputFilePath(output, fileEntry);
+        if (!resolvedPath) continue;
+        try {
+            await access(resolvedPath);
+            return true;
+        } catch {
+            // keep checking other outputs
+        }
+    }
+    return false;
 };
 
 const convertToPdfIfNeeded = async (sourcePath, outDir) => {
@@ -729,8 +1225,12 @@ export const recordSharefileRoutingEvent = ({
 };
 
 export const routeShareFileEmails = async ({
-    rootPath = DEFAULT_ROOT,
-    archive = true
+    rootPath = '',
+    archive = true,
+    searchLabel = '',
+    removeLabelOnSuccess = '',
+    includeAlreadyProcessed = false,
+    requireContribution = false
 } = {}) => {
     const tokens = getSharefileGmailTokens();
     if (!tokens) {
@@ -740,66 +1240,235 @@ export const routeShareFileEmails = async ({
     const client = createOAuthClient();
     setStoredCredentials(client, tokens);
     const gmail = google.gmail({ version: 'v1', auth: client });
-    const labelId = await ensureLabel(gmail, PROCESSED_LABEL);
+    const processedLabelId = await ensureLabel(gmail, PROCESSED_LABEL);
+    const successCleanupLabel = String(removeLabelOnSuccess || '').trim();
+    const successCleanupLabelId = successCleanupLabel
+        ? await ensureLabel(gmail, successCleanupLabel)
+        : null;
+
+    const effectiveSearchLabel = String(searchLabel || '').trim();
+    const queryTerms = [];
+    if (effectiveSearchLabel) {
+        queryTerms.push(`label:"${escapeGmailSearchPhrase(effectiveSearchLabel)}"`);
+    } else {
+        queryTerms.push('label:inbox');
+    }
+    if (!includeAlreadyProcessed) {
+        queryTerms.push(`-label:"${escapeGmailSearchPhrase(PROCESSED_LABEL)}"`);
+    }
+    const query = queryTerms.join(' ').trim();
 
     const listResponse = await gmail.users.messages.list({
         userId: 'me',
-        q: `label:inbox -label:"${PROCESSED_LABEL}"`
+        q: query
     });
     const messages = Array.isArray(listResponse.data.messages) ? listResponse.data.messages : [];
-    if (messages.length === 0) return { processed: 0 };
+    if (messages.length === 0) return { processed: 0, failed: 0, total: 0, skippedThreadDuplicates: 0 };
 
-    await mkdir(rootPath, { recursive: true });
-    let processed = 0;
-
+    const seenThreads = new Set();
+    const queuedEntries = [];
     for (const entry of messages) {
-        const messageResponse = await gmail.users.messages.get({
-            userId: 'me',
-            id: entry.id,
-            format: 'full'
-        });
-        const message = messageResponse.data;
-        const metadata = parseEmailMetadata(message);
-        const bodyText = extractGmailMessageText(message) || message.snippet || '';
-        const routeKind = isContributionEmail(metadata, bodyText) ? 'CONTRIBUTION' : 'BILL';
-        const contributionMeta = routeKind === 'CONTRIBUTION'
-            ? parseContributionFields({ metadata, bodyText, envelopeFallback: '' })
-            : null;
-        const noteText = buildNoteText(metadata, {
-            routeKind,
-            donor: contributionMeta?.donor || '',
-            envelopeNumber: contributionMeta?.envelopeNumber || '',
-            designation: contributionMeta?.designation || '',
-            amount: contributionMeta?.amount || ''
-        });
-        const attachments = collectAttachments(message.payload);
-        const routingTimestamp = new Date(Number(message?.internalDate) || Date.now());
-        const filenameTimestamp = routeKind === 'CONTRIBUTION'
-            ? parseEmailHeaderTimestamp(metadata?.date, routingTimestamp)
-            : routingTimestamp;
-        const sourceToken = routeKind === 'CONTRIBUTION'
-            ? getContributionSourceToken(metadata?.from)
-            : '';
+        const threadKey = String(entry?.threadId || entry?.id || '').trim();
+        if (!threadKey) continue;
+        if (seenThreads.has(threadKey)) continue;
+        seenThreads.add(threadKey);
+        queuedEntries.push(entry);
+    }
+    const skippedThreadDuplicates = Math.max(0, messages.length - queuedEntries.length);
 
-        const tempDir = join(tmpdir(), `sharefile-${randomUUID()}`);
-        await mkdir(tempDir, { recursive: true });
-        const outputs = [];
+    let processed = 0;
+    let failed = 0;
 
+    for (const entry of queuedEntries) {
+        let tempDir = '';
+        let message = null;
+        let threadMessages = [];
+        let effectiveMessageId = String(entry?.id || '').trim();
+        let metadata = { subject: '', from: '', date: '' };
+        let routeKind = 'BILL';
+        let contributionMeta = null;
+        let codeType = 'budget';
+        let codeValue = '';
         try {
-            if (attachments.length === 0) {
-                const htmlBody = extractGmailMessageHtml(message);
+            const threadIdForLookup = String(entry?.threadId || '').trim();
+            if (threadIdForLookup) {
+                const threadResponse = await gmail.users.threads.get({
+                    userId: 'me',
+                    id: threadIdForLookup,
+                    format: 'full'
+                });
+                threadMessages = Array.isArray(threadResponse.data?.messages) ? threadResponse.data.messages : [];
+                message = selectThreadMessageForRouting(threadMessages, { requireContribution }) || null;
+            }
+            if (!message) {
+                const messageResponse = await gmail.users.messages.get({
+                    userId: 'me',
+                    id: entry.id,
+                    format: 'full'
+                });
+                message = messageResponse.data;
+                if (threadMessages.length === 0) {
+                    threadMessages = [message];
+                }
+            }
+            effectiveMessageId = String(message?.id || entry?.id || '').trim();
+            metadata = parseEmailMetadata(message);
+            const bodyText = extractGmailMessageText(message) || message.snippet || '';
+            const contributionContext = resolveContributionContext(metadata, bodyText);
+            routeKind = isContributionEmail(contributionContext.metadata, contributionContext.bodyText)
+                ? 'CONTRIBUTION'
+                : 'BILL';
+            if (requireContribution && routeKind !== 'CONTRIBUTION') {
+                throw new Error('Email does not match supported contribution formats');
+            }
+            contributionMeta = routeKind === 'CONTRIBUTION'
+                ? parseContributionFields({
+                    metadata: contributionContext.metadata,
+                    bodyText: contributionContext.bodyText,
+                    envelopeFallback: '',
+                    designationFallback: ''
+                })
+                : null;
+            codeType = routeKind === 'CONTRIBUTION' ? 'envelope' : 'budget';
+            codeValue = routeKind === 'CONTRIBUTION'
+                ? String(contributionMeta?.envelopeNumber || '').trim()
+                : '';
+            const resolvedRoot = rootPath || buildTargetDir({
+                codeType,
+                codeValue,
+                clientTs: new Date(Number(message?.internalDate) || Date.now()).toISOString()
+            });
+            await mkdir(resolvedRoot, { recursive: true });
+
+            const noteText = buildNoteText(metadata, {
+                routeKind,
+                donor: contributionMeta?.donor || '',
+                envelopeNumber: contributionMeta?.envelopeNumber || '',
+                designation: contributionMeta?.designation || '',
+                amount: contributionMeta?.amount || ''
+            });
+            const attachments = collectAttachments(message.payload);
+            const isContributionRoute = routeKind === 'CONTRIBUTION';
+            const threadPdfAttachments = !isContributionRoute
+                ? collectThreadPdfAttachments(threadMessages)
+                : [];
+            const useThreadPdfAttachments = !isContributionRoute && threadPdfAttachments.length > 0;
+            const conversationText = !isContributionRoute && !useThreadPdfAttachments
+                ? buildConversationText(threadMessages)
+                : '';
+            const routingTimestamp = new Date(Number(message?.internalDate) || Date.now());
+            const filenameTimestamp = routeKind === 'CONTRIBUTION'
+                ? parseEmailHeaderTimestamp(contributionContext.metadata?.date, routingTimestamp)
+                : routingTimestamp;
+            const sourceToken = routeKind === 'CONTRIBUTION'
+                ? getContributionSourceToken(contributionContext.metadata?.from)
+                : '';
+
+            const removeLabelIds = [
+                ...(archive ? ['INBOX'] : []),
+                ...(successCleanupLabelId ? [successCleanupLabelId] : [])
+            ];
+            const threadId = message.threadId || '';
+            const applySuccessLabels = async () => {
+                if (threadId) {
+                    await gmail.users.threads.modify({
+                        userId: 'me',
+                        id: threadId,
+                        requestBody: {
+                            addLabelIds: [processedLabelId],
+                            removeLabelIds
+                        }
+                    });
+                } else {
+                    await gmail.users.messages.modify({
+                        userId: 'me',
+                        id: effectiveMessageId,
+                        requestBody: {
+                            addLabelIds: [processedLabelId],
+                            removeLabelIds
+                        }
+                    });
+                }
+            };
+
+            const existing = getSharefileJob(effectiveMessageId, codeType, codeValue);
+            if (existing) {
+                let existingOutput = {};
+                try {
+                    existingOutput = JSON.parse(existing.output_json || '{}');
+                } catch {
+                    existingOutput = {};
+                }
+                const existingFilesPresent = await hasExistingOutputFiles(existingOutput);
+                if (existingFilesPresent) {
+                    recordSharefileRoutingEvent({
+                        jobId: existing.id,
+                        messageId: effectiveMessageId,
+                        threadId: threadId || null,
+                        codeType,
+                        codeValue,
+                        status: 'success',
+                        output: existingOutput
+                    });
+                    await applySuccessLabels();
+                    processed += 1;
+                    continue;
+                }
+            }
+
+            tempDir = join(tmpdir(), `sharefile-${randomUUID()}`);
+            await mkdir(tempDir, { recursive: true });
+            const outputs = [];
+            if (useThreadPdfAttachments) {
+                let index = 0;
+                for (const source of threadPdfAttachments) {
+                    const attachmentResponse = await gmail.users.messages.attachments.get({
+                        userId: 'me',
+                        messageId: source.messageId,
+                        id: source.attachmentId
+                    });
+                    const data = attachmentResponse.data?.data;
+                    if (!data) continue;
+                    const rawBytes = decodeAttachmentData(data);
+                    const sourcePath = join(tempDir, source.filename || `attachment-${index}.pdf`);
+                    await writeFile(sourcePath, rawBytes);
+                    const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
+                    const pdfBytes = await readFile(pdfPath);
+                    const { filename, targetPath } = await buildInvoiceFilename({
+                        kind: routeKind,
+                        timestamp: filenameTimestamp,
+                        targetDir: resolvedRoot,
+                        donor: contributionMeta?.donor || '',
+                        amount: contributionMeta?.amount || '',
+                        sourceToken
+                    });
+                    const notedBytes = await addNoteToPdf(pdfBytes, noteText);
+                    const tempPath = join(tempDir, filename);
+                    await writeFile(tempPath, notedBytes);
+                    await moveFileSafe(tempPath, targetPath);
+                    outputs.push(targetPath);
+                    index += 1;
+                }
+            } else if (!isContributionRoute || attachments.length === 0) {
                 let pdfBytes;
                 try {
-                    const html = buildEmailHtml(metadata, htmlBody, bodyText);
+                    const html = isContributionRoute
+                        ? buildEmailHtml(metadata, await resolveMessageHtmlForRender(gmail, message), bodyText)
+                        : await buildConversationHtml(gmail, threadMessages);
                     pdfBytes = await renderEmailHtmlToPdf(html);
                 } catch (error) {
-                    console.warn('HTML email render failed, falling back to text PDF:', error);
-                    pdfBytes = await renderEmailToPdf(metadata, bodyText);
+                    if (isContributionRoute) {
+                        console.warn('HTML email render failed, falling back to text PDF:', error);
+                        pdfBytes = await renderEmailToPdf(metadata, bodyText);
+                    } else {
+                        console.warn('Conversation HTML render failed, falling back to text PDF:', error);
+                        pdfBytes = await renderEmailToPdf({ subject: 'Email conversation' }, conversationText || bodyText);
+                    }
                 }
                 const { filename, targetPath } = await buildInvoiceFilename({
                     kind: routeKind,
                     timestamp: filenameTimestamp,
-                    targetDir: rootPath,
+                    targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
                     sourceToken
@@ -814,7 +1483,7 @@ export const routeShareFileEmails = async ({
                 for (const attachment of attachments) {
                     const attachmentResponse = await gmail.users.messages.attachments.get({
                         userId: 'me',
-                        messageId: entry.id,
+                        messageId: effectiveMessageId,
                         id: attachment.attachmentId
                     });
                     const data = attachmentResponse.data?.data;
@@ -827,7 +1496,7 @@ export const routeShareFileEmails = async ({
                     const { filename, targetPath } = await buildInvoiceFilename({
                         kind: routeKind,
                         timestamp: filenameTimestamp,
-                        targetDir: rootPath,
+                        targetDir: resolvedRoot,
                         donor: contributionMeta?.donor || '',
                         amount: contributionMeta?.amount || '',
                         sourceToken
@@ -841,33 +1510,48 @@ export const routeShareFileEmails = async ({
                 }
             }
 
-            const threadId = message.threadId || '';
-            if (threadId) {
-                await gmail.users.threads.modify({
-                    userId: 'me',
-                    id: threadId,
-                    requestBody: {
-                        addLabelIds: [labelId],
-                        removeLabelIds: archive ? ['INBOX'] : []
-                    }
-                });
-            } else {
-                await gmail.users.messages.modify({
-                    userId: 'me',
-                    id: entry.id,
-                    requestBody: {
-                        addLabelIds: [labelId],
-                        removeLabelIds: archive ? ['INBOX'] : []
-                    }
-                });
-            }
+            const output = {
+                targetDir: resolvedRoot,
+                files: outputs
+            };
+            const job = saveSharefileJob({
+                messageId: effectiveMessageId,
+                threadId: threadId || null,
+                codeType,
+                codeValue,
+                output
+            });
+            recordSharefileRoutingEvent({
+                jobId: job.id,
+                messageId: effectiveMessageId,
+                threadId: threadId || null,
+                codeType,
+                codeValue,
+                status: 'success',
+                output
+            });
+
+            await applySuccessLabels();
             processed += 1;
+        } catch (error) {
+            failed += 1;
+            console.error('ShareFile route emails poll error:', error);
+            recordSharefileRoutingEvent({
+                messageId: effectiveMessageId,
+                threadId: message?.threadId || null,
+                codeType,
+                codeValue,
+                status: 'failure',
+                errorText: error?.message || 'Failed to route email'
+            });
         } finally {
-            await rm(tempDir, { recursive: true, force: true });
+            if (tempDir) {
+                await rm(tempDir, { recursive: true, force: true });
+            }
         }
     }
 
-    return { processed };
+    return { processed, failed, total: queuedEntries.length, skippedThreadDuplicates };
 };
 
 export const resolveSharefileMessageId = async (threadId, tokensOverride = null) => {
@@ -934,14 +1618,37 @@ export const routeSharefileMessage = async ({
         message = retryResponse.data;
     }
     messageId = effectiveMessageId;
+    let threadMessages = [];
+    const effectiveThreadId = String(threadId || message?.threadId || '').trim();
+    if (effectiveThreadId) {
+        try {
+            const threadResponse = await gmail.users.threads.get({
+                userId: 'me',
+                id: effectiveThreadId,
+                format: 'full'
+            });
+            threadMessages = Array.isArray(threadResponse.data?.messages) ? threadResponse.data.messages : [];
+        } catch (error) {
+            console.warn('Failed to fetch full thread for routing, falling back to single message:', error?.message || error);
+        }
+    }
+    if (threadMessages.length === 0) {
+        threadMessages = [message];
+    }
     const metadata = parseEmailMetadata(message);
     const bodyText = extractGmailMessageText(message) || message.snippet || '';
-    const inferredRouteKind = isContributionEmail(metadata, bodyText) ? 'CONTRIBUTION' : 'BILL';
+    const contributionContext = resolveContributionContext(metadata, bodyText);
+    const inferredRouteKind = isContributionEmail(
+        contributionContext.metadata,
+        contributionContext.bodyText
+    ) ? 'CONTRIBUTION' : 'BILL';
     const routeKind = normalizeRouteKind(extraMeta.routeKind || inferredRouteKind);
     const contributionMeta = routeKind === 'CONTRIBUTION'
         ? parseContributionFields({
-            bodyText,
-            envelopeFallback: extraMeta.codeValue
+            metadata: contributionContext.metadata,
+            bodyText: contributionContext.bodyText,
+            envelopeFallback: extraMeta.codeValue,
+            designationFallback: extraMeta.designation
         })
         : null;
     const noteText = buildNoteText(metadata, {
@@ -953,15 +1660,21 @@ export const routeSharefileMessage = async ({
         amount: contributionMeta?.amount || ''
     });
     const attachments = collectAttachments(message.payload);
+    const isContributionRoute = routeKind === 'CONTRIBUTION';
+    const threadPdfAttachments = !isContributionRoute
+        ? collectThreadPdfAttachments(threadMessages)
+        : [];
+    const useThreadPdfAttachments = !isContributionRoute && threadPdfAttachments.length > 0;
+    const conversationText = !isContributionRoute && !useThreadPdfAttachments ? buildConversationText(threadMessages) : '';
     const clientTsDate = extraMeta?.clientTs ? new Date(extraMeta.clientTs) : null;
     const routingTimestamp = clientTsDate && !Number.isNaN(clientTsDate.getTime())
         ? clientTsDate
         : new Date(Number(message?.internalDate) || Date.now());
     const filenameTimestamp = routeKind === 'CONTRIBUTION'
-        ? parseEmailHeaderTimestamp(metadata?.date, routingTimestamp)
+        ? parseEmailHeaderTimestamp(contributionContext.metadata?.date, routingTimestamp)
         : routingTimestamp;
     const sourceToken = routeKind === 'CONTRIBUTION'
-        ? getContributionSourceToken(metadata?.from)
+        ? getContributionSourceToken(contributionContext.metadata?.from)
         : '';
 
     const resolvedRoot = rootPath || buildTargetDir({
@@ -977,28 +1690,67 @@ export const routeSharefileMessage = async ({
         const existing = getSharefileJob(messageId, extraMeta.codeType, extraMeta.codeValue);
         if (existing) {
             const existingOutput = JSON.parse(existing.output_json || '{}');
-            recordSharefileRoutingEvent({
-                jobId: existing.id,
-                messageId,
-                threadId: threadId || message.threadId || null,
-                codeType: extraMeta.codeType,
-                codeValue: extraMeta.codeValue,
-                status: 'success',
-                output: existingOutput
-            });
-            return { ok: true, idempotent: true, output: existingOutput };
+            const existingFilesPresent = await hasExistingOutputFiles(existingOutput);
+            if (existingFilesPresent) {
+                recordSharefileRoutingEvent({
+                    jobId: existing.id,
+                    messageId,
+                    threadId: threadId || message.threadId || null,
+                    codeType: extraMeta.codeType,
+                    codeValue: extraMeta.codeValue,
+                    status: 'success',
+                    output: existingOutput
+                });
+                return { ok: true, idempotent: true, output: existingOutput };
+            }
         }
 
         const outputFiles = [];
-    if (attachments.length === 0) {
-            const htmlBody = extractGmailMessageHtml(message);
+        if (useThreadPdfAttachments) {
+            let index = 0;
+            for (const source of threadPdfAttachments) {
+                const attachmentResponse = await gmail.users.messages.attachments.get({
+                    userId: 'me',
+                    messageId: source.messageId,
+                    id: source.attachmentId
+                });
+                const data = attachmentResponse.data?.data;
+                if (!data) continue;
+                const rawBytes = decodeAttachmentData(data);
+                const sourcePath = join(tempDir, source.filename || `attachment-${index}.pdf`);
+                await writeFile(sourcePath, rawBytes);
+                const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
+                const pdfBytes = await readFile(pdfPath);
+                const { filename, targetPath } = await buildInvoiceFilename({
+                    kind: routeKind,
+                    timestamp: filenameTimestamp,
+                    targetDir: resolvedRoot,
+                    donor: contributionMeta?.donor || '',
+                    amount: contributionMeta?.amount || '',
+                    sourceToken
+                });
+                const notedBytes = await addNoteToPdf(pdfBytes, noteText);
+                const tempPath = join(tempDir, filename);
+                await writeFile(tempPath, notedBytes);
+                await moveFileSafe(tempPath, targetPath);
+                outputFiles.push({ name: filename, bytes: notedBytes.length });
+                index += 1;
+            }
+        } else if (!isContributionRoute || attachments.length === 0) {
             let pdfBytes;
             try {
-                const html = buildEmailHtml(metadata, htmlBody, bodyText);
+                const html = isContributionRoute
+                    ? buildEmailHtml(metadata, await resolveMessageHtmlForRender(gmail, message), bodyText)
+                    : await buildConversationHtml(gmail, threadMessages);
                 pdfBytes = await renderEmailHtmlToPdf(html);
             } catch (error) {
-                console.warn('HTML email render failed, falling back to text PDF:', error);
-                pdfBytes = await renderEmailToPdf(metadata, bodyText);
+                if (isContributionRoute) {
+                    console.warn('HTML email render failed, falling back to text PDF:', error);
+                    pdfBytes = await renderEmailToPdf(metadata, bodyText);
+                } else {
+                    console.warn('Conversation HTML render failed, falling back to text PDF:', error);
+                    pdfBytes = await renderEmailToPdf({ subject: 'Email conversation' }, conversationText || bodyText);
+                }
             }
             const { filename, targetPath } = await buildInvoiceFilename({
                 kind: routeKind,
@@ -1013,7 +1765,7 @@ export const routeSharefileMessage = async ({
             await writeFile(tempPath, notedBytes);
             await moveFileSafe(tempPath, targetPath);
             outputFiles.push({ name: filename, bytes: notedBytes.length });
-    } else {
+        } else {
             let index = 0;
             for (const attachment of attachments) {
                 const attachmentResponse = await gmail.users.messages.attachments.get({

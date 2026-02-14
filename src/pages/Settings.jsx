@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import Card from '../components/Card';
-import { FaGoogle, FaCheck, FaTimes, FaSync } from 'react-icons/fa';
+import { FaGoogle, FaCheck, FaTimes, FaSync, FaEnvelope } from 'react-icons/fa';
 import { API_BASE, API_URL } from '../services/apiConfig';
 import './Settings.css';
 
@@ -14,10 +14,15 @@ const Settings = () => {
     const [sharefileLoading, setSharefileLoading] = useState(true);
     const [sharefileAccounts, setSharefileAccounts] = useState([]);
     const [sharefileActionBusy, setSharefileActionBusy] = useState('');
+    const [ccConnected, setCcConnected] = useState(false);
+    const [ccLoading, setCcLoading] = useState(true);
+    const [ccFromEmails, setCcFromEmails] = useState([]);
+    const [ccBusy, setCcBusy] = useState(false);
 
     useEffect(() => {
         checkGoogleStatus();
         checkSharefileStatus();
+        checkConstantContactStatus();
 
         // Check if returning from OAuth
         const returnPath = sessionStorage.getItem('oauthReturnPath');
@@ -27,6 +32,7 @@ const Settings = () => {
             setTimeout(() => {
                 checkGoogleStatus();
                 checkSharefileStatus();
+                checkConstantContactStatus();
             }, 1000);
         }
     }, []);
@@ -126,6 +132,34 @@ const Settings = () => {
         window.location.href = `${API_BASE}/auth/google`;
     };
 
+    const checkConstantContactStatus = async () => {
+        setCcLoading(true);
+        try {
+            const response = await fetch(`${API_URL}/constant-contact/status`, { credentials: 'include' });
+            if (!response.ok) throw new Error('Failed to check Constant Contact status');
+            const data = await response.json();
+            const connected = !!data.connected;
+            setCcConnected(connected);
+            if (connected) {
+                const emailsResponse = await fetch(`${API_URL}/constant-contact/from-emails`, { credentials: 'include' });
+                if (emailsResponse.ok) {
+                    const emailsData = await emailsResponse.json();
+                    setCcFromEmails(Array.isArray(emailsData?.emails) ? emailsData.emails : []);
+                } else {
+                    setCcFromEmails([]);
+                }
+            } else {
+                setCcFromEmails([]);
+            }
+        } catch (error) {
+            console.error('Error checking Constant Contact status:', error);
+            setCcConnected(false);
+            setCcFromEmails([]);
+        } finally {
+            setCcLoading(false);
+        }
+    };
+
     const connectSharefileGmail = async () => {
         sessionStorage.setItem('oauthReturnPath', window.location.pathname);
         try {
@@ -136,6 +170,28 @@ const Settings = () => {
             window.location.href = data.url;
         } catch (error) {
             console.error('ShareFile Gmail connect error:', error);
+        }
+    };
+
+    const connectConstantContact = () => {
+        sessionStorage.setItem('oauthReturnPath', window.location.pathname);
+        window.location.href = `${API_BASE}/auth/constant-contact`;
+    };
+
+    const disconnectConstantContact = async () => {
+        if (!confirm('Disconnect Constant Contact? Sunday email scheduling will be disabled.')) return;
+        setCcBusy(true);
+        try {
+            const response = await fetch(`${API_URL}/constant-contact/disconnect`, {
+                method: 'POST',
+                credentials: 'include'
+            });
+            if (!response.ok) throw new Error('Failed to disconnect Constant Contact');
+            await checkConstantContactStatus();
+        } catch (error) {
+            console.error('Disconnect Constant Contact error:', error);
+        } finally {
+            setCcBusy(false);
         }
     };
 
@@ -351,6 +407,75 @@ const Settings = () => {
                             </div>
                         )}
                     </div>
+                </div>
+            </Card>
+
+            <Card title="Constant Contact Integration">
+                <div className="settings-section">
+                    <div className="integration-status">
+                        <div className="status-icon">
+                            <FaEnvelope size={48} color={ccConnected ? '#2563eb' : '#ccc'} />
+                        </div>
+                        <div className="status-info">
+                            <h3>Sunday Livestream Emails</h3>
+                            {ccLoading ? (
+                                <p className="status-text">Checking connection...</p>
+                            ) : ccConnected ? (
+                                <>
+                                    <p className="status-text status-connected">
+                                        <FaCheck /> Connected
+                                    </p>
+                                    <p className="status-detail">Constant Contact is ready for Sunday email create/schedule.</p>
+                                </>
+                            ) : (
+                                <>
+                                    <p className="status-text status-disconnected">
+                                        <FaTimes /> Not Connected
+                                    </p>
+                                    <p className="status-detail">Connect Constant Contact to enable Sunday email automation.</p>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="integration-actions">
+                        {ccConnected ? (
+                            <>
+                                <button className="btn-secondary" onClick={disconnectConstantContact} disabled={ccBusy}>
+                                    {ccBusy ? 'Disconnecting...' : 'Disconnect'}
+                                </button>
+                                <button className="btn-primary" onClick={checkConstantContactStatus} disabled={ccBusy}>
+                                    <FaSync /> Refresh
+                                </button>
+                            </>
+                        ) : (
+                            <button className="btn-primary" onClick={connectConstantContact}>
+                                <FaEnvelope /> Connect Constant Contact
+                            </button>
+                        )}
+                    </div>
+
+                    {ccConnected && (
+                        <div className="calendar-selector">
+                            <h4>Verified Sender Emails</h4>
+                            {ccFromEmails.length === 0 ? (
+                                <p className="no-calendars">No sender emails returned by Constant Contact.</p>
+                            ) : (
+                                <div className="calendar-list">
+                                    {ccFromEmails.map((entry, index) => {
+                                        const email = entry?.email_address || entry?.email || entry?.address || '';
+                                        const status = String(entry?.status || '').trim() || 'unknown';
+                                        return (
+                                            <div key={`${email}-${index}`} className="calendar-item">
+                                                <span className="calendar-name">{email || '(missing email)'}</span>
+                                                <span className={`status-pill ${status.toLowerCase()}`}>{status}</span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </Card>
 

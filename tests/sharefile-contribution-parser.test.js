@@ -70,7 +70,7 @@ test('builds contribution filename base with date donor and amount', async () =>
         sourceToken: 'PayPal'
     });
 
-    assert.equal(base, '2026.02.13 PayPal Woodall 1000.00');
+    assert.equal(base, '2026.02.13 PayPal Woodall $1000');
 });
 
 test('parses website contribution with html entities and amount', async () => {
@@ -112,4 +112,27 @@ test('maps contribution source token and extracts donor last name', async () => 
     assert.equal(__TEST__.getContributionSourceToken('Bank of America <customerservice@ealerts.bankofamerica.com>'), 'Zelle');
     assert.equal(__TEST__.extractDonorLastName('Elizabeth Woodall'), 'Woodall');
     assert.equal(__TEST__.extractDonorLastName('Sara Edwards Jr.'), 'Edwards');
+});
+
+test('formats filename amount without .00 and keeps non-zero cents', async () => {
+    const whole = __TEST__.formatContributionFilenameBase({
+        timestamp: new Date('2026-02-13T10:15:00.000Z'),
+        donor: 'Elizabeth Woodall',
+        amount: '1000.00',
+        sourceToken: 'PayPal'
+    });
+    const cents = __TEST__.formatContributionFilenameBase({
+        timestamp: new Date('2026-02-13T10:15:00.000Z'),
+        donor: 'Elizabeth Woodall',
+        amount: '1000.50',
+        sourceToken: 'PayPal'
+    });
+
+    assert.equal(whole, '2026.02.13 PayPal Woodall $1000');
+    assert.equal(cents, '2026.02.13 PayPal Woodall $1000.50');
+});
+
+test('extracts envelope number from JSON-array and CSV tags', async () => {
+    assert.equal(__TEST__.extractEnvelopeFromTags('["env-374","Volunteer"]'), '374');
+    assert.equal(__TEST__.extractEnvelopeFromTags('Volunteer, env-50, Vestry'), '50');
 });

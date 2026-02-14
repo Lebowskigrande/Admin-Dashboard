@@ -120,3 +120,23 @@
     font-size: 0.95rem;
     color: var(--color-text-main);
 }
+
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: #e2e8f0;
+    color: #334155;
+}
+
+.status-pill.confirmed,
+.status-pill.verified,
+.status-pill.active {
+    background: #dcfce7;
+    color: #166534;
+}

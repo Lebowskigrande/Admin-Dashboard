@@ -17,10 +17,20 @@
 }
 
 .routing-log-card {
-    padding: var(--space-md);
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+    height: 470px;
+    min-height: 470px;
+    overflow: hidden;
+}
+
+.routing-log-card .card-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    min-height: 0;
+    height: 100%;
 }
 
 .routing-log-header {
@@ -76,6 +86,10 @@
     flex-direction: column;
     gap: 0.55rem;
     min-height: 120px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 0.2rem;
 }
 
 .routing-log-entry {
@@ -732,6 +746,11 @@
 @media (max-width: 960px) {
     .routing-log-grid {
         grid-template-columns: 1fr;
+    }
+
+    .routing-log-card {
+        height: 430px;
+        min-height: 430px;
     }
 
     .deposit-body {

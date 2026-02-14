@@ -74,7 +74,7 @@ const tests = [
                 amount: '1000.00',
                 sourceToken: 'PayPal'
             });
-            assert.equal(base, '2026.02.13 PayPal Woodall 1000.00');
+            assert.equal(base, '2026.02.13 PayPal Woodall $1000');
         }
     },
     {
@@ -124,6 +124,191 @@ const tests = [
         run: async () => {
             assert.equal(__TEST__.extractDonorLastName('Elizabeth Woodall'), 'Woodall');
             assert.equal(__TEST__.extractDonorLastName('Sara Edwards Jr.'), 'Edwards');
+        }
+    },
+    {
+        name: 'Contribution filename keeps cents only when non-zero',
+        run: async () => {
+            const whole = __TEST__.formatContributionFilenameBase({
+                timestamp: new Date('2026-02-13T10:15:00.000Z'),
+                donor: 'Elizabeth Woodall',
+                amount: '1000.00',
+                sourceToken: 'PayPal'
+            });
+            const cents = __TEST__.formatContributionFilenameBase({
+                timestamp: new Date('2026-02-13T10:15:00.000Z'),
+                donor: 'Elizabeth Woodall',
+                amount: '1000.50',
+                sourceToken: 'PayPal'
+            });
+            assert.equal(whole, '2026.02.13 PayPal Woodall $1000');
+            assert.equal(cents, '2026.02.13 PayPal Woodall $1000.50');
+        }
+    },
+    {
+        name: 'Contribution lookup finds envelope from JSON tags by donor name',
+        run: async () => {
+            db.prepare(`
+                INSERT INTO people (id, display_name, tags)
+                VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    tags = excluded.tags
+            `).run(
+                'test-envelope-lookup',
+                'Elizabeth Woodall',
+                '["env-374","Volunteer"]'
+            );
+
+            const result = __TEST__.parseContributionFields({
+                metadata: {},
+                bodyText: 'Name: Elizabeth Woodall\nSub Total $100.00\nI would like my donation to be allocated to: 2026 Pledge Payment',
+                envelopeFallback: ''
+            });
+
+            assert.equal(result.envelopeNumber, '374');
+        }
+    },
+    {
+        name: 'Forwarded contribution uses original metadata/body for donor and date',
+        run: async () => {
+            const forwarded = [
+                'Please route this.',
+                '',
+                '---------- Forwarded message ---------',
+                'From: Bank of America <customerservice@ealerts.bankofamerica.com>',
+                'Date: Mon, Dec 12, 2025 at 9:01 AM',
+                'Subject: You received money',
+                '',
+                'Sara Edwards sent you $1,000.00 Pledge for January View your balance'
+            ].join('\n');
+            const context = __TEST__.resolveContributionContext(
+                { from: 'Office <office@saintedmunds.org>', date: 'Fri, Feb 13, 2026 10:00 AM' },
+                forwarded
+            );
+
+            assert.equal(context.metadata.from, 'Bank of America <customerservice@ealerts.bankofamerica.com>');
+            assert.equal(context.metadata.date, 'Mon, Dec 12, 2025 at 9:01 AM');
+            const parsed = __TEST__.parseContributionFields({
+                metadata: context.metadata,
+                bodyText: context.bodyText,
+                envelopeFallback: ''
+            });
+            assert.equal(parsed.donor, 'Sara Edwards');
+            assert.equal(parsed.designation, 'Pledge for January');
+            assert.equal(parsed.amount, '1000.00');
+        }
+    },
+    {
+        name: 'Thread routing picks earliest contribution message',
+        run: async () => {
+            const threadMessages = [
+                {
+                    id: 'm-new',
+                    internalDate: String(new Date('2026-02-13T10:00:00Z').getTime()),
+                    snippet: 'Forward note only',
+                    payload: { headers: [{ name: 'From', value: 'Staff <office@saintedmunds.org>' }] }
+                },
+                {
+                    id: 'm-old',
+                    internalDate: String(new Date('2025-12-12T09:00:00Z').getTime()),
+                    snippet: 'Sara Edwards sent you $1,000.00 Pledge for January View your balance',
+                    payload: {
+                        headers: [
+                            { name: 'From', value: 'Bank of America <customerservice@ealerts.bankofamerica.com>' },
+                            { name: 'Date', value: 'Mon, Dec 12, 2025 at 9:01 AM' }
+                        ]
+                    }
+                }
+            ];
+
+            const selected = __TEST__.selectThreadMessageForRouting(threadMessages, { requireContribution: true });
+            assert.equal(selected?.id, 'm-old');
+        }
+    },
+    {
+        name: 'Email header date preserves header calendar day for filename',
+        run: async () => {
+            const ts = __TEST__.parseEmailHeaderTimestamp('Fri, 14 Feb 2026 00:30:00 +0000');
+            const base = __TEST__.formatContributionFilenameBase({
+                timestamp: ts,
+                donor: 'Sara Edwards',
+                amount: '100.00',
+                sourceToken: 'Zelle'
+            });
+            assert.equal(base.startsWith('2026.02.14 Zelle Edwards '), true);
+        }
+    },
+    {
+        name: 'AP thread attachment picker prioritizes PDF files only',
+        run: async () => {
+            const messages = [
+                {
+                    id: 'm1',
+                    internalDate: String(new Date('2026-02-01T10:00:00Z').getTime()),
+                    payload: {
+                        parts: [
+                            { filename: 'invoice.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', body: { attachmentId: 'a1' } }
+                        ]
+                    }
+                },
+                {
+                    id: 'm2',
+                    internalDate: String(new Date('2026-02-01T11:00:00Z').getTime()),
+                    payload: {
+                        parts: [
+                            { filename: 'invoice.pdf', mimeType: 'application/pdf', body: { attachmentId: 'a2' } }
+                        ]
+                    }
+                }
+            ];
+            const picked = __TEST__.collectThreadPdfAttachments(messages);
+            assert.equal(picked.length, 1);
+            assert.equal(picked[0].messageId, 'm2');
+            assert.equal(picked[0].attachmentId, 'a2');
+        }
+    },
+    {
+        name: 'AP conversation text fallback includes full thread',
+        run: async () => {
+            const messages = [
+                {
+                    id: 'm1',
+                    internalDate: String(new Date('2026-02-01T10:00:00Z').getTime()),
+                    snippet: 'first snippet',
+                    payload: { headers: [{ name: 'From', value: 'a@example.com' }, { name: 'Subject', value: 'First' }] }
+                },
+                {
+                    id: 'm2',
+                    internalDate: String(new Date('2026-02-01T11:00:00Z').getTime()),
+                    snippet: 'second snippet',
+                    payload: { headers: [{ name: 'From', value: 'b@example.com' }, { name: 'Subject', value: 'Second' }] }
+                }
+            ];
+            const text = __TEST__.buildConversationText(messages);
+            assert.equal(text.includes('first snippet'), true);
+            assert.equal(text.includes('second snippet'), true);
+            assert.equal(text.includes('Message 1 of 2'), true);
+            assert.equal(text.includes('Message 2 of 2'), true);
+        }
+    },
+    {
+        name: 'Contribution allows Rent designation without envelope number',
+        run: async () => {
+            const result = __TEST__.parseContributionFields({
+                metadata: {},
+                bodyText: 'Name: Test Donor Without Envelope\nSub Total $250.00',
+                envelopeFallback: '',
+                designationFallback: 'Rent'
+            });
+            assert.equal(result.designation, 'Rent');
+            assert.equal(result.envelopeNumber, '');
+            const note = __TEST__.buildNoteText({}, {
+                routeKind: 'CONTRIBUTION',
+                envelopeNumber: '',
+                designation: 'Rent'
+            });
+            assert.equal(note, 'Designation: Rent');
         }
     }
 ];

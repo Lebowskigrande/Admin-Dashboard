@@ -1,48 +1,47 @@
 # Codex Handoff
 
-## Coordinator Resume Point
-1. Primary integration branch: `integration/finalization`
-2. Latest pushed integration commit: `d4700af`
-3. Previous major integration milestone: `1ba2472` (Agent E merged)
-4. Current phase: post-feature integration, pre-RC hardening
+## Current Branch + State
+1. Primary working branch: `new-db-schema` in `C:\Users\Secretary\Documents\Admin Dashboard`.
+2. Worktree cleanup complete:
+- Removed: `AdminDashboard-A` through `AdminDashboard-F`
+- Kept: `AdminDashboard-G` (`integration/finalization`) as integrator/staging lane.
 
-## Completed Scope (A-G Waves)
-1. Agent A merged: Sunday + Constant Contact integration updates.
-2. Agent B merged: ShareFile parsing/routing hardening.
-3. Agent C merged: Calendar/task linkage, state normalization, owner editing.
-4. Agent D merged: People/Buildings/Vestry workflow completion.
-5. Agent E merged: Settings/Ops readiness, runtime config validation, ops endpoints, admin audit logging/runbook.
-6. Agent F merged: support scripts and coordinator guardrails.
-7. Agent G integrated all waves and pushed with strict checks passing.
+## What Was Completed
+1. ShareFile contribution parsing/routing hardening:
+- clean contribution filename framework (source/date/name/amount rules)
+- clean note framework (envelope + designation)
+- fixed forwarded-thread message selection to use original message metadata/body
+- corrected date off-by-one handling from email headers
+- envelope lookup fallbacks (People tags + canonical XLSX)
+- poller label flow for `Unprocessed donations` and `ShareFile Routed`
+- keep routed emails in inbox (no archive)
 
-## Quality Gate Status (latest integration)
-1. `npm run test:quick` -> PASS (10 passed, 0 failed)
-2. `npm run check:contracts:strict` -> PASS
-3. `npm run smoke:routes:strict` -> PASS
+2. AP routing hardening:
+- prioritize PDF attachments in thread
+- fallback to full thread text when no PDF is present
+- improved email rendering path for better fidelity
 
-## Branch/Worktree Layout
-1. Coordinator base path: `C:\Users\Secretary\Documents\Admin Dashboard` on `new-db-schema`.
-2. Agent worktrees:
-- `C:\Users\Secretary\Documents\AdminDashboard-A` -> `agent-a-sunday-comms`
-- `C:\Users\Secretary\Documents\AdminDashboard-B` -> `agent-b-finance-sharefile`
-- `C:\Users\Secretary\Documents\AdminDashboard-C` -> `agent-c-calendar-tasks`
-- `C:\Users\Secretary\Documents\AdminDashboard-D` -> `agent-d-buildings-people-vestry`
-- `C:\Users\Secretary\Documents\AdminDashboard-E` -> `agent-e-settings-ops`
-- `C:\Users\Secretary\Documents\AdminDashboard-F` -> `agent-f-platform-quality`
-- `C:\Users\Secretary\Documents\AdminDashboard-G` -> `integration/finalization`
+3. Finance UI updates:
+- AR/AP routing panels set to fixed container heights with scrolling content
 
-## Key Artifacts To Read First
-1. `AGENT_KICKOFF_INDEX.md`
-2. `MULTI_AGENT_WORK_PLAN.md`
-3. `PROJECT_FINALIZATION_PLAN.md`
-4. `agent-reports/REPORT_TEMPLATE.md`
+4. Constant Contact wiring:
+- backend disconnect endpoint: `POST /api/constant-contact/disconnect`
+- Settings UI card for CC connect/status/disconnect and verified sender visibility
+- Sunday Livestream panel wired to create/schedule CC email via API
 
-## Operational Notes
-1. Local Git sometimes fails commit with `env.exe ... couldn't create signal pipe, Win32 error 5`; elevated commit retry works.
-2. Worktrees are configured as safe directories for this environment.
-3. `AGENT_INSTRUCTIONS.md` is locally ignored in each worktree (`info/exclude`) to avoid false dirty-state pauses.
+5. Liturgical schedule export date fix:
+- fixed timezone/day-shift bug in PDF/XLSX exports by parsing `YYYY-MM-DD` as local calendar date.
 
-## Restart Prompt (for next Codex instance)
-Use this exact kickoff:
+## Tests Run (latest)
+1. `npm run test:quick` -> PASS (17 passed, 0 failed)
+2. `npm run smoke:routes:strict` -> PASS
+3. `npm run build` -> blocked in this environment (`spawn EPERM` from esbuild process spawn)
 
-`Read CODEX_HANDOFF.md and resume coordinator mode from integration/finalization commit d4700af. Use existing A-G worktrees, keep G as integrator, and continue toward release/rc1 hardening.`
+## Active Worktree Layout
+1. `C:\Users\Secretary\Documents\Admin Dashboard` -> `new-db-schema` (primary)
+2. `C:\Users\Secretary\Documents\AdminDashboard-G` -> `integration/finalization` (kept intentionally)
+
+## Restart Prompt
+Use this exact kickoff tomorrow:
+
+`Read CODEX_HANDOFF.md, continue from new-db-schema, keep only the main worktree plus AdminDashboard-G integrator, and proceed with feature improvements + RC1 hardening validation.`

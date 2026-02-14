@@ -30,6 +30,16 @@ import xlsx from 'xlsx';
 import { format } from 'date-fns';
 
 const router = express.Router();
+
+const parseDateKeyLocal = (dateKey) => {
+    const value = String(dateKey || '').trim();
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return new Date(value);
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    return new Date(year, month - 1, day, 12, 0, 0, 0);
+};
 router.get('/sunday/livestream', (req, res) => {
     const { date } = req.query;
     if (!date) {
@@ -492,7 +502,7 @@ router.post('/liturgical-schedule/pdf', async (req, res) => {
             const maxTextWidth = width - pageMargin * 2;
 
             items.forEach((entry) => {
-                const dateLabel = `${format(new Date(entry.date), 'MMM d, yyyy')} — ${entry.feast || 'Sunday'}`;
+                const dateLabel = `${format(parseDateKeyLocal(entry.date), 'MMM d, yyyy')} — ${entry.feast || 'Sunday'}`;
                 cursorY -= lineHeight * 1.5;
                 if (cursorY < pageMargin + 40) {
                     page = doc.addPage();
@@ -690,7 +700,7 @@ router.post('/liturgical-schedule/pdf-months', async (req, res) => {
             rows.forEach((row, index) => {
                 const timeLabel = String(row.time || '').replace(/^0/, '').replace(':00', ':00 AM');
                 const serviceLines = [
-                    `Sunday, ${format(new Date(row.date), 'MMMM d')}`,
+                    `Sunday, ${format(parseDateKeyLocal(row.date), 'MMMM d')}`,
                     timeLabel,
                     row.location ? `${row.feast} (${row.location})` : row.feast
                 ].filter(Boolean);
@@ -751,7 +761,7 @@ router.post('/liturgical-schedule/xlsx-months', async (req, res) => {
                 const { oldTestament, newTestament } = getReadingPair(readings);
                 sheetRows.push({
                     Month: group.monthLabel,
-                    Date: format(new Date(row.date), 'yyyy-MM-dd'),
+                    Date: format(parseDateKeyLocal(row.date), 'yyyy-MM-dd'),
                     Service: row.time || '10:00',
                     Feast: row.location ? `${row.feast} (${row.location})` : row.feast,
                     Lector: row.lector || '',

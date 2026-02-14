@@ -15,6 +15,7 @@ const createChecks = () =>
     }));
 
 const DEPOSIT_STORAGE_KEY = 'deposit-slip-checks';
+const ROUTING_LOG_REFRESH_MS = 30 * 1000;
 
 const normalizeStorageAmount = (value) => {
     if (value == null) return '';
@@ -484,10 +485,18 @@ const Finance = () => {
 
     useEffect(() => {
         loadRoutingLog('ap', apDate, setApLog);
+        const timer = window.setInterval(() => {
+            loadRoutingLog('ap', apDate, setApLog);
+        }, ROUTING_LOG_REFRESH_MS);
+        return () => window.clearInterval(timer);
     }, [apDate]);
 
     useEffect(() => {
         loadRoutingLog('ar', arDate, setArLog);
+        const timer = window.setInterval(() => {
+            loadRoutingLog('ar', arDate, setArLog);
+        }, ROUTING_LOG_REFRESH_MS);
+        return () => window.clearInterval(timer);
     }, [arDate]);
 
     return (

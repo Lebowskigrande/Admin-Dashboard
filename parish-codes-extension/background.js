@@ -180,6 +180,22 @@ async function buildEnvelopeMenu(rootId, prefix) {
     const entries = await loadEnvelopeData();
     if (!entries.length) throw new Error("No envelope entries parsed");
 
+    chrome.contextMenus.create({
+      id: `${prefix}-designation-rent`,
+      parentId: rootId,
+      title: "Rent (no envelope)",
+      contexts: MENU_CONTEXTS,
+      documentUrlPatterns: GMAIL_URL_PATTERNS
+    });
+
+    chrome.contextMenus.create({
+      id: `${prefix}-designation-sep`,
+      parentId: rootId,
+      type: "separator",
+      contexts: MENU_CONTEXTS,
+      documentUrlPatterns: GMAIL_URL_PATTERNS
+    });
+
     const maxDigits = entries.reduce((max, e) => Math.max(max, e.number.length), 0);
 
     const letters = Array.from(new Set(entries.map(e => e.letter).filter(Boolean))).sort();
@@ -276,7 +292,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!click) return;
 
   // (A) Insert into Gmail compose if a field is active
-  const insertMsg = { type: "insertText", text: click.codeValue };
+  const insertMsg = { type: "insertText", text: click.insertText ?? click.codeValue };
   await sendMessageSafe(tab.id, insertMsg, info.frameId, { expectResponse: false });
 
   // (B) Get Gmail context (threadId/messageId/href)
@@ -292,6 +308,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     codeType: click.codeType,
     codeValue: click.codeValue,
     routeKind: click.routeKind,
+    designation: click.designation || "",
     gmail: gmailContext,
     page: { url: tab.url || info.pageUrl || null },
     client: { ts: new Date().toISOString() }
@@ -340,7 +357,11 @@ function parseClickedCode(menuItemId) {
   if (menuItemId.startsWith("contrib-env-item-")) {
     const codeValue = menuItemId.split("-").at(-1)?.trim();
     if (!codeValue) return null;
-    return { codeType: "envelope", codeValue, routeKind: "CONTRIBUTION" };
+    return { codeType: "envelope", codeValue, routeKind: "CONTRIBUTION", designation: "", insertText: codeValue };
+  }
+
+  if (menuItemId === "contrib-designation-rent") {
+    return { codeType: "envelope", codeValue: "", routeKind: "CONTRIBUTION", designation: "Rent", insertText: "Rent" };
   }
 
   return null;

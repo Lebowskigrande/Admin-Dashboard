@@ -8,7 +8,16 @@ const SundayLivestreamPanel = ({
     livestreamUrl,
     details,
     toggleEmailChecklistItem,
-    livestreamError
+    livestreamError,
+    ccConnected,
+    ccLoading,
+    ccFromEmails,
+    ccFromEmail,
+    setCcFromEmail,
+    ccEmailBusy,
+    ccEmailError,
+    ccEmailSuccess,
+    onCreateLivestreamEmail
 }) => (
     <Card className={`sunday-panel livestream-card ${livestreamUrl && details.bulletinUploaded && details.emailCreated && details.emailScheduled && details.emailSent ? 'panel-complete' : ''}`}>
         {renderMilestoneInline('Livestream Email', emailMilestone)}
@@ -79,6 +88,44 @@ const SundayLivestreamPanel = ({
                 </button>
             </div>
         </div>
+
+        <div className="email-sender-row">
+            <span className="email-sender-label">From</span>
+            <select
+                className="email-sender-select"
+                value={ccFromEmail}
+                onChange={(event) => setCcFromEmail(event.target.value)}
+                disabled={ccLoading || !ccConnected || ccEmailBusy || ccFromEmails.length === 0}
+            >
+                {ccFromEmails.length === 0 ? (
+                    <option value="">No sender emails</option>
+                ) : (
+                    ccFromEmails.map((entry, index) => {
+                        const email = entry?.email_address || entry?.email || entry?.address || '';
+                        const status = String(entry?.status || '').trim() || 'unknown';
+                        return (
+                            <option key={`${email}-${index}`} value={email}>
+                                {email} ({status})
+                            </option>
+                        );
+                    })
+                )}
+            </select>
+        </div>
+
+        <div className="panel-actions panel-actions-bottom">
+            <button
+                type="button"
+                className="btn-primary"
+                disabled={ccLoading || !ccConnected || ccEmailBusy || !livestreamUrl || !details.bulletinUploadUrl || !details.bulletinImageUrl}
+                onClick={onCreateLivestreamEmail}
+            >
+                {ccEmailBusy ? 'Creating/Scheduling...' : 'Create + Schedule Email'}
+            </button>
+        </div>
+        {!ccConnected && !ccLoading && <div className="text-muted">Constant Contact is not connected.</div>}
+        {ccEmailError && <div className="text-muted">{ccEmailError}</div>}
+        {ccEmailSuccess && <div className="text-muted">{ccEmailSuccess}</div>}
         {livestreamError && <div className="text-muted">{livestreamError}</div>}
     </Card>
 );

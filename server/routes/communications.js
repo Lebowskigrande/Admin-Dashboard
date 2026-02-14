@@ -1,5 +1,6 @@
 import express from 'express';
 import { randomUUID } from 'crypto';
+import { sqlite as db } from '../db.js';
 import {
     parseCookies,
     setCcStateCookie,
@@ -28,6 +29,17 @@ router.get('/api/constant-contact/status', (req, res) => {
     const userId = getCcUserId(req);
     const tokens = getCcTokens(userId);
     res.json({ connected: !!tokens?.access_token });
+});
+
+router.post('/api/constant-contact/disconnect', (req, res) => {
+    try {
+        const userId = getCcUserId(req);
+        db.prepare('DELETE FROM constant_contact_tokens WHERE user_id = ?').run(userId);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Constant Contact disconnect failed:', error);
+        res.status(500).json({ error: 'Failed to disconnect Constant Contact' });
+    }
 });
 
 router.get('/api/constant-contact/debug', (req, res) => {

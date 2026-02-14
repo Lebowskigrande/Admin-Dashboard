@@ -76,6 +76,49 @@ const safeParseJson = (raw) => {
     }
 };
 
+const normalizeWindowsPath = (rawPath) => String(rawPath || '').replace(/\//g, '\\').trim();
+
+const revealInExplorer = async (targetPath) => {
+    const normalized = normalizeWindowsPath(targetPath);
+    if (!normalized) {
+        throw new Error('Missing file path');
+    }
+    const parentDir = dirname(normalized);
+    let lastError = null;
+    try {
+        // Explorer expects select+path as a single argument token.
+        await execFileAsync('explorer.exe', [`/select,${normalized}`], { windowsHide: true });
+        return { ok: true, warning: '' };
+    } catch (error) {
+        lastError = error;
+    }
+    try {
+        await execFileAsync('explorer.exe', [normalized], { windowsHide: true });
+        return { ok: true, warning: '' };
+    } catch (error) {
+        lastError = error;
+    }
+    try {
+        await execFileAsync('cmd.exe', ['/c', 'start', '', normalized], { windowsHide: true });
+        return { ok: true, warning: '' };
+    } catch (error) {
+        lastError = error;
+    }
+    try {
+        await execFileAsync('explorer.exe', [parentDir], { windowsHide: true });
+        return { ok: true, warning: 'File selection unavailable; opened parent folder instead.' };
+    } catch (error) {
+        lastError = error;
+    }
+    try {
+        await execFileAsync('cmd.exe', ['/c', 'start', '', parentDir], { windowsHide: true });
+        return { ok: true, warning: 'File selection unavailable; opened parent folder instead.' };
+    } catch (error) {
+        lastError = error;
+    }
+    throw lastError || new Error('Unable to launch Explorer');
+};
+
 const normalizeJobFiles = (output) => {
     const targetDir = String(output?.targetDir || '').trim();
     const rawFiles = Array.isArray(output?.files) ? output.files : [];
@@ -225,14 +268,23 @@ router.post('/routing-log/reveal', async (req, res) => {
             return res.status(404).json({ ok: false, error: 'File path unavailable for this entry' });
         }
 
+        const normalizedPath = normalizeWindowsPath(target.path);
         try {
-            await access(target.path);
+            const result = await revealInExplorer(normalizedPath);
+            return res.json({ ok: true, warning: result.warning || '' });
         } catch {
-            return res.status(404).json({ ok: false, error: 'File not found on disk' });
+            const parentDir = dirname(normalizedPath);
+            try {
+                const result = await revealInExplorer(parentDir);
+                return res.json({ ok: true, warning: result.warning || 'File not found; opened parent folder instead.' });
+            } catch (error) {
+                return res.status(500).json({
+                    ok: false,
+                    error: `Unable to open file location for: ${normalizedPath}`,
+                    detail: String(error?.message || '').slice(0, 240)
+                });
+            }
         }
-
-        await execFileAsync('explorer.exe', ['/select,', target.path], { windowsHide: true });
-        return res.json({ ok: true });
     } catch (error) {
         console.error('Routing log reveal error:', error);
         return res.status(500).json({ ok: false, error: 'Failed to reveal file' });

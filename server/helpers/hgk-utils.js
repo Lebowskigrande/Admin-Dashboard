@@ -228,6 +228,28 @@ const decodeHtmlEntities = (value) => String(value || '')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'");
 
+const normalizeDecodedBodyText = (value) => {
+    const raw = String(value || '');
+    const looksLikeHtml = /<\s*html|<\s*body|<\s*div|<\s*p|<\s*br|<[^>]+>/i.test(raw);
+    const normalized = decodeHtmlEntities(raw);
+    if (!looksLikeHtml) {
+        return normalized
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .replace(/[ \t]{2,}/g, ' ')
+            .trim();
+    }
+    return normalized
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n')
+        .replace(/<\/div>/gi, '\n')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim();
+};
+
 export const extractGmailMessageText = (message) => {
     const payload = message?.payload;
     if (!payload) return '';
@@ -238,19 +260,10 @@ export const extractGmailMessageText = (message) => {
     const htmlParts = collectGmailParts(payload, 'text/html');
     if (htmlParts.length > 0) {
         const htmlText = htmlParts.map(decodeGmailBody).join('\n');
-        const normalized = decodeHtmlEntities(htmlText)
-            .replace(/<br\s*\/?>/gi, '\n')
-            .replace(/<\/p>/gi, '\n')
-            .replace(/<\/div>/gi, '\n')
-            .replace(/<[^>]+>/g, ' ');
-        return normalized
-            .replace(/[ \t]+\n/g, '\n')
-            .replace(/\n{3,}/g, '\n\n')
-            .replace(/[ \t]{2,}/g, ' ')
-            .trim();
+        return normalizeDecodedBodyText(htmlText);
     }
     if (payload.body?.data) {
-        return decodeGmailBody(payload.body.data);
+        return normalizeDecodedBodyText(decodeGmailBody(payload.body.data));
     }
     return '';
 };

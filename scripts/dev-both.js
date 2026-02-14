@@ -2,13 +2,18 @@ import { spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { access } from 'fs/promises';
+import { promisify } from 'util';
+import { execFile } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, '..');
+const execFileAsync = promisify(execFile);
 
 const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173/';
 const serverHealthUrl = process.env.SERVER_HEALTH_URL || 'http://localhost:3001/api/health';
+const clientPort = Number(process.env.CLIENT_PORT || 5173);
+const serverPort = Number(process.env.SERVER_PORT || 3001);
 
 const checkUrl = async (url, timeoutMs = 750) => {
     const controller = new AbortController();
@@ -34,11 +39,54 @@ const spawnChild = (args, label) => {
     return child;
 };
 
+const listPidsByPort = async (port) => {
+    if (!Number.isFinite(port) || port <= 0) return [];
+    const ps = `
+$port = ${port}
+$conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+if (-not $conns) { '' }
+else { ($conns | Select-Object -ExpandProperty OwningProcess) | ConvertTo-Json -Compress }
+`;
+    try {
+        const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-Command', ps], {
+            windowsHide: true
+        });
+        const raw = stdout.trim();
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        const list = Array.isArray(parsed) ? parsed : [parsed];
+        return list
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value) && value > 0);
+    } catch {
+        return [];
+    }
+};
+
+const killPid = async (pid) => {
+    if (!pid || pid === process.pid) return;
+    try {
+        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+        console.log(`[dev:both] stopped PID ${pid}`);
+    } catch {
+        // ignore if the process exited between list and kill
+    }
+};
+
+const cleanupPorts = async (ports) => {
+    const pids = new Set();
+    for (const port of ports) {
+        const portPids = await listPidsByPort(port);
+        portPids.forEach((pid) => pids.add(pid));
+    }
+    for (const pid of pids) {
+        await killPid(pid);
+    }
+};
+
 const startServices = async () => {
-    const [clientUp, serverUp] = await Promise.all([
-        checkUrl(clientUrl),
-        checkUrl(serverHealthUrl)
-    ]);
+    await cleanupPorts([serverPort, clientPort]);
+    const [clientUp, serverUp] = await Promise.all([checkUrl(clientUrl), checkUrl(serverHealthUrl)]);
 
     const children = [];
 

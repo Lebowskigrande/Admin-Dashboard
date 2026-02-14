@@ -166,6 +166,13 @@ const Sunday = () => {
     const [hgkSearchBusy, setHgkSearchBusy] = useState(false);
     const [sundayTemplates, setSundayTemplates] = useState([]);
     const [sundayTasks, setSundayTasks] = useState([]);
+    const [ccConnected, setCcConnected] = useState(false);
+    const [ccLoading, setCcLoading] = useState(false);
+    const [ccEmailBusy, setCcEmailBusy] = useState(false);
+    const [ccFromEmails, setCcFromEmails] = useState([]);
+    const [ccFromEmail, setCcFromEmail] = useState('');
+    const [ccEmailError, setCcEmailError] = useState('');
+    const [ccEmailSuccess, setCcEmailSuccess] = useState('');
 
     const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
     const peopleByName = useMemo(() => {
@@ -591,6 +598,52 @@ const Sunday = () => {
         };
         loadLivestream();
     }, [currentDate]);
+
+    const loadConstantContact = useCallback(async () => {
+        setCcLoading(true);
+        try {
+            const statusResponse = await fetch(`${API_URL}/constant-contact/status`, { credentials: 'include' });
+            if (!statusResponse.ok) throw new Error('Failed to load Constant Contact status');
+            const statusData = await statusResponse.json();
+            const connected = !!statusData?.connected;
+            setCcConnected(connected);
+            if (!connected) {
+                setCcFromEmails([]);
+                setCcFromEmail('');
+                return;
+            }
+
+            const emailsResponse = await fetch(`${API_URL}/constant-contact/from-emails`, { credentials: 'include' });
+            if (!emailsResponse.ok) throw new Error('Failed to load Constant Contact sender emails');
+            const emailsData = await emailsResponse.json();
+            const emails = Array.isArray(emailsData?.emails) ? emailsData.emails : [];
+            setCcFromEmails(emails);
+            const emailValues = emails
+                .map((entry) => entry?.email_address || entry?.email || entry?.address || '')
+                .filter(Boolean);
+            const confirmed = emails.find((entry) => {
+                const status = String(entry?.status || '').toLowerCase().trim();
+                return status === 'confirmed' || status === 'verified' || status === 'active';
+            });
+            const confirmedValue = confirmed?.email_address || confirmed?.email || confirmed?.address || '';
+            setCcFromEmail((prev) => {
+                if (prev && emailValues.includes(prev)) return prev;
+                if (confirmedValue) return confirmedValue;
+                return emailValues[0] || '';
+            });
+        } catch (err) {
+            console.error(err);
+            setCcConnected(false);
+            setCcFromEmails([]);
+            setCcFromEmail('');
+        } finally {
+            setCcLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadConstantContact();
+    }, [loadConstantContact]);
 
 
     const loadDocs = useCallback(async () => {
@@ -1035,6 +1088,70 @@ const Sunday = () => {
     };
 
     const handlePrintInsert = () => printFile(insertDoc.path, { copies: bulletinPrintCopies.insert });
+
+    const handleCreateLivestreamEmail = async () => {
+        if (!currentDate || ccEmailBusy) return;
+        if (!ccConnected) {
+            setCcEmailError('Constant Contact is not connected. Connect it in Settings first.');
+            setCcEmailSuccess('');
+            return;
+        }
+        if (!livestreamUrl) {
+            setCcEmailError('Missing livestream URL for this Sunday.');
+            setCcEmailSuccess('');
+            return;
+        }
+        if (!details.bulletinUploadUrl || !details.bulletinImageUrl) {
+            setCcEmailError('Bulletin upload URL and image URL are required before scheduling email.');
+            setCcEmailSuccess('');
+            return;
+        }
+
+        setCcEmailBusy(true);
+        setCcEmailError('');
+        setCcEmailSuccess('');
+        try {
+            const date = format(currentDate, 'MMMM d, yyyy');
+            const sundayName = liturgicalInfo?.name || liturgicalInfo?.feast || 'Sunday';
+            const response = await fetch(`${API_URL}/constant-contact/email`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({
+                    date,
+                    sundayName,
+                    youtubeLink: livestreamUrl,
+                    pdfUrl: details.bulletinUploadUrl,
+                    imageUrl: details.bulletinImageUrl,
+                    fromEmail: ccFromEmail || undefined
+                })
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload?.error || 'Failed to create Constant Contact email');
+
+            setDetails((prev) => {
+                const next = {
+                    ...prev,
+                    emailCreated: true,
+                    emailScheduled: true
+                };
+                saveSundayDetails(currentDate, next);
+                return next;
+            });
+
+            const scheduled = payload?.scheduledDate ? new Date(payload.scheduledDate) : null;
+            const when = scheduled && !Number.isNaN(scheduled.getTime())
+                ? ` Scheduled for ${scheduled.toLocaleString()}.`
+                : '';
+            setCcEmailSuccess(`Constant Contact email created.${when}`);
+        } catch (err) {
+            console.error(err);
+            setCcEmailError(err?.message || 'Failed to create Constant Contact email.');
+            setCcEmailSuccess('');
+        } finally {
+            setCcEmailBusy(false);
+        }
+    };
 
     const renderTooltipCard = (person) => {
         if (!person) return null;
@@ -1676,6 +1793,15 @@ const Sunday = () => {
                     details={details}
                     toggleEmailChecklistItem={toggleEmailChecklistItem}
                     livestreamError={livestreamError}
+                    ccConnected={ccConnected}
+                    ccLoading={ccLoading}
+                    ccFromEmails={ccFromEmails}
+                    ccFromEmail={ccFromEmail}
+                    setCcFromEmail={setCcFromEmail}
+                    ccEmailBusy={ccEmailBusy}
+                    ccEmailError={ccEmailError}
+                    ccEmailSuccess={ccEmailSuccess}
+                    onCreateLivestreamEmail={handleCreateLivestreamEmail}
                 />
             </div>
 

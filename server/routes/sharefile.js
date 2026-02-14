@@ -94,14 +94,23 @@ const parseLegacyMessageId = (value) => {
     }
 };
 
+const isApiMessageId = (value) => /^[0-9a-f]{10,}$/i.test(String(value || '').trim());
+
 const normalizeMessageId = (gmail = {}) => {
     const direct = String(gmail.messageId || '').trim();
     if (direct) {
+        if (isApiMessageId(direct)) {
+            return direct;
+        }
         if (/^#?msg-f:/i.test(direct)) {
             const parsed = parseLegacyMessageId(direct);
             if (parsed) return parsed;
         }
-        return direct;
+        // Ignore Gmail DOM ids like "#msg-a:r..." and resolve from threadId instead.
+        if (/^#?msg-[a-z]:/i.test(direct)) {
+            return null;
+        }
+        return null;
     }
     const legacy = parseLegacyMessageId(gmail.webMessageDomId || '');
     return legacy || null;
@@ -229,7 +238,7 @@ router.post('/api/sharefile/google/accounts/disconnect', requireAuth, (req, res)
 router.post('/api/sharefile/route-emails', requireAuth, async (req, res) => {
     try {
         const result = await routeShareFileEmails({
-            archive: true
+            archive: false
         });
         res.json(result);
     } catch (error) {
@@ -249,6 +258,7 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
         codeType: payload.codeType,
         codeValue: payload.codeValue,
         routeKind: payload.routeKind,
+        designation: payload.designation,
         clientTs: payload.client?.ts || ''
     };
 
@@ -290,7 +300,7 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
                     messageId: normalizedMessageId,
                     threadId: effectiveThreadId,
                     extraMeta,
-                    archive: true,
+                    archive: false,
                     tokensOverride: candidate.tokens
                 });
                 sharefileDebugLog('route-email candidate success', {
