@@ -605,12 +605,13 @@
     background: #e0f2fe;
     color: #0c4a6e;
     border: 1px solid #bae6fd;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .contract-pill:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 6px 14px rgba(14, 116, 144, 0.18);
+    background: #dff3ff;
+    border-color: #8bd9ff;
+    box-shadow: var(--interactive-hover-shadow);
 }
 
 .contract-pill.disabled {

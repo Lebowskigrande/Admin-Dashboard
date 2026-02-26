@@ -13,6 +13,9 @@
 
 body {
     font-family: var(--font-family-base);
+    background:
+        radial-gradient(circle at 10% 12%, rgba(15, 76, 129, 0.08) 0%, transparent 44%),
+        linear-gradient(180deg, #f9fbfd 0%, var(--color-bg) 55%, #e7edf5 100%);
     background-color: var(--color-bg);
     color: var(--color-text-main);
     line-height: 1.5;
@@ -36,7 +39,7 @@ body,
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-lg);
-    min-height: 72px;
+    min-height: 64px;
     margin-bottom: var(--space-sm);
     padding-top: 0;
 }
@@ -118,6 +121,44 @@ a {
 button {
     cursor: pointer;
     font-family: inherit;
+    transition:
+        box-shadow var(--transition-fast),
+        border-color var(--transition-fast),
+        background var(--transition-fast),
+        color var(--transition-fast);
+}
+
+button:active {
+    transform: scale(0.985);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+    outline: 2px solid rgba(37, 99, 235, 0.35);
+    outline-offset: 2px;
+}
+
+input,
+select,
+textarea {
+    font: inherit;
+    color: var(--color-text-main);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: #fff;
+    transition:
+        border-color var(--transition-fast),
+        box-shadow var(--transition-fast),
+        background var(--transition-fast);
+}
+
+input:hover,
+select:hover,
+textarea:hover {
+    border-color: var(--color-border-strong);
 }
 
 .pill {
@@ -144,13 +185,13 @@ button {
     background: #f8fafc;
     color: #1f2937;
     cursor: pointer;
-    transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+    transition: box-shadow 0.12s ease, background 0.12s ease, border-color 0.12s ease;
 }
 
 .data-pill:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
-    background: #eef2ff;
+    box-shadow: var(--interactive-hover-shadow);
+    background: var(--interactive-hover-bg);
+    border-color: var(--interactive-hover-border);
 }
 
 .data-pill:focus-visible {
@@ -302,29 +343,29 @@ button {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    transition: background 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: var(--shadow-sm);
 }
 
 .btn-primary:hover {
     background: var(--color-primary-light);
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--interactive-hover-shadow-strong);
 }
 
 .btn-secondary {
-    background: transparent;
+    background: #fff;
     color: var(--color-text-secondary);
-    border: 1px solid rgba(15, 23, 42, 0.2);
+    border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     padding: 0 var(--space-md);
     height: 40px;
     font-weight: 600;
-    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
 
 .btn-secondary:hover {
-    background: var(--color-bg);
+    background: var(--interactive-hover-bg);
     color: var(--color-text-main);
-    border-color: rgba(15, 23, 42, 0.3);
+    border-color: var(--interactive-hover-border);
+    box-shadow: var(--interactive-hover-shadow);
 }
 
 .btn-ghost {
@@ -341,9 +382,10 @@ button {
 }
 
 .btn-ghost:hover {
-    background: rgba(15, 23, 42, 0.06);
-    border-color: rgba(15, 23, 42, 0.2);
+    background: var(--interactive-hover-bg);
+    border-color: var(--interactive-hover-border);
     color: var(--color-text-main);
+    box-shadow: var(--interactive-hover-shadow);
 }
 
 .btn-ghost.icon-only {
@@ -362,12 +404,12 @@ button {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 .btn-danger:hover {
     background: #fecaca;
     border-color: #fca5a5;
+    box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.28);
 }
 
 /* Scrollbar */
@@ -386,4 +428,15 @@ button {
 
 ::-webkit-scrollbar-thumb:hover {
     background: #94a3b8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
 }

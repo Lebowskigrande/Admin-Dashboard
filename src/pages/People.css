@@ -61,12 +61,13 @@
     gap: 1rem;
     min-height: 320px;
     box-shadow: var(--shadow-sm);
-    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease;
 }
 
 .people-panel:hover {
-    box-shadow: 0 16px 32px rgba(15, 23, 42, 0.12);
-    border-color: rgba(15, 23, 42, 0.08);
+    box-shadow: var(--interactive-hover-shadow);
+    border-color: var(--interactive-hover-border);
+    background: #fbfdff;
 }
 
 .people-filter-bar {
@@ -81,12 +82,13 @@
     top: 1rem;
     z-index: 2;
     box-shadow: var(--shadow-sm);
-    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease;
 }
 
 .people-filter-bar:hover {
-    box-shadow: 0 16px 32px rgba(15, 23, 42, 0.12);
-    border-color: rgba(15, 23, 42, 0.08);
+    box-shadow: var(--interactive-hover-shadow);
+    border-color: var(--interactive-hover-border);
+    background: #fbfdff;
 }
 
 .people-list-panel {
@@ -126,6 +128,60 @@
 .panel-meta {
     color: var(--color-text-secondary);
     font-size: 0.85rem;
+}
+
+.people-copy-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.people-copy-icon,
+.people-copy-button {
+    width: 1.2rem;
+    height: 1.2rem;
+    border-radius: 999px;
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+    color: #334155;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex: 0 0 auto;
+    font-size: 0.68rem;
+}
+
+.people-copy-button {
+    padding: 0;
+}
+
+.people-copy-icon:hover,
+.people-copy-button:hover {
+    border-color: #94a3b8;
+    background: #eef2f7;
+}
+
+.people-copy-icon:focus-visible,
+.people-copy-button:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 1px;
+}
+
+.people-copy-toast {
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 1200;
+    border-radius: 10px;
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.15);
 }
 
 .panel-actions {
@@ -188,6 +244,39 @@
     cursor: pointer;
     transition: background 0.2s ease, border-color 0.2s ease;
     min-height: 48px;
+}
+
+.people-family-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.people-list-item--family {
+    background: rgba(15, 76, 129, 0.03);
+}
+
+.people-list-item--member {
+    padding-left: 1.35rem;
+}
+
+.people-list-family-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.people-list-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    font-size: 0.72rem;
+    color: var(--color-text-secondary);
+    transition: transform 0.15s ease;
+}
+
+.people-list-chevron.expanded {
+    transform: rotate(90deg);
 }
 
 .people-list-item:hover:not(.active) {
@@ -366,6 +455,10 @@
     min-width: 28px;
     padding: 0 8px;
     font-size: 0.8rem;
+}
+
+.env-chip--pledger {
+    box-shadow: 0 0 0 2px #facc15, 0 0 0 4px rgba(250, 204, 21, 0.35);
 }
 
 .address-link {

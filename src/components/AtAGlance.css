@@ -8,9 +8,12 @@
 
 .at-a-glance-card {
     border-top: none;
+    transition: box-shadow var(--transition-base), border-color var(--transition-fast), background var(--transition-fast);
 }
 
 .at-a-glance-wrapper:hover .at-a-glance-card {
+    box-shadow: var(--interactive-hover-shadow);
+    border-color: var(--interactive-hover-border);
 }
 
 .at-a-glance-header {
@@ -18,7 +21,7 @@
     justify-content: space-between;
     align-items: center;
     gap: var(--space-md);
-    margin-bottom: var(--space-md);
+    margin-bottom: 0.75rem;
 }
 
 .section-title {
@@ -30,16 +33,16 @@
 }
 
 .sunday-date {
-    font-size: 1.4rem;
+    font-size: 1.2rem;
     color: var(--color-primary-dark);
     margin: 0 0 var(--space-xs) 0;
 }
 
 .liturgical-badge {
     display: inline-block;
-    padding: 4px 12px;
+    padding: 0.28rem 0.6rem;
     border-radius: 20px;
-    font-size: 0.85rem;
+    font-size: 0.78rem;
     font-weight: 600;
 }
 
@@ -70,8 +73,8 @@
 .glance-section {
     display: flex;
     flex-direction: column;
-    gap: var(--space-sm);
-    margin-bottom: var(--space-md);
+    gap: 0.55rem;
+    margin-bottom: 0.8rem;
 }
 
 .glance-section h4 {
@@ -83,7 +86,8 @@
 
 .glance-list {
     display: grid;
-    gap: var(--space-sm);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
 }
 
 .glance-item {
@@ -91,16 +95,17 @@
     display: flex;
     justify-content: space-between;
     gap: var(--space-sm);
-    padding: var(--space-sm) var(--space-md);
-    border: 1px solid rgba(0, 0, 0, 0.08);
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    transition: border-color 0.2s, background 0.2s;
+    transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
     background: #fff;
 }
 
 .glance-item:hover {
-    border-color: var(--list-hover-border);
-    background: var(--list-hover-bg);
+    border-color: var(--interactive-hover-border);
+    background: var(--interactive-hover-bg);
+    box-shadow: var(--interactive-hover-shadow);
 }
 
 .glance-label {
@@ -120,6 +125,7 @@
 .glance-empty {
     color: var(--color-text-secondary);
     font-style: italic;
+    font-size: 0.9rem;
 }
 
 .glance-chips {
@@ -129,14 +135,20 @@
 }
 
 .glance-chip {
-    padding: 4px 10px;
+    padding: 0.22rem 0.55rem;
     border-radius: 999px;
     background: rgba(15, 23, 42, 0.08);
-    font-size: 0.85rem;
-    transition: transform 0.2s ease, background 0.2s ease;
+    font-size: 0.78rem;
+    transition: background var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .glance-chip:hover {
     background: rgba(37, 99, 235, 0.12);
-    transform: translateY(-1px);
+    box-shadow: var(--interactive-hover-shadow);
+}
+
+@media (max-width: 960px) {
+    .glance-list {
+        grid-template-columns: 1fr;
+    }
 }

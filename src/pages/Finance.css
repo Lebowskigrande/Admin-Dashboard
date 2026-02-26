@@ -120,10 +120,135 @@
     color: var(--color-text-main);
 }
 
+.routing-log-entry-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.routing-env-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 34px;
+    height: 1.5rem;
+    padding: 0 0.55rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    background: rgba(37, 99, 235, 0.18);
+    color: #1d4ed8;
+    border: 1px solid rgba(37, 99, 235, 0.35);
+}
+
+.routing-env-chip.is-pledger {
+    box-shadow: 0 0 0 2px #facc15, 0 0 0 4px rgba(250, 204, 21, 0.35);
+}
+
 .routing-log-error-text {
     margin: 0;
     font-size: 0.82rem;
     color: #991b1b;
+}
+
+.routing-log-designation-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    font-size: 0.82rem;
+    color: #334155;
+}
+
+.routing-log-designation-label {
+    color: #64748b;
+}
+
+.routing-log-designation-button {
+    margin-left: auto;
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-radius: 999px;
+    padding: 0.2rem 0.65rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.routing-log-designation-button:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
+.routing-log-inline-editor {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.45rem;
+}
+
+.routing-log-inline-editor label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.74rem;
+    color: #64748b;
+    font-weight: 600;
+}
+
+.routing-log-inline-editor input {
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 0.25rem 0.45rem;
+    font-size: 0.8rem;
+    color: #1f2937;
+}
+
+.routing-log-filename-input {
+    min-width: 0;
+    width: 100%;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 0.22rem 0.45rem;
+    font-size: 0.8rem;
+    color: #1f2937;
+}
+
+.routing-log-inline-actions {
+    display: flex;
+    gap: 0.4rem;
+    justify-content: flex-end;
+}
+
+.routing-log-inline-actions button {
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-radius: 999px;
+    padding: 0.2rem 0.65rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.routing-log-edit-icon {
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-radius: 999px;
+    width: 1.5rem;
+    height: 1.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+}
+
+.routing-log-edit-icon:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
 }
 
 .routing-log-file-row {
@@ -131,6 +256,10 @@
     justify-content: space-between;
     align-items: center;
     gap: 0.6rem;
+}
+
+.routing-log-file-row.is-deleted {
+    opacity: 0.75;
 }
 
 .routing-log-file-row span {
@@ -157,6 +286,18 @@
 .routing-log-file-row button:disabled {
     opacity: 0.65;
     cursor: not-allowed;
+}
+
+.routing-log-delete-button {
+    border: 1px solid #fecaca;
+    background: #fef2f2;
+    color: #b91c1c;
+}
+
+.routing-log-delete-button.is-undo {
+    border-color: #cbd5e1;
+    background: #f8fafc;
+    color: #475569;
 }
 
 .finance-summary {
@@ -507,12 +648,14 @@
     justify-content: center;
     box-shadow: 0 6px 16px rgba(15, 23, 42, 0.2);
     cursor: pointer;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+    border: 1px solid transparent;
 }
 
 .deposit-download-button:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.25);
+    background: var(--color-primary-light);
+    border-color: rgba(255, 255, 255, 0.24);
+    box-shadow: var(--interactive-hover-shadow-strong);
 }
 
 .deposit-download-button:disabled {
@@ -528,12 +671,13 @@
     padding: 0.4rem 1rem;
     font-weight: 600;
     cursor: pointer;
-    transition: background 0.2s ease, transform 0.2s ease;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .deposit-save-button:hover {
     background: #bae6fd;
-    transform: translateY(-1px);
+    border-color: #7dd3fc;
+    box-shadow: var(--interactive-hover-shadow);
 }
 
 .deposit-build-button {
@@ -544,12 +688,13 @@
     padding: 0.4rem 1rem;
     font-weight: 600;
     cursor: pointer;
-    transition: background 0.2s ease, transform 0.2s ease;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .deposit-build-button:hover:not(:disabled) {
     background: #fef08a;
-    transform: translateY(-1px);
+    border-color: #facc15;
+    box-shadow: var(--interactive-hover-shadow);
 }
 
 .deposit-build-button:disabled {
@@ -572,12 +717,13 @@
     padding: 0.4rem 1rem;
     font-weight: 600;
     cursor: pointer;
-    transition: background 0.2s ease, transform 0.2s ease;
+    transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .deposit-clear-button:hover {
     background: #e2e8f0;
-    transform: translateY(-1px);
+    border-color: #94a3b8;
+    box-shadow: var(--interactive-hover-shadow);
 }
 
 .deposit-preview-modal {

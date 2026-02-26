@@ -1,33 +1,40 @@
 :root {
   /* Colors */
   --color-primary: #0f4c81;
-  /* Classic Blue */
-  --color-primary-light: #4878b0;
+  --color-primary-light: #2e6da3;
   --color-primary-dark: #082d4f;
+  --color-primary-soft: #dce8f5;
 
   --color-gold: #c5a059;
-  /* Muted Gold matching the crown */
-  --color-gold-hover: #d4af37;
+  --color-gold-hover: #d6b16b;
 
-  --color-bg: #f4f6f8;
+  --color-bg: #edf2f7;
+  --color-bg-soft: #f7fafc;
   --color-surface: #ffffff;
+  --color-surface-alt: #f8fbff;
+  --color-border: rgba(15, 23, 42, 0.12);
+  --color-border-strong: rgba(15, 23, 42, 0.18);
 
   --color-text-main: #1a1a1a;
-  --color-text-secondary: #64748b;
+  --color-text-secondary: #5b6b82;
   --color-text-inverse: #ffffff;
   --color-text-primary: var(--color-text-main);
   --color-text-muted: var(--color-text-secondary);
 
   /* List hover */
   --list-hover-bg: #eef2ff;
-  --list-hover-border: #cbd5f5;
+  --list-hover-border: #bfd0ec;
+  --interactive-hover-bg: #f4f7fc;
+  --interactive-hover-border: #c8d7ee;
+  --interactive-hover-shadow: 0 0 0 1px rgba(37, 99, 235, 0.16);
+  --interactive-hover-shadow-strong: 0 0 0 2px rgba(37, 99, 235, 0.16);
 
   /* Spacing */
-  --space-xs: 0.5rem;
-  --space-sm: 0.75rem;
-  --space-md: 1.25rem;
-  --space-lg: 1.75rem;
-  --space-xl: 2.5rem;
+  --space-xs: 0.4rem;
+  --space-sm: 0.7rem;
+  --space-md: 1rem;
+  --space-lg: 1.35rem;
+  --space-xl: 2rem;
 
   /* Typography */
   --font-family-base: 'Inter', system-ui, -apple-system, sans-serif;
@@ -40,9 +47,9 @@
   --font-size-2xl: 2rem;
 
   /* Shadows */
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 10px 28px rgba(15, 23, 42, 0.12);
+  --shadow-lg: 0 18px 44px rgba(15, 23, 42, 0.16);
 
   /* People attribute colors */
   --person-clergy-bg: rgba(37, 99, 235, 0.2);
@@ -55,7 +62,13 @@
   --person-volunteer-text: #c2410c;
 
   /* Border Radius */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
+  --radius-sm: 0.45rem;
+  --radius-md: 0.75rem;
   --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --transition-fast: 0.18s var(--ease-standard);
+  --transition-base: 0.28s var(--ease-standard);
 }
