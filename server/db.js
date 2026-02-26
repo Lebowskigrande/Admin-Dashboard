@@ -103,10 +103,6 @@ sqlite.exec(`
 
     CREATE INDEX IF NOT EXISTS idx_routing_attempts_created_at ON routing_attempts(created_at);
     CREATE INDEX IF NOT EXISTS idx_routing_attempts_job_id ON routing_attempts(job_id);
-    CREATE INDEX IF NOT EXISTS idx_sharefile_job_events_attempt_id ON sharefile_job_events(attempt_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_sharefile_job_events_attempt_dedupe
-        ON sharefile_job_events(attempt_id, message_id, code_type, code_value, status)
-        WHERE attempt_id IS NOT NULL;
 `);
 
 const ensureSharefileJobEventsColumns = () => {
