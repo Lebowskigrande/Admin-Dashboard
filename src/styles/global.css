@@ -90,6 +90,15 @@ body,
     color: var(--color-primary);
 }
 
+.page-loading {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    font-weight: 600;
+}
+
 @media (max-width: 960px) {
     .page-header-bar {
         flex-direction: column;
