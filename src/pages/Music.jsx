@@ -6,7 +6,7 @@ import './Music.css';
 
 const Music = () => {
     const [searchTerm, setSearchTerm] = useState('');
-    const [musicFiles, setMusicFiles] = useState([
+    const [musicFiles] = useState([
         { id: 1, title: 'Silent Night', composer: 'Gruber', type: 'Hymn', format: 'PDF', tags: 'Christmas' },
         { id: 2, title: 'Hallelujah Chorus', composer: 'Handel', type: 'Choral', format: 'PDF', tags: 'Easter, Christmas' },
         { id: 3, title: 'Prelude in C', composer: 'Bach', type: 'Organ', format: 'MP3', tags: 'General' },

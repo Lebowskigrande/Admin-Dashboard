@@ -531,15 +531,6 @@ const buildInvoiceFilename = async ({
     return ensureUniquePath(targetDir, baseName);
 };
 
-const parseDisplayNameFromFromHeader = (fromHeader) => {
-    const raw = String(fromHeader || '').trim();
-    if (!raw) return '';
-    const match = raw.match(/^(.*?)\s*<[^>]+>\s*$/);
-    if (match?.[1]) return match[1].trim().replace(/^"|"$/g, '');
-    if (!raw.includes('@')) return raw.replace(/^"|"$/g, '');
-    return '';
-};
-
 const normalizePersonName = (value) => String(value || '')
     .toLowerCase()
     .replace(/['".,]/g, '')
@@ -625,22 +616,29 @@ const extractEnvelopeFromTags = (tagsValue) => {
     return extractEnvelopeFromTagsHelper(tagsValue);
 };
 
+const extractEnvelopeFromPersonRow = (row) => {
+    const fromTags = extractEnvelopeFromTags(row?.tags);
+    if (fromTags) return fromTags;
+    return compactWhitespace(row?.envelope_number || '');
+};
+
 const lookupEnvelopeNumberByDonorName = (donorName) => {
     const normalizedDonor = normalizePersonName(donorName);
     if (!normalizedDonor) return '';
 
     const rows = db.prepare(`
-        SELECT display_name, tags
+        SELECT display_name, envelope_number, tags
         FROM people
-        WHERE tags IS NOT NULL
-          AND tags <> ''
+        WHERE (tags IS NOT NULL AND tags <> '')
+           OR (envelope_number IS NOT NULL AND TRIM(envelope_number) <> '')
     `).all();
 
     for (const row of rows) {
         const normalizedDisplay = normalizePersonName(row.display_name || '');
         if (!normalizedDisplay) continue;
         if (normalizedDisplay === normalizedDonor) {
-            return extractEnvelopeFromTags(row.tags);
+            const envelope = extractEnvelopeFromPersonRow(row);
+            if (envelope) return envelope;
         }
     }
 
@@ -648,7 +646,7 @@ const lookupEnvelopeNumberByDonorName = (donorName) => {
         const normalizedDisplay = normalizePersonName(row.display_name || '');
         if (!normalizedDisplay) continue;
         if (normalizedDisplay.includes(normalizedDonor) || normalizedDonor.includes(normalizedDisplay)) {
-            const envelope = extractEnvelopeFromTags(row.tags);
+            const envelope = extractEnvelopeFromPersonRow(row);
             if (envelope) return envelope;
         }
     }
@@ -660,7 +658,7 @@ const lookupEnvelopeNumberByDonorName = (donorName) => {
         if (!normalizedDisplay) continue;
         const displayLast = normalizedDisplay.split(' ').filter(Boolean).at(-1) || '';
         if (displayLast && displayLast === donorLast) {
-            const envelope = extractEnvelopeFromTags(row.tags);
+            const envelope = extractEnvelopeFromPersonRow(row);
             if (envelope) return envelope;
         }
     }
@@ -697,9 +695,9 @@ const parseNameFromContributionPatterns = (text) => {
     if (!full) return '';
 
     const patterns = [
-        /contributor\s*[:\-]?\s*([A-Za-z][A-Za-z'.,\- ]{1,120})/i,
-        /you received\s+\$[0-9,]+(?:\.[0-9]{2})?\s+from\s+([A-Za-z][A-Za-z'.,\- ]{1,120})/i,
-        /([A-Za-z][A-Za-z'.,\- ]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?/i
+        /contributor\s*[:-]?\s*([A-Za-z][A-Za-z'., -]{1,120})/i,
+        /you received\s+\$[0-9,]+(?:\.[0-9]{2})?\s+from\s+([A-Za-z][A-Za-z'., -]{1,120})/i,
+        /([A-Za-z][A-Za-z'., -]{1,120})\s+sent you\s+\$[0-9,]+(?:\.[0-9]{2})?/i
     ];
 
     for (const regex of patterns) {
@@ -774,7 +772,7 @@ const parseBofAContributionPattern = (text) => {
     };
 };
 
-const parseContributionFields = ({ metadata, bodyText, envelopeFallback, designationFallback = '' }) => {
+const parseContributionFields = ({ bodyText, envelopeFallback, designationFallback = '' }) => {
     const text = normalizeContributionText(bodyText);
     const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
     const findLabeledValue = (patterns) => {
@@ -813,9 +811,9 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback, designa
     const donor =
         namedDonor ||
         findLabeledValue([
-            /^donor\s*[:\-]\s*(.+)$/i,
-            /^name\s*[:\-]\s*(.+)$/i,
-            /^contributor\s*[:\-]?\s*(.+)$/i
+            /^donor\s*[:-]\s*(.+)$/i,
+            /^name\s*[:-]\s*(.+)$/i,
+            /^contributor\s*[:-]?\s*(.+)$/i
         ]) ||
         parseNameFromContributionPatterns(text) ||
         (bofa?.donor || '') ||
@@ -825,9 +823,9 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback, designa
         designationFallback ||
         allocationDesignation ||
         findLabeledValue([
-            /^designation\s*[:\-]\s*(.+)$/i,
-            /^fund\s*[:\-]\s*(.+)$/i,
-            /^purpose\s*[:\-]\s*(.+)$/i,
+            /^designation\s*[:-]\s*(.+)$/i,
+            /^fund\s*[:-]\s*(.+)$/i,
+            /^purpose\s*[:-]\s*(.+)$/i,
             /^i would like my donation to be allocated to:\s*(.+)$/i
         ]) ||
         (bofa?.designation || ''),
@@ -836,8 +834,8 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback, designa
 
     const envelopeFromEmailOrLookup =
         findLabeledValue([
-            /^envelope(?:\s*number|\s*#)?\s*[:\-]\s*([A-Za-z0-9-]+)$/i,
-            /^env(?:elope)?(?:\s*#|\s*number)?\s*[:\-]\s*([A-Za-z0-9-]+)$/i
+            /^envelope(?:\s*number|\s*#)?\s*[:-]\s*([A-Za-z0-9-]+)$/i,
+            /^env(?:elope)?(?:\s*#|\s*number)?\s*[:-]\s*([A-Za-z0-9-]+)$/i
         ]) ||
         String(envelopeFallback || '').trim() ||
         lookupEnvelopeNumberByDonorName(donor);
@@ -874,7 +872,7 @@ const renderEmailToPdf = async (metadata, bodyText) => {
     const font = await doc.embedFont(StandardFonts.Helvetica);
     const bold = await doc.embedFont(StandardFonts.HelveticaBold);
     let page = doc.addPage();
-    let { width, height } = page.getSize();
+    let { height } = page.getSize();
     const margin = 50;
     const lineHeight = 14;
     let cursorY = height - margin;
@@ -887,7 +885,7 @@ const renderEmailToPdf = async (metadata, bodyText) => {
     lines.forEach((line) => {
         if (cursorY < margin) {
             page = doc.addPage();
-            ({ width, height } = page.getSize());
+            ({ height } = page.getSize());
             cursorY = height - margin;
         }
         page.drawText(line, { x: margin, y: cursorY, size: 10, font, color: rgb(0.15, 0.15, 0.15) });

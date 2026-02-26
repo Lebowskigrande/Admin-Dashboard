@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { format, isSunday, parseISO } from 'date-fns';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
@@ -36,20 +36,6 @@ const entryFieldByRole = {
     childcare: 'childcare'
 };
 
-const apiFieldByRole = {
-    celebrant: 'celebrant',
-    preacher: 'preacher',
-    lector: 'lector',
-    organist: 'organist',
-    lem: 'lem',
-    acolyte: 'acolyte',
-    usher: 'usher',
-    sound: 'sound',
-    coffeeHour: 'coffeeHour',
-    childcare: 'childcare'
-};
-
-const roleLabel = (key) => roleConfigs.find((role) => role.key === key)?.label || key;
 const roleConfigs = [
     { key: 'celebrant', label: 'Celebrant' },
     { key: 'preacher', label: 'Preacher' },
@@ -106,7 +92,7 @@ const LiturgicalSchedule = () => {
         return String(value);
     };
 
-    const buildScheduleRowsFromSundays = (sundays = []) => {
+    const buildScheduleRowsFromSundays = useCallback((sundays = []) => {
         const rows = [];
         sundays.forEach((day) => {
             const services = Array.isArray(day?.services) ? day.services : [];
@@ -125,7 +111,7 @@ const LiturgicalSchedule = () => {
             });
         });
         return rows;
-    };
+    }, []);
 
     const refreshScheduleRows = async () => {
         setError('');
@@ -147,7 +133,7 @@ const LiturgicalSchedule = () => {
         }
     };
 
-    const loadData = async () => {
+    const loadData = useCallback(async () => {
         setLoading(true);
         setError('');
         try {
@@ -181,11 +167,11 @@ const LiturgicalSchedule = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, [buildScheduleRowsFromSundays]);
 
     useEffect(() => {
         loadData();
-    }, []);
+    }, [loadData]);
 
     useEffect(() => {
         if (!openMenu) return;
@@ -313,20 +299,6 @@ const LiturgicalSchedule = () => {
             .filter(Boolean);
     };
 
-    const formatAssignments = (value) => {
-        if (!value) return '-';
-        return value
-            .split(',')
-            .map((token) => token.trim())
-            .filter(Boolean)
-            .map((token) => {
-                const person = peopleById.get(token) || peopleByName.get(token.toLowerCase());
-                return person?.displayName || token;
-            })
-            .filter(Boolean)
-            .join(', ');
-    };
-
     const buildAssignmentChips = (entry, value, roleKey) => {
         const ids = parseAssignments(value);
         if (ids.length === 0) return null;
@@ -346,20 +318,13 @@ const LiturgicalSchedule = () => {
                                 updateEntryAssignments(entry, roleKey, nextIds);
                             }}
                         >
-                            <span className={`person-chip person-chip-${category}`}>{displayName}</span>
+                            <span className={`person-chip person-chip-${category} ${person?.isPledger ? 'person-chip-pledger' : ''}`}>{displayName}</span>
                         </span>
                     );
                 })}
             </div>
         );
     };
-    const filterEligibleIds = (roleKey, ids) => {
-        return ids.filter((id) => {
-            const person = peopleById.get(id);
-            return person && (person.roles || []).includes(roleKey);
-        });
-    };
-
     const getEntryKey = (entry) => `${entry.date}-${entry.service_time || '10:00'}`;
 
     const toggleRoleMenu = (entry, roleKey) => {
@@ -710,7 +675,7 @@ const LiturgicalSchedule = () => {
                                                                                         className="person-menu-item"
                                                                                         onClick={() => togglePersonSelection(entry, roleKey, person.id)}
                                                                                     >
-                                                                                        <span className={`person-chip person-chip-${category} ${isSelected ? 'chip-selected' : ''}`}>
+                                                                                        <span className={`person-chip person-chip-${category} ${person.isPledger ? 'person-chip-pledger' : ''} ${isSelected ? 'chip-selected' : ''}`}>
                                                                                             {person.displayName}
                                                                                         </span>
                                                                                     </button>

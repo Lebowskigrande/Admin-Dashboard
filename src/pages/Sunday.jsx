@@ -18,13 +18,6 @@ import './People.css';
 const serializeDate = (date) => date.toISOString().slice(0, 10);
 const toDateKey = (date) => (date ? date.toISOString().slice(0, 10) : '');
 
-const normalizeStatusLabel = (value) => {
-    const raw = String(value || '').toLowerCase().trim();
-    if (!raw || raw === 'not_started') return 'Not Started';
-    if (raw === 'final') return 'ready';
-    return raw;
-};
-
 const apiRoleKeys = new Set([
     'celebrant',
     'preacher',
@@ -147,8 +140,6 @@ const Sunday = () => {
     const [bulletinDoc, setBulletinDoc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [bulletin8Doc, setBulletin8Doc] = useState({ exists: false, preview: '', path: '', name: '' });
     const [insertDoc, setInsertDoc] = useState({ exists: false, preview: '', path: '', name: '' });
-    const [statusDrafts, setStatusDrafts] = useState({});
-    const [statusExpandedKey, setStatusExpandedKey] = useState(null);
     const [bulletinPrintCopies, setBulletinPrintCopies] = useState({ bulletin10: 1, bulletin8: 1, insert: 1 });
     const [selectedEventId, setSelectedEventId] = useState(null);
     const [hgkItemNames, setHgkItemNames] = useState([]);
@@ -313,54 +304,6 @@ const Sunday = () => {
         }));
     }, [milestoneLists, currentDate]);
 
-    const ensureBulletinDocTasks = useCallback(async () => {
-        if (!currentDate) return;
-        const bulletinList = milestoneListsWithDates.find((list) => list.key === 'bulletins');
-        if (!bulletinList) return;
-        const existingKeys = new Set(sundayTasks.map((task) => String(task?.list_key || '').toLowerCase()));
-        const targets = [
-            { key: 'bulletins-10am', label: 'Bulletins (10am)' },
-            { key: 'bulletins-8am', label: 'Bulletins (8am)' }
-        ];
-        const missing = targets.filter((target) => !existingKeys.has(target.key));
-        if (!missing.length) return;
-
-        const steps = bulletinList.steps.map((step, index) => ({
-            key: step.key,
-            title: step.title,
-            sort_order: index + 1,
-            due_offset_days: step.dueOffset ?? null
-        }));
-        const maxOffset = steps.reduce((max, step) => (
-            Number.isFinite(Number(step.due_offset_days))
-                ? Math.max(max, Number(step.due_offset_days))
-                : max
-        ), 0);
-        const dueAt = addDays(currentDate, maxOffset || 0).toISOString().slice(0, 10);
-        const dateStr = serializeDate(currentDate);
-
-        await Promise.all(missing.map((target) => (
-            fetch(`${API_URL}/tasks`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text: target.label,
-                    source_type: 'sunday',
-                    source_id: dateStr,
-                    source_event: target.key,
-                    task_type: 'sunday',
-                    due_at: dueAt,
-                    list_key: target.key,
-                    list_title: target.label,
-                    list_mode: 'progressive',
-                    progress_steps: steps
-                })
-            })
-        )));
-
-        await loadSundayTasks(currentDate);
-    }, [currentDate, milestoneListsWithDates, sundayTasks, loadSundayTasks]);
-
     const sundayTaskMap = useMemo(() => {
         const map = new Map();
         sundayTasks.forEach((task) => {
@@ -383,7 +326,7 @@ const Sunday = () => {
     const resolveMilestoneListKey = useCallback((listKey, statusKey) => {
         const rawStatus = String(statusKey || '').toLowerCase();
         if (rawStatus === 'bulletins-10am' || rawStatus === 'bulletins-8am') {
-            return rawStatus;
+            return 'bulletins';
         }
         if (rawStatus.startsWith('bulletins')) return 'bulletins';
         return listKey || statusKey || '';
@@ -422,24 +365,6 @@ const Sunday = () => {
         if (!task) return;
         updateMilestoneTask(task.id, '');
     };
-
-    const statusToStepKey = (status) => {
-        const normalized = String(status || '').toLowerCase().trim();
-        if (!normalized || normalized === 'not started' || normalized === 'not_started') return '';
-        if (normalized === 'draft') return 'draft';
-        if (normalized === 'review') return 'review';
-        if (normalized === 'ready' || normalized === 'final' || normalized === 'finalize') return 'finalize';
-        if (normalized === 'printed' || normalized === 'print') return 'print';
-        if (normalized === 'stuffed' || normalized === 'stuff') return 'stuff';
-        return '';
-    };
-
-    const syncMilestoneFromStatus = useCallback((listKey, statusKey, statusValue) => {
-        const stepKey = statusToStepKey(statusValue);
-        const task = getMilestoneTask({ key: listKey }, statusKey);
-        if (!task) return;
-        updateMilestoneTask(task.id, stepKey);
-    }, [getMilestoneTask, updateMilestoneTask]);
 
     const updateDateParam = useCallback((date) => {
         navigate(`/sunday?date=${serializeDate(date)}`);
@@ -576,11 +501,6 @@ const Sunday = () => {
     }, [currentDate, loadSundayTasks]);
 
     useEffect(() => {
-        if (!currentDate || sundayTasks.length === 0 || milestoneListsWithDates.length === 0) return;
-        ensureBulletinDocTasks();
-    }, [currentDate, sundayTasks.length, milestoneListsWithDates, ensureBulletinDocTasks]);
-
-    useEffect(() => {
         if (!currentDate) return;
         const loadLivestream = async () => {
             try {
@@ -703,12 +623,6 @@ const Sunday = () => {
                 }
                 return next;
             });
-            setStatusDrafts((prev) => ({
-                ...prev,
-                bulletin10: null,
-                bulletin8: null
-            }));
-
             const needsPreview = (bulletin10Exists && !(cachedDetails.bulletinPreview10 || ''))
                 || (bulletin8Exists && !(cachedDetails.bulletinPreview8 || ''))
                 || (insertExists && !(cachedDetails.insertPreview || ''));
@@ -750,7 +664,7 @@ const Sunday = () => {
         } finally {
             setDocsLoading(false);
         }
-    }, [currentDate, liturgicalInfo?.feast, liturgicalInfo?.name, syncMilestoneFromStatus]);
+    }, [currentDate, liturgicalInfo?.feast, liturgicalInfo?.name]);
 
     const refreshDocPreviews = useCallback(async (docKey) => {
         if (!currentDate) return;
@@ -852,15 +766,6 @@ const Sunday = () => {
 
     const updateDetailField = (field, value) => {
         setDetails((prev) => ({ ...prev, [field]: value }));
-        if (field === 'bulletinStatus10') {
-            syncMilestoneFromStatus('bulletins', 'bulletins-10am', value);
-        }
-        if (field === 'bulletinStatus8') {
-            syncMilestoneFromStatus('bulletins', 'bulletins-8am', value);
-        }
-        if (field === 'bulletinInsertStatus') {
-            syncMilestoneFromStatus('insert', 'insert', value);
-        }
     };
 
     const stepKeyToStatus = (stepKey) => {
@@ -1066,25 +971,17 @@ const Sunday = () => {
     };
 
     const handlePrintBulletin10 = async () => {
-        const ok = await printFile(bulletinDoc?.path, {
+        await printFile(bulletinDoc?.path, {
             printer: 'SHARP-BULLETIN',
             copies: bulletinPrintCopies.bulletin10
         });
-        const expectedCopies = getBulletinDefaultCopies(bulletin10Display, 90);
-        if (ok && isReadyStatus(bulletin10Display) && bulletinPrintCopies.bulletin10 === expectedCopies) {
-            updateDetailField('bulletinStatus10', 'printed');
-        }
     };
 
     const handlePrintBulletin8 = async () => {
-        const ok = await printFile(bulletin8Doc?.path, {
+        await printFile(bulletin8Doc?.path, {
             printer: 'SHARP-BULLETIN',
             copies: bulletinPrintCopies.bulletin8
         });
-        const expectedCopies = getBulletinDefaultCopies(bulletin8Display, 20);
-        if (ok && isReadyStatus(bulletin8Display) && bulletinPrintCopies.bulletin8 === expectedCopies) {
-            updateDetailField('bulletinStatus8', 'printed');
-        }
     };
 
     const handlePrintInsert = () => printFile(insertDoc.path, { copies: bulletinPrintCopies.insert });
@@ -1157,8 +1054,8 @@ const Sunday = () => {
         if (!person) return null;
         const tags = person.tags || [];
         const extensionTag = tags.find((tag) => tag.startsWith('ext-'));
-        const phoneTag = tags.find((tag) => /^phone[:\-]/i.test(tag)) || tags.find((tag) => /^tel[:\-]/i.test(tag));
-        const rawPhone = phoneTag ? phoneTag.replace(/^phone[:\-]\s*/i, '').replace(/^tel[:\-]\s*/i, '').trim() : '';
+        const phoneTag = tags.find((tag) => /^phone[:-]/i.test(tag)) || tags.find((tag) => /^tel[:-]/i.test(tag));
+        const rawPhone = phoneTag ? phoneTag.replace(/^phone[:-]\s*/i, '').replace(/^tel[:-]\s*/i, '').trim() : '';
         const barePhoneTag = tags.find((tag) => !tag.startsWith('ext-') && /\d{3}[^0-9]?\d{3}[^0-9]?\d{4}/.test(tag || ''));
         const phoneLabel = rawPhone || barePhoneTag || (extensionTag ? `Ext ${extensionTag.replace(/^ext-/, '')}` : '');
         const titleTags = tags.filter((tag) => tag && tag !== extensionTag);
@@ -1210,21 +1107,8 @@ const Sunday = () => {
         setOpenTooltipKey((prev) => (prev === tooltipKey ? null : tooltipKey));
     };
 
-    const bulletin10Fallback = bulletinDoc?.exists
-        ? normalizeStatusLabel(bulletinDoc.status || details.bulletinStatus10 || 'draft')
-        : 'Not Started';
-    const bulletin8Fallback = bulletin8Doc?.exists
-        ? normalizeStatusLabel(bulletin8Doc.status || details.bulletinStatus8 || 'draft')
-        : 'Not Started';
-    const insertFallback = insertDoc.exists
-        ? normalizeStatusLabel(insertDoc.status || details.bulletinInsertStatus || 'Not Started')
-        : 'Not Started';
-    const bulletin10Status = getTaskStatusLabel('bulletins', 'bulletins-10am', bulletin10Fallback);
-    const bulletin8Status = getTaskStatusLabel('bulletins', 'bulletins-8am', bulletin8Fallback);
-    const insertStatus = getTaskStatusLabel('insert', 'insert', insertFallback);
-    const bulletin10Display = bulletinDoc?.exists ? bulletin10Status : 'Not Started';
-    const bulletin8Display = bulletin8Doc?.exists ? bulletin8Status : 'Not Started';
-    const insertDisplay = insertDoc.exists ? insertStatus : 'Not Started';
+    const bulletinStatus = getTaskStatusLabel('bulletins', 'bulletins', 'Not Started');
+    const insertStatus = getTaskStatusLabel('insert', 'insert', 'Not Started');
     const getBulletinDefaultCopies = (status, readyCopies) => (
         String(status || '').toLowerCase() === 'ready' ? readyCopies : 1
     );
@@ -1241,19 +1125,17 @@ const Sunday = () => {
         return 1;
     };
 
-    const isReadyStatus = (status) => String(status || '').toLowerCase() === 'ready';
-
     useEffect(() => {
         const insertMilestoneList = milestoneListsWithDates.find((list) => list.key === 'insert');
         const insertMilestoneKey = insertMilestoneList?.key || 'insert';
         const insertMilestoneTask = insertMilestoneList ? getMilestoneTask(insertMilestoneList, insertMilestoneKey) : null;
         const insertMilestoneStep = insertMilestoneTask?.progress_key || '';
         setBulletinPrintCopies({
-            bulletin10: getBulletinDefaultCopies(bulletin10Display, 90),
-            bulletin8: getBulletinDefaultCopies(bulletin8Display, 20),
-            insert: getInsertDefaultCopies(insertDisplay, insertMilestoneList, insertMilestoneStep)
+            bulletin10: getBulletinDefaultCopies(bulletinStatus, 90),
+            bulletin8: getBulletinDefaultCopies(bulletinStatus, 20),
+            insert: getInsertDefaultCopies(insertStatus, insertMilestoneList, insertMilestoneStep)
         });
-    }, [bulletin10Display, bulletin8Display, insertDisplay, milestoneListsWithDates, getMilestoneTask]);
+    }, [bulletinStatus, insertStatus, milestoneListsWithDates, getMilestoneTask]);
 
     const toggleEmailChecklistItem = (field) => {
         updateDetailField(field, !details[field]);
@@ -1764,10 +1646,6 @@ const Sunday = () => {
                     bulletinDoc={bulletinDoc}
                     bulletin8Doc={bulletin8Doc}
                     insertDoc={insertDoc}
-                    statusDrafts={statusDrafts}
-                    bulletin10Status={bulletin10Status}
-                    bulletin8Status={bulletin8Status}
-                    insertStatus={insertStatus}
                     renderMilestoneInline={renderMilestoneInline}
                     isMilestoneComplete={isMilestoneComplete}
                     refreshDocPreviews={refreshDocPreviews}

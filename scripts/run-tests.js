@@ -3,11 +3,17 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 
 import { __TEST__ } from '../server/services/sharefileEmailRouter.js';
+import { __TEST__ as AP_VENDOR_TEST } from '../server/services/apVendorExtractor.js';
 import { sqlite as db } from '../server/db.js';
 
 const fixturesDir = join(process.cwd(), 'tests', 'fixtures');
 
 const readFixture = async (name) => readFile(join(fixturesDir, name), 'utf8');
+const rawArgs = process.argv.slice(2).map((arg) => String(arg || '').trim());
+const cliArgs = new Set(rawArgs.map((arg) => arg.toLowerCase()));
+const vendorOnlyMode = cliArgs.has('--vendor-only') || cliArgs.has('vendor');
+const nameFilterArg = rawArgs.find((arg) => arg.toLowerCase().startsWith('--match='));
+const testNameFilter = nameFilterArg ? nameFilterArg.slice('--match='.length).trim().toLowerCase() : '';
 
 const tests = [
     {
@@ -170,6 +176,71 @@ const tests = [
         }
     },
     {
+        name: 'Contribution lookup uses envelope_number when tags have no envelope token',
+        run: async () => {
+            db.prepare(`
+                INSERT INTO people (id, display_name, envelope_number, tags)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    envelope_number = excluded.envelope_number,
+                    tags = excluded.tags
+            `).run(
+                'test-envelope-column-fallback',
+                'Nora Valdez',
+                '901',
+                '["Volunteer"]'
+            );
+
+            const result = __TEST__.parseContributionFields({
+                metadata: {},
+                bodyText: 'Name: Nora Valdez\nSub Total $100.00\nI would like my donation to be allocated to: 2026 Pledge Payment',
+                envelopeFallback: ''
+            });
+
+            assert.equal(result.envelopeNumber, '901');
+        }
+    },
+    {
+        name: 'Contribution lookup does not stop at exact donor row when envelope tags are empty',
+        run: async () => {
+            db.prepare(`
+                INSERT INTO people (id, display_name, envelope_number, tags)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    envelope_number = excluded.envelope_number,
+                    tags = excluded.tags
+            `).run(
+                'test-envelope-empty-exact-row',
+                'Avery Quillstone',
+                '',
+                '["Volunteer"]'
+            );
+            db.prepare(`
+                INSERT INTO people (id, display_name, envelope_number, tags)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    envelope_number = excluded.envelope_number,
+                    tags = excluded.tags
+            `).run(
+                'test-envelope-last-name-fallback-row',
+                'A. Quillstone',
+                '',
+                '["env-888"]'
+            );
+
+            const result = __TEST__.parseContributionFields({
+                metadata: {},
+                bodyText: 'Name: Avery Quillstone\nSub Total $100.00\nI would like my donation to be allocated to: 2026 Pledge Payment',
+                envelopeFallback: ''
+            });
+
+            assert.equal(result.envelopeNumber, '888');
+        }
+    },
+    {
         name: 'Forwarded contribution uses original metadata/body for donor and date',
         run: async () => {
             const forwarded = [
@@ -310,6 +381,38 @@ const tests = [
             });
             assert.equal(note, 'Designation: Rent');
         }
+    },
+    {
+        name: 'AP vendor extractor detects SoCalGas from content',
+        run: async () => {
+            const sample = 'From: SoCalGas <customerservice@socalgas.com> Subject: Your bill from SoCalGas is now available';
+            const result = AP_VENDOR_TEST.extractVendorFromPdfText(sample);
+            assert.equal(result.vendor, 'SoCalGas');
+        }
+    },
+    {
+        name: 'AP vendor extractor detects Hammer Pest Control from invoice body',
+        run: async () => {
+            const sample = 'Service Notification Hammer Pest Control 1455 Monterey Pass Rd email@hammerpestcontrol.com Invoice';
+            const result = AP_VENDOR_TEST.extractVendorFromPdfText(sample);
+            assert.equal(result.vendor, 'Hammer Pest Control');
+        }
+    },
+    {
+        name: 'AP vendor extractor detects California American Water from utility body',
+        run: async () => {
+            const sample = 'From: American Water <Customer_Service@cs.amwater.com> Your California American Water bill is ready';
+            const result = AP_VENDOR_TEST.extractVendorFromPdfText(sample);
+            assert.equal(result.vendor, 'California American Water');
+        }
+    },
+    {
+        name: 'AP vendor extractor returns no match for unrelated text',
+        run: async () => {
+            const sample = 'This PDF has no invoice or sender identifiers';
+            const result = AP_VENDOR_TEST.extractVendorFromPdfText(sample);
+            assert.equal(result.vendor, '');
+        }
     }
 ];
 
@@ -330,8 +433,19 @@ const ensureTestSchema = () => {
 
 const run = async () => {
     ensureTestSchema();
+    const baseTests = vendorOnlyMode
+        ? tests.filter((testCase) => /ap vendor extractor/i.test(testCase.name))
+        : tests;
+    const selectedTests = testNameFilter
+        ? baseTests.filter((testCase) => testCase.name.toLowerCase().includes(testNameFilter))
+        : baseTests;
+    if (selectedTests.length === 0) {
+        console.error(`No tests matched filter: "${testNameFilter}"`);
+        process.exitCode = 1;
+        return;
+    }
     let failed = 0;
-    for (const testCase of tests) {
+    for (const testCase of selectedTests) {
         try {
             await testCase.run();
             console.log(`PASS: ${testCase.name}`);
@@ -342,7 +456,7 @@ const run = async () => {
         }
     }
 
-    console.log(`\nTest summary: ${tests.length - failed} passed, ${failed} failed.`);
+    console.log(`\nTest summary: ${selectedTests.length - failed} passed, ${failed} failed.`);
     if (failed > 0) process.exitCode = 1;
 };
 

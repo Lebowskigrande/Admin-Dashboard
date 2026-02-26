@@ -62,7 +62,7 @@ const ensureCommand = async (command) => {
     const checker = process.platform === 'win32' ? 'where' : 'which';
     try {
         await execFileAsync(checker, [command]);
-    } catch (error) {
+    } catch {
         throw new Error(`Required command not found: ${command}`);
     }
 };
@@ -191,19 +191,6 @@ const collectRegionLines = (lines, region, pageWidth, pageHeight) =>
         .filter((line) => isWithinRegion(line, region, pageWidth, pageHeight))
         .map((line) => line.text.trim())
         .filter(Boolean);
-
-const extractCheckNumberFromLines = (lines) => {
-    let best = '';
-    lines.forEach((line) => {
-        const matches = line.match(/\d{3,}/g) || [];
-        matches.forEach((match) => {
-            if (match.length > best.length) {
-                best = match;
-            }
-        });
-    });
-    return best;
-};
 
 const extractAmountFromLines = (lines) => {
     const amounts = lines.flatMap((line) => findAmounts(line));
@@ -470,7 +457,7 @@ const refineNumericAmountWithLegal = (numericText = '', legalAmountValue) => {
     const intPart = parts[0] || '';
     const fracPart = parts[1] || '';
     const candidates = new Set([cleaned]);
-    const swaps = { '1': '7', '7': '1', '0': '6', '6': '0', '5': '6', '6': '5' };
+    const swaps = { '1': '7', '7': '1', '0': '6', '5': '6', '6': '5' };
     for (let i = 0; i < intPart.length; i += 1) {
         const digit = intPart[i];
         if (!swaps[digit]) continue;
@@ -500,19 +487,15 @@ const parseCheckFromOcr = (ocrResult, regions = DEFAULT_OCR_REGIONS) => {
         legalAmount: normalizeRegion(regions.legalAmount || {})
     };
 
-    let checkLines = [];
     let numericAmountLines = [];
     let legalAmountLines = [];
 
     if (regionText) {
-        const checkText = regionText.checkNumber?.text || '';
         const numericText = regionText.numericAmount?.text || '';
         const legalText = regionText.legalAmount?.text || '';
-        checkLines = checkText ? [checkText] : [];
         numericAmountLines = numericText ? [numericText] : [];
         legalAmountLines = legalText ? [legalText] : [];
     } else {
-        checkLines = collectRegionLines(lines, normalizedRegions.checkNumber, pageWidth, pageHeight);
         numericAmountLines = collectRegionLines(lines, normalizedRegions.numericAmount, pageWidth, pageHeight);
         legalAmountLines = normalizedRegions.legalAmount
             ? collectRegionLines(lines, normalizedRegions.legalAmount, pageWidth, pageHeight)

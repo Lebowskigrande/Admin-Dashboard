@@ -193,7 +193,7 @@ const BuildingsMap = ({
                                             >
                                                 <span>Rooms</span>
                                                 <span className={`rooms-caret ${roomsExpanded ? 'open' : ''}`} aria-hidden="true">
-                                                    >
+                                                    &gt;
                                                 </span>
                                             </button>
                                             <span className="rooms-count">

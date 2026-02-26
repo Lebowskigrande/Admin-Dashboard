@@ -1,6 +1,6 @@
 import { join, basename, extname, dirname } from 'path';
-import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'fs/promises';
-import { tmpdir, homedir } from 'os';
+import { access, copyFile, mkdir, readFile, readdir, rm, stat } from 'fs/promises';
+import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -16,6 +16,7 @@ const PREVIEW_CACHE_ROOT = join(__dirname, '..', 'preview-cache');
 
 let cachedSofficePath = null;
 let cachedPublisherAvailable = null;
+const previewInflight = new Map();
 
 export const resolveSofficePath = async () => {
     if (cachedSofficePath) return cachedSofficePath;
@@ -78,7 +79,10 @@ export const convertPubToPdf = async (inputPath, outputPath) => {
 
 export const runSofficeConvert = async (sofficePath, args) => {
     try {
-        await execFileAsync(sofficePath, args, { windowsHide: true });
+        await execFileAsync(sofficePath, args, {
+            windowsHide: true,
+            timeout: Number(process.env.BULLETIN_SOFFICE_TIMEOUT_MS || 60000)
+        });
         return true;
     } catch (error) {
         const details = error?.stderr || error?.message || error;
@@ -133,28 +137,31 @@ export const readDocxStatus = async (filePath) => {
     if (fromXml) return normalizeBulletinStatus(fromXml);
     const escaped = String(filePath || '').replace(/'/g, "''");
     const script = [
-        "$ErrorActionPreference = 'Stop';",
-        '$word = New-Object -ComObject Word.Application;',
-        '$word.Visible = $false;',
-        '$word.DisplayAlerts = 0;',
-        `$doc = $word.Documents.Open('${escaped}', $false, $true);`,
+        "$ErrorActionPreference = 'Stop'",
+        '$word = New-Object -ComObject Word.Application',
+        '$word.Visible = $false',
+        '$word.DisplayAlerts = 0',
+        `$doc = $word.Documents.Open('${escaped}', $false, $true)`,
         "$value = ''",
         'try {',
         '  foreach ($prop in $doc.CustomDocumentProperties) {',
         "    if ($prop.Name -and $prop.Name.ToString().Trim().ToLower() -eq 'status') {",
-        '      $value = $prop.Value;',
-        '      break;',
+        '      $value = $prop.Value',
+        '      break',
         '    }',
         '  }',
         '} catch { }',
-        '$doc.Close($false);',
-        '$word.Quit();',
-        '[System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null;',
-        '[System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null;',
+        '$doc.Close($false)',
+        '$word.Quit()',
+        'if ($doc) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) }',
+        'if ($word) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) }',
         'Write-Output $value'
-    ].join(' ');
+    ].join(';\n');
     try {
-        const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-Command', script], { windowsHide: true });
+        const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-Command', script], {
+            windowsHide: true,
+            timeout: Number(process.env.BULLETIN_STATUS_TIMEOUT_MS || 6000)
+        });
         return normalizeBulletinStatus(stdout || '');
     } catch (error) {
         const details = error?.stderr || error?.message || error;
@@ -178,85 +185,116 @@ export const buildDocumentPreview = async (filePath, options = {}) => {
         const cacheKey = createHash('sha1')
             .update(`${filePath}:${stats.mtimeMs}:${stats.size}`)
             .digest('hex');
-        const cachedPreview = join(cacheRoot, `${cacheKey}.png`);
-        if (!force) {
-            try {
-                await access(cachedPreview);
-                const cachedData = await readFile(cachedPreview);
-                return `data:image/png;base64,${cachedData.toString('base64')}`;
-            } catch {
-                // Cache miss, generate preview.
-            }
+        if (!force && previewInflight.has(cacheKey)) {
+            return await previewInflight.get(cacheKey);
         }
+        const buildPromise = (async () => {
+            try {
+                const cachedPreview = join(cacheRoot, `${cacheKey}.png`);
+                if (!force) {
+                    try {
+                        await access(cachedPreview);
+                        const cachedData = await readFile(cachedPreview);
+                        return `data:image/png;base64,${cachedData.toString('base64')}`;
+                    } catch {
+                        // Cache miss, generate preview.
+                    }
+                }
 
-        await mkdir(outputDir, { recursive: true });
-        const baseArgs = [
-            '--headless',
-            '--nologo',
-            '--nodefault',
-            '--norestore'
-        ];
-        const pdfPath = join(outputDir, `${basename(filePath, ext)}.pdf`);
-        let pdfReady = false;
+                await mkdir(outputDir, { recursive: true });
+                const baseArgs = [
+                    '--headless',
+                    '--nologo',
+                    '--nodefault',
+                    '--norestore'
+                ];
+                const stagedSourcePath = join(outputDir, `source${ext}`);
+                await copyFile(filePath, stagedSourcePath);
+                const pdfPath = join(outputDir, 'source.pdf');
+                let resolvedPdfPath = pdfPath;
+                let pdfReady = false;
 
-        if (ext === '.pub') {
-            const converted = await convertPubToPdf(filePath, pdfPath);
-            if (converted) {
-                pdfReady = true;
-            } else {
-                const pdfArgs = [
+                if (ext === '.pub') {
+                    const converted = await convertPubToPdf(stagedSourcePath, pdfPath);
+                    if (converted) {
+                        pdfReady = true;
+                    } else {
+                        const pdfArgs = [
+                            ...baseArgs,
+                            '--convert-to',
+                            'pdf',
+                            '--outdir',
+                            outputDir,
+                            stagedSourcePath
+                        ];
+                        pdfReady = await runSofficeConvert(sofficePath, pdfArgs);
+                    }
+                } else {
+                    const pdfArgs = [
+                        ...baseArgs,
+                        '--convert-to',
+                        'pdf',
+                        '--outdir',
+                        outputDir,
+                        stagedSourcePath
+                    ];
+                    pdfReady = await runSofficeConvert(sofficePath, pdfArgs);
+                }
+
+                if (!pdfReady) return '';
+                try {
+                    await access(pdfPath);
+                } catch {
+                    const generated = (await readdir(outputDir))
+                        .filter((name) => name.toLowerCase().endsWith('.pdf'))
+                        .sort()[0];
+                    if (!generated) return '';
+                    resolvedPdfPath = join(outputDir, generated);
+                }
+
+                const pdfPngArgs = [
                     ...baseArgs,
                     '--convert-to',
-                    'pdf',
+                    'png:draw_png_Export:Resolution=72',
                     '--outdir',
                     outputDir,
-                    filePath
+                    resolvedPdfPath
                 ];
-                pdfReady = await runSofficeConvert(sofficePath, pdfArgs);
+                const converted = await runSofficeConvert(sofficePath, pdfPngArgs);
+                if (!converted) return '';
+                const files = await readdir(outputDir);
+                const pngFile = files
+                    .filter((name) => name.toLowerCase().endsWith('.png'))
+                    .sort()[0];
+                if (!pngFile) return '';
+                const generatedPath = join(outputDir, pngFile);
+                await copyFile(generatedPath, cachedPreview).catch(() => { });
+                const data = await readFile(cachedPreview);
+                return `data:image/png;base64,${data.toString('base64')}`;
+            } finally {
+                await rm(outputDir, { recursive: true, force: true }).catch(() => { });
             }
-        } else {
-            const pdfArgs = [
-                ...baseArgs,
-                '--convert-to',
-                'pdf',
-                '--outdir',
-                outputDir,
-                filePath
-            ];
-            pdfReady = await runSofficeConvert(sofficePath, pdfArgs);
+        })();
+        if (!force) previewInflight.set(cacheKey, buildPromise);
+        try {
+            const result = await buildPromise;
+            return result;
+        } finally {
+            if (!force) previewInflight.delete(cacheKey);
         }
-
-        if (!pdfReady) return '';
-
-        const pdfPngArgs = [
-            ...baseArgs,
-            '--convert-to',
-            'png:draw_png_Export:Resolution=72',
-            '--outdir',
-            outputDir,
-            pdfPath
-        ];
-        const converted = await runSofficeConvert(sofficePath, pdfPngArgs);
-        if (!converted) return '';
-        const files = await readdir(outputDir);
-        const pngFile = files
-            .filter((name) => name.toLowerCase().endsWith('.png'))
-            .sort()[0];
-        if (!pngFile) return '';
-        const generatedPath = join(outputDir, pngFile);
-        await copyFile(generatedPath, cachedPreview).catch(() => { });
-        const data = await readFile(cachedPreview);
-        return `data:image/png;base64,${data.toString('base64')}`;
     } catch (error) {
         console.error('Preview generation failed:', error?.message || error);
         return '';
-    } finally {
-        await rm(outputDir, { recursive: true, force: true }).catch(() => { });
     }
 };
 
 export const buildDocumentStatus = async (filePath, options = {}) => {
-    const { includePreview = true, statusOverride = '', forcePreview = false } = options;
+    const {
+        includePreview = true,
+        statusOverride = '',
+        forcePreview = false,
+        allowMetadataStatus = false
+    } = options;
     if (!filePath) {
         return { exists: false, preview: '', path: '', name: '', status: '' };
     }
@@ -265,7 +303,7 @@ export const buildDocumentStatus = async (filePath, options = {}) => {
     } catch {
         return { exists: false, preview: '', path: filePath, name: basename(filePath), status: '' };
     }
-    const status = statusOverride || await readDocxStatus(filePath);
+    const status = statusOverride || (allowMetadataStatus ? await readDocxStatus(filePath) : '');
     const preview = includePreview ? await buildDocumentPreview(filePath, { force: forcePreview }) : '';
     return {
         exists: true,

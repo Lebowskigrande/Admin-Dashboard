@@ -4,6 +4,7 @@ import { API_URL } from '../services/apiConfig';
 
 const EventsContext = createContext();
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useEvents = () => {
     const context = useContext(EventsContext);
     if (!context) throw new Error('useEvents must be used within an EventsProvider');

@@ -265,7 +265,7 @@ export const seedDatabase = () => {
             });
 
             const insertMany = db.transaction(() => {
-                Object.entries(grouped).forEach(([date, entries]) => {
+                Object.values(grouped).forEach((entries) => {
                     entries.forEach((entry, index) => {
                         let time = '10:00';
                         if (entries.length >= 2) {

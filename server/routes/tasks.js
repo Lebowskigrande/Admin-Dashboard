@@ -4,8 +4,7 @@ import { sqlite as db } from '../db.js';
 import {
     tableExists,
     parseJsonField,
-    ensureUniqueId,
-    parseNotes
+    ensureUniqueId
 } from '../helpers/db-utils.js';
 import { normalizeName } from '../helpers/people-utils.js';
 import {
@@ -24,7 +23,6 @@ import {
     seedEventTasksForOccurrence
 } from '../services/taskEngine.js';
 import { upsertEntityLink } from '../helpers/entity-utils.js';
-import { isSundayDate } from '../helpers/sunday-utils.js';
 
 const router = express.Router();
 

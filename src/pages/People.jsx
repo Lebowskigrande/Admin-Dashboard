@@ -1,9 +1,162 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { FaCopy } from 'react-icons/fa';
 import { formatPhone } from '../utils/formatters';
 import { ROLE_OPTIONS } from '../utils/constants';
 import PeopleDetailPanel from './people/PeopleDetailPanel';
 import { CATEGORY_LABELS } from './people/peopleHelpers';
 import { usePeopleData } from './people/usePeopleData';
 import './People.css';
+
+const normalizeText = (value) => String(value || '').trim().toLowerCase();
+
+const normalizeLastName = (displayName) => {
+    const raw = String(displayName || '').trim();
+    if (!raw) return '';
+    if (raw.includes(',')) {
+        const [last] = raw.split(',');
+        return normalizeText(last);
+    }
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    return normalizeText(tokens[tokens.length - 1] || '');
+};
+
+const prettyLastName = (value) =>
+    String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/(^|[\s-])([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`);
+
+const buildAddressKey = (person) => {
+    const line1 = normalizeText(person.addressLine1);
+    const line2 = normalizeText(person.addressLine2);
+    const city = normalizeText(person.city);
+    const state = normalizeText(person.state);
+    const postalCode = normalizeText(person.postalCode);
+    const key = [line1, line2, city, state, postalCode].join('|');
+    return key.replace(/\|/g, '').trim() ? key : '';
+};
+
+const buildFamilyLabel = (members) => {
+    const uniqueLastNames = [];
+    members.forEach((member) => {
+        const lastName = normalizeLastName(member.displayName);
+        if (lastName && !uniqueLastNames.includes(lastName)) {
+            uniqueLastNames.push(lastName);
+        }
+    });
+    // Avoid duplicate-looking labels when a hyphenated child surname is present
+    // alongside each parent surname (e.g. Chatfield + Kirhoffer + Chatfield-Kirhoffer).
+    const filteredLastNames = uniqueLastNames.filter((name) => {
+        if (!name.includes('-')) return true;
+        const parts = name.split('-').map((part) => part.trim()).filter(Boolean);
+        if (parts.length < 2) return true;
+        const allPartsAlreadyPresent = parts.every((part) => uniqueLastNames.includes(part));
+        return !allPartsAlreadyPresent;
+    });
+    const finalLastNames = filteredLastNames.length > 0 ? filteredLastNames : uniqueLastNames;
+    if (uniqueLastNames.length === 0) return 'Family';
+    return `${finalLastNames.map(prettyLastName).join('-')} family`;
+};
+
+const buildFamilyRows = (people) => {
+    const peopleById = new Map(people.map((person) => [person.id, person]));
+    const neighbors = new Map(people.map((person) => [person.id, new Set()]));
+
+    const connect = (aId, bId) => {
+        if (!aId || !bId || aId === bId) return;
+        neighbors.get(aId)?.add(bId);
+        neighbors.get(bId)?.add(aId);
+    };
+
+    const envelopeGroups = new Map();
+    people.forEach((person) => {
+        const envelope = String(person.envelopeNumber || '').trim();
+        if (!envelope) return;
+        if (!envelopeGroups.has(envelope)) envelopeGroups.set(envelope, []);
+        envelopeGroups.get(envelope).push(person.id);
+    });
+    envelopeGroups.forEach((memberIds) => {
+        if (memberIds.length < 2) return;
+        for (let i = 0; i < memberIds.length; i += 1) {
+            for (let j = i + 1; j < memberIds.length; j += 1) {
+                connect(memberIds[i], memberIds[j]);
+            }
+        }
+    });
+
+    const nameAddressGroups = new Map();
+    people.forEach((person) => {
+        const lastName = normalizeLastName(person.displayName);
+        const addressKey = buildAddressKey(person);
+        if (!lastName || !addressKey) return;
+        const key = `${lastName}::${addressKey}`;
+        if (!nameAddressGroups.has(key)) nameAddressGroups.set(key, []);
+        nameAddressGroups.get(key).push(person.id);
+    });
+    nameAddressGroups.forEach((memberIds) => {
+        if (memberIds.length < 2) return;
+        for (let i = 0; i < memberIds.length; i += 1) {
+            for (let j = i + 1; j < memberIds.length; j += 1) {
+                connect(memberIds[i], memberIds[j]);
+            }
+        }
+    });
+
+    const familyByPersonId = new Map();
+    const families = [];
+    const visited = new Set();
+    people.forEach((person) => {
+        if (visited.has(person.id)) return;
+        const queue = [person.id];
+        const componentIds = [];
+        visited.add(person.id);
+        while (queue.length > 0) {
+            const currentId = queue.shift();
+            componentIds.push(currentId);
+            (neighbors.get(currentId) || []).forEach((nextId) => {
+                if (visited.has(nextId)) return;
+                visited.add(nextId);
+                queue.push(nextId);
+            });
+        }
+
+        const members = componentIds
+            .map((id) => peopleById.get(id))
+            .filter(Boolean);
+        if (members.length < 2) return;
+
+        const envelopeValues = Array.from(new Set(
+            members
+                .map((member) => String(member.envelopeNumber || '').trim())
+                .filter(Boolean)
+        ));
+        const envelopeNumber = envelopeValues.length === 1 ? envelopeValues[0] : '';
+
+        const family = {
+            id: `family-cluster-${componentIds.slice().sort().join('-')}`,
+            members,
+            envelopeNumber,
+            label: buildFamilyLabel(members)
+        };
+        families.push(family);
+        members.forEach((member) => familyByPersonId.set(member.id, family));
+    });
+
+    const rendered = [];
+    const renderedFamilyIds = new Set();
+    people.forEach((person) => {
+        const family = familyByPersonId.get(person.id);
+        if (!family) {
+            rendered.push({ type: 'person', person });
+            return;
+        }
+        if (renderedFamilyIds.has(family.id)) return;
+        renderedFamilyIds.add(family.id);
+        rendered.push({ type: 'family', family });
+    });
+
+    return rendered;
+};
 
 const People = () => {
     const {
@@ -39,6 +192,69 @@ const People = () => {
         handleRestoreBackup
     } = usePeopleData();
 
+    const familyRows = useMemo(() => buildFamilyRows(filteredPeople), [filteredPeople]);
+    const [expandedFamilies, setExpandedFamilies] = useState(new Set());
+    const availableFamilyIds = useMemo(
+        () => new Set(familyRows.filter((row) => row.type === 'family').map((row) => row.family.id)),
+        [familyRows]
+    );
+    const visibleExpandedFamilies = useMemo(() => {
+        const next = new Set();
+        expandedFamilies.forEach((id) => {
+            if (availableFamilyIds.has(id)) next.add(id);
+        });
+        return next;
+    }, [availableFamilyIds, expandedFamilies]);
+    const [copyNotice, setCopyNotice] = useState('');
+    const copyNoticeTimeoutRef = useRef(null);
+
+    useEffect(() => () => {
+        if (copyNoticeTimeoutRef.current) {
+            clearTimeout(copyNoticeTimeoutRef.current);
+        }
+    }, []);
+
+    const showCopyNotice = (message) => {
+        setCopyNotice(message);
+        if (copyNoticeTimeoutRef.current) {
+            clearTimeout(copyNoticeTimeoutRef.current);
+        }
+        copyNoticeTimeoutRef.current = window.setTimeout(() => {
+            setCopyNotice('');
+            copyNoticeTimeoutRef.current = null;
+        }, 1500);
+    };
+
+    const copyValue = async (value, message) => {
+        const text = String(value || '').trim();
+        if (!text) return;
+        try {
+            await navigator.clipboard.writeText(text);
+            showCopyNotice(message);
+        } catch (error) {
+            console.error('Clipboard copy failed:', error);
+            showCopyNotice('Copy failed');
+        }
+    };
+
+    const handleInlineCopy = (event, value, message) => {
+        event.preventDefault();
+        event.stopPropagation();
+        copyValue(value, message);
+    };
+
+    const toggleFamily = (familyId) => {
+        setExpandedFamilies((prev) => {
+            const next = new Set(prev);
+            if (next.has(familyId)) {
+                next.delete(familyId);
+            } else {
+                next.add(familyId);
+            }
+            return next;
+        });
+    };
+
     return (
         <section className="page-people">
             <header className="people-header page-header-bar">
@@ -66,7 +282,7 @@ const People = () => {
                             id="people-search"
                             className="filter-input"
                             value={filters.search}
-                            placeholder="Search name, email, tags"
+                            placeholder="Search name, email, envelope, tags, pledger"
                             onChange={(event) => handleFilterChange('search', event.target.value)}
                         />
                     </div>
@@ -119,6 +335,19 @@ const People = () => {
                         </select>
                     </div>
                     <div className="filter-group">
+                        <label htmlFor="people-pledger">Pledger</label>
+                        <select
+                            id="people-pledger"
+                            className="filter-select"
+                            value={filters.pledger}
+                            onChange={(event) => handleFilterChange('pledger', event.target.value)}
+                        >
+                            <option value="">All</option>
+                            <option value="yes">Pledgers</option>
+                            <option value="no">Non-pledgers</option>
+                        </select>
+                    </div>
+                    <div className="filter-group">
                         <label htmlFor="people-team">Team #</label>
                         <select
                             id="people-team"
@@ -159,44 +388,222 @@ const People = () => {
                         <div className="empty-card">No people match the current filters.</div>
                     ) : (
                         <div className="people-list">
-                            {filteredPeople.map((person) => (
-                                <button
-                                    className={`people-list-item ${person.id === selectedId ? 'active' : ''}`}
-                                    key={person.id}
-                                    type="button"
-                                    onClick={() => {
-                                        setSelectedId(person.id);
-                                        setPanelMode('view');
-                                    }}
-                                >
-                                    <div className="people-list-row">
-                                        <div className="people-list-cell people-list-env">
-                                            {(() => {
-                                                const envelopeTag = (person.tags || []).find((tag) => /^env-\d+/i.test(tag));
-                                                if (!envelopeTag) return null;
-                                                const label = envelopeTag.replace(/^env-/i, '');
-                                                return <span className="env-chip env-chip--list">{label}</span>;
-                                            })()}
-                                        </div>
-                                        <div className="people-list-cell people-list-name">
-                                            <span>{person.displayName}</span>
-                                        </div>
-                                        <div className="people-list-cell people-list-email">
-                                            {person.email || ''}
-                                        </div>
-                                        <div className="people-list-cell people-list-phone">
-                                            {formatPhone(person.phonePrimary || person.phoneAlternate || '')}
-                                        </div>
-                                        <div className="people-list-cell people-list-category">
-                                            {person.category && (
-                                                <span className={`category-chip category-${person.category}`}>
-                                                    {CATEGORY_LABELS[person.category] || person.category}
-                                                </span>
-                                            )}
-                                        </div>
+                            {familyRows.map((row) => {
+                                if (row.type === 'person') {
+                                    const person = row.person;
+                                    return (
+                                        <button
+                                            className={`people-list-item ${person.id === selectedId ? 'active' : ''}`}
+                                            key={person.id}
+                                            type="button"
+                                            onClick={() => {
+                                                setSelectedId(person.id);
+                                                setPanelMode('view');
+                                            }}
+                                        >
+                                            <div className="people-list-row">
+                                                <div className="people-list-cell people-list-env">
+                                                    {(() => {
+                                                        const label = String(person.envelopeNumber || '').trim();
+                                                        if (!label) return null;
+                                                        return (
+                                                            <span
+                                                                className={`env-chip env-chip--list${
+                                                                    person.isPledger ? ' env-chip--pledger' : ''
+                                                                }`}
+                                                            >
+                                                                {label}
+                                                            </span>
+                                                        );
+                                                    })()}
+                                                </div>
+                                                <div className="people-list-cell people-list-name">
+                                                    <span>{person.displayName}</span>
+                                                </div>
+                                                <div className="people-list-cell people-list-email">
+                                                    {person.email ? (
+                                                        <span className="people-copy-inline">
+                                                            <span>{person.email}</span>
+                                                            <span
+                                                                className="people-copy-icon"
+                                                                role="button"
+                                                                tabIndex={0}
+                                                                aria-label="Copy email"
+                                                                onClick={(event) => handleInlineCopy(event, person.email, 'Email copied')}
+                                                                onKeyDown={(event) => {
+                                                                    if (event.key === 'Enter' || event.key === ' ') {
+                                                                        handleInlineCopy(event, person.email, 'Email copied');
+                                                                    }
+                                                                }}
+                                                            >
+                                                                <FaCopy />
+                                                            </span>
+                                                        </span>
+                                                    ) : ''}
+                                                </div>
+                                                <div className="people-list-cell people-list-phone">
+                                                    {(() => {
+                                                        const phone = formatPhone(person.phonePrimary || person.phoneAlternate || '');
+                                                        if (!phone) return '';
+                                                        return (
+                                                            <span className="people-copy-inline">
+                                                                <span>{phone}</span>
+                                                                <span
+                                                                    className="people-copy-icon"
+                                                                    role="button"
+                                                                    tabIndex={0}
+                                                                    aria-label="Copy phone"
+                                                                    onClick={(event) => handleInlineCopy(event, phone, 'Phone copied')}
+                                                                    onKeyDown={(event) => {
+                                                                        if (event.key === 'Enter' || event.key === ' ') {
+                                                                            handleInlineCopy(event, phone, 'Phone copied');
+                                                                        }
+                                                                    }}
+                                                                >
+                                                                    <FaCopy />
+                                                                </span>
+                                                            </span>
+                                                        );
+                                                    })()}
+                                                </div>
+                                                <div className="people-list-cell people-list-category">
+                                                    {person.category && (
+                                                        <span className={`category-chip category-${person.category}`}>
+                                                            {CATEGORY_LABELS[person.category] || person.category}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </button>
+                                    );
+                                }
+
+                                const { family } = row;
+                                const isExpanded = visibleExpandedFamilies.has(family.id);
+                                const memberIds = new Set(family.members.map((member) => member.id));
+                                const hasSelectedMember = selectedId && memberIds.has(selectedId);
+                                const familyHasPledger = family.members.some((member) => Boolean(member.isPledger));
+                                return (
+                                    <div className="people-family-group" key={family.id}>
+                                        <button
+                                            className={`people-list-item people-list-item--family${
+                                                hasSelectedMember ? ' active' : ''
+                                            }`}
+                                            type="button"
+                                            onClick={() => toggleFamily(family.id)}
+                                        >
+                                            <div className="people-list-row">
+                                                <div className="people-list-cell people-list-env">
+                                                    {family.envelopeNumber ? (
+                                                        <span className={`env-chip env-chip--list${familyHasPledger ? ' env-chip--pledger' : ''}`}>
+                                                            {family.envelopeNumber}
+                                                        </span>
+                                                    ) : null}
+                                                </div>
+                                                <div className="people-list-cell people-list-name people-list-family-name">
+                                                    <span className={`people-list-chevron${isExpanded ? ' expanded' : ''}`}>▶</span>
+                                                    <span>{family.label}</span>
+                                                </div>
+                                                <div className="people-list-cell people-list-email">
+                                                    {family.members.length} member{family.members.length === 1 ? '' : 's'}
+                                                </div>
+                                                <div className="people-list-cell people-list-phone" />
+                                                <div className="people-list-cell people-list-category" />
+                                            </div>
+                                        </button>
+                                        {isExpanded &&
+                                            family.members.map((member) => (
+                                                <button
+                                                    className={`people-list-item people-list-item--member ${
+                                                        member.id === selectedId ? 'active' : ''
+                                                    }`}
+                                                    key={member.id}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setSelectedId(member.id);
+                                                        setPanelMode('view');
+                                                    }}
+                                                >
+                                                    <div className="people-list-row">
+                                                        <div className="people-list-cell people-list-env">
+                                                            {(() => {
+                                                                const label = String(member.envelopeNumber || '').trim();
+                                                                if (!label) return null;
+                                                                return (
+                                                                    <span
+                                                                        className={`env-chip env-chip--list${
+                                                                            member.isPledger ? ' env-chip--pledger' : ''
+                                                                        }`}
+                                                                    >
+                                                                        {label}
+                                                                    </span>
+                                                                );
+                                                            })()}
+                                                        </div>
+                                                        <div className="people-list-cell people-list-name">
+                                                            <span>{member.displayName}</span>
+                                                        </div>
+                                                        <div className="people-list-cell people-list-email">
+                                                            {member.email ? (
+                                                                <span className="people-copy-inline">
+                                                                    <span>{member.email}</span>
+                                                                    <span
+                                                                        className="people-copy-icon"
+                                                                        role="button"
+                                                                        tabIndex={0}
+                                                                        aria-label="Copy email"
+                                                                        onClick={(event) => handleInlineCopy(event, member.email, 'Email copied')}
+                                                                        onKeyDown={(event) => {
+                                                                            if (event.key === 'Enter' || event.key === ' ') {
+                                                                                handleInlineCopy(event, member.email, 'Email copied');
+                                                                            }
+                                                                        }}
+                                                                    >
+                                                                        <FaCopy />
+                                                                    </span>
+                                                                </span>
+                                                            ) : ''}
+                                                        </div>
+                                                        <div className="people-list-cell people-list-phone">
+                                                            {(() => {
+                                                                const phone = formatPhone(
+                                                                    member.phonePrimary || member.phoneAlternate || ''
+                                                                );
+                                                                if (!phone) return '';
+                                                                return (
+                                                                    <span className="people-copy-inline">
+                                                                        <span>{phone}</span>
+                                                                        <span
+                                                                            className="people-copy-icon"
+                                                                            role="button"
+                                                                            tabIndex={0}
+                                                                            aria-label="Copy phone"
+                                                                            onClick={(event) => handleInlineCopy(event, phone, 'Phone copied')}
+                                                                            onKeyDown={(event) => {
+                                                                                if (event.key === 'Enter' || event.key === ' ') {
+                                                                                    handleInlineCopy(event, phone, 'Phone copied');
+                                                                                }
+                                                                            }}
+                                                                        >
+                                                                            <FaCopy />
+                                                                        </span>
+                                                                    </span>
+                                                                );
+                                                            })()}
+                                                        </div>
+                                                        <div className="people-list-cell people-list-category">
+                                                            {member.category && (
+                                                                <span className={`category-chip category-${member.category}`}>
+                                                                    {CATEGORY_LABELS[member.category] || member.category}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                            ))}
                                     </div>
-                                </button>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
                 </div>
@@ -216,8 +623,14 @@ const People = () => {
                     onDelete={handleDelete}
                     handleRoleToggle={handleRoleToggle}
                     handleTeamChange={handleTeamChange}
+                    onCopyValue={copyValue}
                 />
             </div>
+            {copyNotice && (
+                <div className="people-copy-toast" role="status" aria-live="polite">
+                    {copyNotice}
+                </div>
+            )}
         </section>
     );
 };

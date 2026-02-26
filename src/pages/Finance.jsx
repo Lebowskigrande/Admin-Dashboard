@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FaEdit, FaEye, FaPrint, FaSave, FaTrash } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
@@ -441,7 +441,7 @@ const Finance = () => {
 
     const todayKey = formatDateKey(new Date());
 
-    const loadRoutingLog = async (type, dateKey, setState) => {
+    const loadRoutingLog = useCallback(async (type, dateKey, setState) => {
         const requestId = Number(routingLogLoadRequestRef.current[type] || 0) + 1;
         routingLogLoadRequestRef.current[type] = requestId;
         setState((prev) => ({
@@ -458,7 +458,8 @@ const Finance = () => {
             if (!response.ok || !payload?.ok) {
                 throw new Error(payload?.error || 'Failed to load routing log');
             }
-            if (routingLogLoadRequestRef.current[type] !== requestId || !isCurrentRoutingDate(type, dateKey)) {
+            const latestDateKey = type === 'ap' ? apDateRef.current : arDateRef.current;
+            if (routingLogLoadRequestRef.current[type] !== requestId || latestDateKey !== dateKey) {
                 return;
             }
             setState((prev) => ({
@@ -469,7 +470,8 @@ const Finance = () => {
             }));
         } catch (error) {
             console.error('Routing log load error:', error);
-            if (routingLogLoadRequestRef.current[type] !== requestId || !isCurrentRoutingDate(type, dateKey)) {
+            const latestDateKey = type === 'ap' ? apDateRef.current : arDateRef.current;
+            if (routingLogLoadRequestRef.current[type] !== requestId || latestDateKey !== dateKey) {
                 return;
             }
             setState((prev) => ({
@@ -479,7 +481,7 @@ const Finance = () => {
                 error: error?.message || 'Failed to load routing log'
             }));
         }
-    };
+    }, []);
 
     const handleRevealRoutedFile = async ({ jobId, fileIndex, setState, type, logType }) => {
         const actionDateKey = getRoutingDateForType(logType);
@@ -790,7 +792,7 @@ const Finance = () => {
                         codeValue: String(payload.codeValue || codeValue),
                         envelopeNumber: String(payload.envelopeNumber || payload.codeValue || codeValue),
                         designation: String(payload.designation || designation),
-                        isPledger: Boolean(payload.isPledger),
+                        isPledger: !!payload.isPledger,
                         files: Array.isArray(payload.files) ? payload.files : row.files
                     };
                 })
@@ -817,7 +819,7 @@ const Finance = () => {
             loadRoutingLog('ap', apDate, setApLog);
         }, ROUTING_LOG_REFRESH_MS);
         return () => window.clearInterval(timer);
-    }, [apDate]);
+    }, [apDate, loadRoutingLog]);
 
     useEffect(() => {
         setArLog((prev) => ({ ...prev, revealBusyKey: '', designationBusyKey: '' }));
@@ -826,7 +828,7 @@ const Finance = () => {
             loadRoutingLog('ar', arDate, setArLog);
         }, ROUTING_LOG_REFRESH_MS);
         return () => window.clearInterval(timer);
-    }, [arDate]);
+    }, [arDate, loadRoutingLog]);
 
     return (
         <div className="page-finance">
@@ -954,7 +956,7 @@ const Finance = () => {
                                                                 ...prev,
                                                                 deleted: {
                                                                     ...(prev.deleted || {}),
-                                                                    [String(file.fileIndex)]: !Boolean(prev.deleted?.[String(file.fileIndex)])
+                                                                    [String(file.fileIndex)]: !prev.deleted?.[String(file.fileIndex)]
                                                                 }
                                                             }))}
                                                         >
@@ -1124,7 +1126,7 @@ const Finance = () => {
                                                                 ...prev,
                                                                 deleted: {
                                                                     ...(prev.deleted || {}),
-                                                                    [String(file.fileIndex)]: !Boolean(prev.deleted?.[String(file.fileIndex)])
+                                                                    [String(file.fileIndex)]: !prev.deleted?.[String(file.fileIndex)]
                                                                 }
                                                             }))}
                                                         >

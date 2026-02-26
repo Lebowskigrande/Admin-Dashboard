@@ -1,7 +1,7 @@
 import { join, dirname, resolve, basename, extname } from 'path';
 import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
-import { mkdir, readFile, writeFile, rm, access, copyFile } from 'fs/promises';
+import { mkdir, readFile, writeFile, rm, access, readdir, stat } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import PizZip from 'pizzip';
 import Docxtemplater from 'docxtemplater';
@@ -11,7 +11,6 @@ import { tableExists } from './db-utils.js';
 import { normalizePersonRoles } from './people-utils.js';
 import { parseJsonField } from './db-utils.js';
 import {
-    parseCurrencyOverride,
     formatCurrencyValue,
     sumCurrencyValues,
     getDefaultPrinterName
@@ -69,6 +68,60 @@ export const ensurePdf = async ({ filePath, originalName = '', mimetype = '' }) 
         const { execFile } = await import('child_process');
         const { promisify } = await import('util');
         const execFileAsync = promisify(execFile);
+        const filePathExt = extname(filePath).toLowerCase();
+        const effectiveExt = originalExt || filePathExt;
+        const sourceBaseName = (effectiveExt
+            ? basename(originalName || filePath, effectiveExt)
+            : basename(originalName || filePath)) || `document-${Date.now()}`;
+        const preferredOutputPath = join(outputDir, `${sourceBaseName}.pdf`);
+
+        const escapePowerShellSingleQuoted = (value) => String(value || '').replace(/'/g, "''");
+        const tryWordConversion = async () => {
+            if (process.platform !== 'win32') return false;
+            if (!['.doc', '.docx', '.rtf'].includes(effectiveExt)) return false;
+            const safeSource = escapePowerShellSingleQuoted(filePath);
+            const safeTarget = escapePowerShellSingleQuoted(preferredOutputPath);
+            const psScript = `
+$ErrorActionPreference = 'Stop'
+$src = '${safeSource}'
+$dst = '${safeTarget}'
+$word = $null
+$doc = $null
+try {
+    $word = New-Object -ComObject Word.Application
+    $word.Visible = $false
+    $word.DisplayAlerts = 0
+    $doc = $word.Documents.Open($src, $false, $true)
+    $wdFormatPDF = 17
+    $doc.SaveAs([ref]$dst, [ref]$wdFormatPDF)
+}
+finally {
+    if ($doc -ne $null) { $doc.Close([ref]$false) }
+    if ($word -ne $null) { $word.Quit() }
+    if ($doc -ne $null) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) }
+    if ($word -ne $null) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) }
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
+}
+`;
+            try {
+                await execFileAsync(
+                    'powershell',
+                    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', psScript],
+                    { windowsHide: true }
+                );
+                await access(preferredOutputPath);
+                return true;
+            } catch {
+                return false;
+            }
+        };
+
+        const convertedWithWord = await tryWordConversion();
+        if (convertedWithWord) {
+            return { pdfPath: preferredOutputPath, isConverted: true, outputDir };
+        }
+
         await execFileAsync('soffice', [
             '--headless',
             '--convert-to',
@@ -77,8 +130,50 @@ export const ensurePdf = async ({ filePath, originalName = '', mimetype = '' }) 
             outputDir,
             filePath
         ]);
-        const baseName = originalExt ? basename(originalName, originalExt) : basename(filePath);
-        const outputPath = join(outputDir, `${baseName}.pdf`);
+
+        const candidateBaseNames = new Set([
+            (originalExt ? basename(originalName, originalExt) : basename(originalName || '')).trim(),
+            (filePathExt ? basename(filePath, filePathExt) : basename(filePath)).trim()
+        ].filter(Boolean));
+
+        let outputPath = '';
+        for (const baseName of candidateBaseNames) {
+            const candidate = join(outputDir, `${baseName}.pdf`);
+            try {
+                await access(candidate);
+                outputPath = candidate;
+                break;
+            } catch {
+                // Try next candidate.
+            }
+        }
+
+        if (!outputPath) {
+            const names = await readdir(outputDir).catch(() => []);
+            const pdfNames = names.filter((name) => name.toLowerCase().endsWith('.pdf'));
+            if (pdfNames.length === 1) {
+                outputPath = join(outputDir, pdfNames[0]);
+            } else if (pdfNames.length > 1) {
+                const ranked = await Promise.all(pdfNames.map(async (name) => {
+                    const fullPath = join(outputDir, name);
+                    try {
+                        const info = await stat(fullPath);
+                        return { fullPath, mtimeMs: Number(info?.mtimeMs || 0) || 0 };
+                    } catch {
+                        return null;
+                    }
+                }));
+                const best = ranked
+                    .filter(Boolean)
+                    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0];
+                if (best?.fullPath) outputPath = best.fullPath;
+            }
+        }
+
+        if (!outputPath) {
+            throw new Error('Unable to locate converted PDF output.');
+        }
+
         return { pdfPath: outputPath, isConverted: true, outputDir };
     } catch (error) {
         const message = error?.code === 'ENOENT'
@@ -129,11 +224,11 @@ export const findVestryClerkName = () => {
     return matches?.display_name || 'Anne Sirimane';
 };
 
-export const resolveCertificateTemplatePath = (fundKey, isQuarterly) => {
+export const resolveCertificateTemplatePath = (fundKey) => {
     if (fundKey === 'fidelity') {
         return join(CERTIFICATE_TEMPLATE_DIR, 'CERTIFICATE FOR TRANSFER-- Fidelity template.docx');
     }
-    if (!isQuarterly) return '';
+    // Use the same templates for both monthly and quarterly runs; quarterly fields can be blank.
     const fundLabel = fundKey === 'funda' ? 'Fund A' : 'Fund B';
     return join(CERTIFICATE_TEMPLATE_DIR, `CERTIFICATE FOR REIMBURSEMENT-- ${fundLabel} template QTR.docx`);
 };
@@ -145,7 +240,9 @@ export const resolveCertificateOutputDir = (fundKey, yearLabel) => {
 };
 
 export const renderDocxTemplate = async (templatePath, data) => {
-    const content = await readFile(templatePath, 'binary');
+    const content = Buffer.isBuffer(templatePath)
+        ? templatePath
+        : await readFile(templatePath);
     const zip = new PizZip(content);
     const doc = new Docxtemplater(zip, {
         paragraphLoop: true,
@@ -155,6 +252,36 @@ export const renderDocxTemplate = async (templatePath, data) => {
     });
     doc.render(data);
     return doc.getZip().generate({ type: 'nodebuffer' });
+};
+
+const FUND_A_BODY_MARKER = '<w:t>This certificate confirms that';
+const FUND_A_BODY_PLACEHOLDER_PARAGRAPH = '<w:p><w:r><w:t>[[FUND_A_BODY_TEXT]]</w:t></w:r></w:p>';
+
+const injectFundABodyPlaceholder = async (templatePath) => {
+    const buffer = await readFile(templatePath);
+    const zip = new PizZip(buffer);
+    const entry = zip.file('word/document.xml');
+    if (!entry) return buffer;
+    const xml = entry.asText();
+    const markerIndex = xml.indexOf(FUND_A_BODY_MARKER);
+    if (markerIndex < 0) return buffer;
+    const paragraphStart = xml.lastIndexOf('<w:p', markerIndex);
+    const paragraphEnd = xml.indexOf('</w:p>', markerIndex);
+    if (paragraphStart < 0 || paragraphEnd < 0) return buffer;
+    const nextXml = `${xml.slice(0, paragraphStart)}${FUND_A_BODY_PLACEHOLDER_PARAGRAPH}${xml.slice(paragraphEnd + 6)}`;
+    zip.file('word/document.xml', nextXml);
+    return Buffer.from(zip.generate({ type: 'nodebuffer' }));
+};
+
+const buildDefaultFundABodyText = ({ monthLabel, yearLabel }) => (
+    `This certificate confirms that on the above date the St. Edmund’s Vestry approved the transfer of $1,144.00 from SENS’ Fund A to St. Edmund’s Church Operating Fund. This amount represents 20% of the Associate Rector’s salary for the month of ${monthLabel} ${yearLabel} as detailed in the attached copy of the St. Edmund’s—SENS Joint Ledger.`
+);
+
+const resolveFundABodyText = ({ rawText = '', monthLabel, yearLabel }) => {
+    const tokenValue = `${monthLabel} ${yearLabel}`.trim();
+    const source = String(rawText || '').trim();
+    const withDefault = source || buildDefaultFundABodyText({ monthLabel, yearLabel });
+    return withDefault.replace(/\[\[\s*MONTH\s+YEAR\s*\]\]/gi, tokenValue);
 };
 
 export async function prepareVestryCertificate(payload) {
@@ -174,11 +301,6 @@ export async function prepareVestryCertificate(payload) {
     }
 
     const isQuarterly = payload?.quarterly === true;
-    if (!isQuarterly) {
-        const error = new Error('Quarterly templates are not configured yet.');
-        error.status = 400;
-        throw error;
-    }
 
     const amounts = payload?.amounts || {};
     const monthlyAmount = String(amounts?.monthly || '');
@@ -226,23 +348,32 @@ export async function prepareVestryCertificate(payload) {
     const outputName = `${outputPrefix}${monthLabel} ${yearLabel}.docx`;
     const outputDir = resolveCertificateOutputDir(normalizedFund, yearLabel);
 
+    let templateInput = templatePath;
+    if (normalizedFund === 'funda') {
+        data.FUND_A_BODY_TEXT = resolveFundABodyText({
+            rawText: payload?.fundAText || '',
+            monthLabel,
+            yearLabel
+        });
+        templateInput = await injectFundABodyPlaceholder(templatePath);
+    }
+
     return {
         data,
         templatePath,
+        templateInput,
         outputName,
         outputDir
     };
 }
 
-export async function convertDocxBufferToPreviewBase64(docBuffer, outputName) {
-    const sanitizeFileName = (value) => String(value || '').replace(/[<>:"/\\|?*]/g, '').trim();
-    const baseName = sanitizeFileName(basename(outputName || 'certificate', extname(outputName || ''))) || 'certificate';
+export async function convertDocxBufferToPreviewBase64(docBuffer) {
     const outputDir = join(tmpdir(), `vestry-certificate-preview-${randomUUID()}`);
-    const docxPath = join(outputDir, `${baseName}.docx`);
+    const docxPath = join(outputDir, 'certificate-preview.docx');
     await mkdir(outputDir, { recursive: true });
     try {
         await writeFile(docxPath, docBuffer);
-        const previewDataUrl = await buildDocumentPreview(docxPath);
+        const previewDataUrl = await buildDocumentPreview(docxPath, { force: true });
         if (!previewDataUrl) {
             throw new Error('Preview image could not be generated.');
         }

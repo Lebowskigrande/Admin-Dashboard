@@ -1,15 +1,12 @@
 import { randomUUID } from 'crypto';
 import { sqlite as db } from '../db.js';
-import { tableExists, tableHasColumn, parseJsonField, ensureUniqueId } from '../helpers/db-utils.js';
-import { toEntityLinkId, upsertEntityLink, deleteEntityLinks } from '../helpers/entity-utils.js';
+import { tableExists, tableHasColumn } from '../helpers/db-utils.js';
+import { upsertEntityLink, deleteEntityLinks } from '../helpers/entity-utils.js';
 import {
     formatTaskInstanceRow,
     sortTasksByPriority,
     getPriorityTier,
-    getDefaultPriorityBase,
-    getSundayDocumentStatusRank,
-    getSundayTaskStepRank,
-    isSundayTaskAutoComplete
+    getDefaultPriorityBase
 } from '../helpers/task-utils.js';
 
 const ensureTaskInstanceNotes = () => {
@@ -77,7 +74,7 @@ const listRecurringTemplates = (originType, originId = null) => {
 };
 
 const normalizeListKey = (value) => String(value || '').trim().toLowerCase();
-const isSpecialEventsList = (listKey) => normalizeListKey(listKey) === 'special-events';
+const UNUSED_isSpecialEventsList = (listKey) => normalizeListKey(listKey) === 'special-events';
 
 const ensureProgressiveTemplateModes = () => {
     if (!tableExists('recurring_task_templates')) return;
@@ -954,7 +951,7 @@ export const seedTaskEngine = () => {
     seedEventTasksFromTemplates();
 };
 
-const auditAndCleanupOrphanTasks = () => {
+const UNUSED_auditAndCleanupOrphanTasks = () => {
     if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
 
     const removeTaskInstance = (taskInstanceId) => {
@@ -1034,7 +1031,7 @@ const auditAndCleanupOrphanTasks = () => {
     }
 };
 
-const repairMissingOrigins = () => {
+const UNUSED_repairMissingOrigins = () => {
     if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
     if (!tableExists('task_origins')) return;
 
@@ -1099,7 +1096,7 @@ const repairMissingOrigins = () => {
     });
 };
 
-const purgeTemplateOrphanTasks = () => {
+const UNUSED_purgeTemplateOrphanTasks = () => {
     if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
     const templateKeys = tableExists('recurring_task_templates')
         ? db.prepare('SELECT list_key FROM recurring_task_templates WHERE active = 1').all()

@@ -6,7 +6,6 @@ import { getTaskProgressMeta, getTaskNextStepLabel } from '../../utils/taskProgr
 import {
     PRIORITY_OPTIONS,
     isDateString,
-    isMonthString,
     normalizeOriginKey,
     getListKey,
     parseDueDate,
@@ -127,9 +126,15 @@ export const useTodoData = () => {
     }, [loadAllTasks]);
 
     const originGroups = useMemo(() => {
+        const isLegacySundayBulletinList = (task) => {
+            if (String(task?.origin_type || '').toLowerCase() !== 'sunday') return false;
+            const listKey = String(task?.list_key || '').toLowerCase();
+            return listKey === 'bulletins-10am' || listKey === 'bulletins-8am';
+        };
         const grouped = new Map();
         taskList.forEach((task) => {
             if (task.archived_at) return;
+            if (isLegacySundayBulletinList(task)) return;
             const originKey = normalizeOriginKey(task.origin_type, task.origin_id);
             if (!grouped.has(originKey)) {
                 grouped.set(originKey, {
@@ -527,7 +532,7 @@ export const useTodoData = () => {
 
     useEffect(() => {
         setTaskNotesDraft(selectedTask?.notes || '');
-    }, [selectedTask?.id]);
+    }, [selectedTask?.notes]);
 
     const selectedTaskKey = selectedTask?.id || selectedTaskId || '';
 

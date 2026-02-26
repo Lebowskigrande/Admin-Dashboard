@@ -289,7 +289,7 @@ router.post('/api/constant-contact/email', async (req, res) => {
                 method: 'POST',
                 body: JSON.stringify(campaignPayload)
             });
-        } catch (error) {
+        } catch {
             console.error('Constant Contact create payload:', campaignPayload);
             console.error('Constant Contact HTML length:', html.length);
             campaign = await fetchCcJson(`${CC_API_BASE}/emails`, tokens, {
