@@ -23,6 +23,7 @@ import {
 } from '../helpers/finance-utils.js';
 import { isPledgerEnvelope, resolveContributionDesignation } from '../helpers/pledger-utils.js';
 import { syncSharefileLocalMirrors } from '../services/sharefileEmailRouter.js';
+import { persistRoutingLogUpdate } from '../services/routingLogStore.js';
 
 import { buildDepositSlipPdf, extractChecksFromImages } from '../depositSlip.js';
 
@@ -352,10 +353,12 @@ const persistContributionOutputBackfill = async ({ jobId = '', output = null } =
             }
         }
     }
-    sqlite.prepare('UPDATE sharefile_jobs SET output_json = ? WHERE id = ?')
-        .run(JSON.stringify(output), normalizedJobId);
-    sqlite.prepare('UPDATE sharefile_job_events SET output_json = ? WHERE job_id = ?')
-        .run(JSON.stringify(output), normalizedJobId);
+    persistRoutingLogUpdate({
+        jobId: normalizedJobId,
+        output,
+        historyAction: 'designation-backfill',
+        historyDetails: { source: 'contribution-policy' }
+    });
 };
 
 const sanitizeVendorToken = (value) => sanitizeContributionToken(value, '').replace(/\s+/g, ' ').trim();
@@ -1136,10 +1139,15 @@ router.post('/routing-log/designation', async (req, res) => {
             }
         };
 
-        sqlite.prepare('UPDATE sharefile_jobs SET output_json = ? WHERE id = ?')
-            .run(JSON.stringify(nextOutput), jobRow.id);
-        sqlite.prepare('UPDATE sharefile_job_events SET output_json = ? WHERE job_id = ? AND status = ?')
-            .run(JSON.stringify(nextOutput), jobRow.id, 'success');
+        persistRoutingLogUpdate({
+            jobId: jobRow.id,
+            output: nextOutput,
+            historyAction: 'designation-update',
+            historyDetails: {
+                designation: effectiveDesignation,
+                updatedFiles: updatedCount
+            }
+        });
 
         return res.json({
             ok: true,
@@ -1195,6 +1203,7 @@ router.post('/routing-log/vendor', async (req, res) => {
         }
 
         let renamedCount = 0;
+        const fileMutations = [];
         const updatedRawFiles = rawFiles.map((rawFile, index) => {
             const resolved = normalizedFiles.find((item) => item.fileIndex === index);
             if (!resolved?.path) return rawFile;
@@ -1236,6 +1245,12 @@ router.post('/routing-log/vendor', async (req, res) => {
             const uniqueTarget = await ensureUniqueFilePath(entry.to);
             await rename(entry.from, uniqueTarget);
             renamedCount += 1;
+            fileMutations.push({
+                fileIndex: Number(entry.index),
+                action: 'rename',
+                from: normalizeWindowsPath(entry.from),
+                to: normalizeWindowsPath(uniqueTarget)
+            });
             const finalName = basename(uniqueTarget);
             const baseRaw = entry.rawFile && typeof entry.rawFile === 'object' ? entry.rawFile : {};
             finalizedFiles.push({
@@ -1257,10 +1272,16 @@ router.post('/routing-log/vendor', async (req, res) => {
             }
         };
 
-        sqlite.prepare('UPDATE sharefile_jobs SET output_json = ? WHERE id = ?')
-            .run(JSON.stringify(nextOutput), jobRow.id);
-        sqlite.prepare('UPDATE sharefile_job_events SET output_json = ? WHERE job_id = ? AND status = ?')
-            .run(JSON.stringify(nextOutput), jobRow.id, 'success');
+        persistRoutingLogUpdate({
+            jobId: jobRow.id,
+            output: nextOutput,
+            historyAction: 'vendor-update',
+            historyDetails: {
+                vendor: normalizedVendor,
+                renamedFiles: renamedCount,
+                fileMutations: fileMutations.sort((a, b) => Number(a.fileIndex) - Number(b.fileIndex))
+            }
+        });
 
         return res.json({
             ok: true,
@@ -1335,6 +1356,7 @@ router.post('/routing-log/ap-entry', async (req, res) => {
         let deletedCount = 0;
         const dirCache = new Map();
         const nextFiles = [];
+        const fileMutations = [];
         for (const file of normalizedFiles) {
             const fileIndex = Number(file.fileIndex);
             const currentPath = normalizeWindowsPath(file.path || '');
@@ -1347,6 +1369,12 @@ router.post('/routing-log/ap-entry', async (req, res) => {
                 if (candidatePath && await pathExists(candidatePath)) {
                     await rm(candidatePath, { force: true });
                     deletedCount += 1;
+                    fileMutations.push({
+                        fileIndex,
+                        action: 'delete',
+                        from: normalizeWindowsPath(candidatePath),
+                        to: ''
+                    });
                 }
                 continue;
             }
@@ -1394,11 +1422,18 @@ router.post('/routing-log/ap-entry', async (req, res) => {
             }
 
             if (finalPath && nextName && nextName !== basename(finalPath)) {
+                const previousPath = normalizeWindowsPath(finalPath);
                 const candidatePath = join(dirname(finalPath), nextName);
                 const uniquePath = await ensureUniqueFilePath(candidatePath);
                 await rename(finalPath, uniquePath);
                 finalPath = uniquePath;
                 renamedCount += 1;
+                fileMutations.push({
+                    fileIndex,
+                    action: 'rename',
+                    from: previousPath,
+                    to: normalizeWindowsPath(finalPath)
+                });
             }
             nextFiles.push({
                 name: basename(finalPath || nextName || currentName),
@@ -1418,12 +1453,21 @@ router.post('/routing-log/ap-entry', async (req, res) => {
             }
         };
 
-        sqlite.prepare('UPDATE sharefile_jobs SET code_value = ?, output_json = ? WHERE id = ?')
-            .run(nextCodeValue, JSON.stringify(nextOutput), jobRow.id);
-        sqlite.prepare('UPDATE sharefile_job_events SET code_value = ?, output_json = ? WHERE job_id = ?')
-            .run(nextCodeValue, JSON.stringify(nextOutput), jobRow.id);
+        const persistedOutput = persistRoutingLogUpdate({
+            jobId: jobRow.id,
+            codeValue: nextCodeValue,
+            output: nextOutput,
+            historyAction: 'ap-entry-update',
+            historyDetails: {
+                codeValue: nextCodeValue,
+                vendor: nextVendor,
+                renamedFiles: renamedCount,
+                deletedFiles: deletedCount,
+                fileMutations: fileMutations.sort((a, b) => Number(a.fileIndex) - Number(b.fileIndex))
+            }
+        });
 
-        const files = await normalizeJobFilesWithCurrentPaths(nextOutput, jobRow.created_at, new Map());
+        const files = await normalizeJobFilesWithCurrentPaths(persistedOutput, jobRow.created_at, new Map());
         return res.json({
             ok: true,
             jobId: jobRow.id,
@@ -1517,6 +1561,7 @@ router.post('/routing-log/ar-entry', async (req, res) => {
         let deletedCount = 0;
         const dirCache = new Map();
         const nextFiles = [];
+        const fileMutations = [];
         for (const file of normalizedFiles) {
             const fileIndex = Number(file.fileIndex);
             const currentPath = normalizeWindowsPath(file.path || '');
@@ -1529,6 +1574,12 @@ router.post('/routing-log/ar-entry', async (req, res) => {
                 if (candidatePath && await pathExists(candidatePath)) {
                     await rm(candidatePath, { force: true });
                     deletedCount += 1;
+                    fileMutations.push({
+                        fileIndex,
+                        action: 'delete',
+                        from: normalizeWindowsPath(candidatePath),
+                        to: ''
+                    });
                 }
                 continue;
             }
@@ -1576,11 +1627,18 @@ router.post('/routing-log/ar-entry', async (req, res) => {
             }
 
             if (finalPath && nextName && nextName !== basename(finalPath)) {
+                const previousPath = normalizeWindowsPath(finalPath);
                 const candidatePath = join(dirname(finalPath), nextName);
                 const uniquePath = await ensureUniqueFilePath(candidatePath);
                 await rename(finalPath, uniquePath);
                 finalPath = uniquePath;
                 renamedCount += 1;
+                fileMutations.push({
+                    fileIndex,
+                    action: 'rename',
+                    from: previousPath,
+                    to: normalizeWindowsPath(finalPath)
+                });
             }
             nextFiles.push({
                 name: basename(finalPath || nextName || currentName),
@@ -1611,12 +1669,21 @@ router.post('/routing-log/ar-entry', async (req, res) => {
             }
         };
 
-        sqlite.prepare('UPDATE sharefile_jobs SET code_value = ?, output_json = ? WHERE id = ?')
-            .run(nextEnvelopeNumber, JSON.stringify(nextOutput), jobRow.id);
-        sqlite.prepare('UPDATE sharefile_job_events SET code_value = ?, output_json = ? WHERE job_id = ?')
-            .run(nextEnvelopeNumber, JSON.stringify(nextOutput), jobRow.id);
+        const persistedOutput = persistRoutingLogUpdate({
+            jobId: jobRow.id,
+            codeValue: nextEnvelopeNumber,
+            output: nextOutput,
+            historyAction: 'ar-entry-update',
+            historyDetails: {
+                envelopeNumber: nextEnvelopeNumber,
+                designation: nextDesignation,
+                renamedFiles: renamedCount,
+                deletedFiles: deletedCount,
+                fileMutations: fileMutations.sort((a, b) => Number(a.fileIndex) - Number(b.fileIndex))
+            }
+        });
 
-        const files = await normalizeJobFilesWithCurrentPaths(nextOutput, jobRow.created_at, new Map());
+        const files = await normalizeJobFilesWithCurrentPaths(persistedOutput, jobRow.created_at, new Map());
         return res.json({
             ok: true,
             jobId: jobRow.id,
@@ -1709,12 +1776,17 @@ router.post('/routing-log/ap-entry/attach-file', async (req, res) => {
             files: rawFiles
         };
 
-        sqlite.prepare('UPDATE sharefile_jobs SET output_json = ? WHERE id = ?')
-            .run(JSON.stringify(nextOutput), jobRow.id);
-        sqlite.prepare('UPDATE sharefile_job_events SET output_json = ? WHERE job_id = ?')
-            .run(JSON.stringify(nextOutput), jobRow.id);
+        const persistedOutput = persistRoutingLogUpdate({
+            jobId: jobRow.id,
+            output: nextOutput,
+            historyAction: 'ap-attach-file',
+            historyDetails: {
+                fileIndex,
+                selectedPath: normalizeWindowsPath(selectedPath)
+            }
+        });
 
-        const files = await normalizeJobFilesWithCurrentPaths(nextOutput, jobRow.created_at, new Map());
+        const files = await normalizeJobFilesWithCurrentPaths(persistedOutput, jobRow.created_at, new Map());
         return res.json({
             ok: true,
             jobId: jobRow.id,
@@ -1831,12 +1903,17 @@ router.post('/routing-log/ap-entry/attach-upload', async (req, res) => {
             files: rawFiles
         };
 
-        sqlite.prepare('UPDATE sharefile_jobs SET output_json = ? WHERE id = ?')
-            .run(JSON.stringify(nextOutput), jobRow.id);
-        sqlite.prepare('UPDATE sharefile_job_events SET output_json = ? WHERE job_id = ?')
-            .run(JSON.stringify(nextOutput), jobRow.id);
+        const persistedOutput = persistRoutingLogUpdate({
+            jobId: jobRow.id,
+            output: nextOutput,
+            historyAction: 'ap-attach-upload',
+            historyDetails: {
+                fileIndex,
+                selectedPath: normalizeWindowsPath(selectedPath)
+            }
+        });
 
-        const files = await normalizeJobFilesWithCurrentPaths(nextOutput, jobRow.created_at, new Map());
+        const files = await normalizeJobFilesWithCurrentPaths(persistedOutput, jobRow.created_at, new Map());
         return res.json({
             ok: true,
             jobId: jobRow.id,

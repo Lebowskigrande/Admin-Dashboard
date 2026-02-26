@@ -1,7 +1,7 @@
 import { google } from 'googleapis';
 import { randomUUID } from 'crypto';
-import { join, extname, dirname, resolve } from 'path';
-import { mkdir, writeFile, rm, readFile, stat, copyFile, unlink, access } from 'fs/promises';
+import { join, extname, dirname, resolve, basename } from 'path';
+import { mkdir, writeFile, rm, readFile, stat, copyFile, unlink, access, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { PDFDocument, StandardFonts, rgb, PDFName, PDFString, PDFArray } from 'pdf-lib';
 import { chromium } from 'playwright';
@@ -13,27 +13,34 @@ import xlsx from 'xlsx';
 import { createOAuthClient, setStoredCredentials } from '../googleAuth.js';
 import { getSharefileGmailTokens } from '../helpers/auth.js';
 import { sqlite as db } from '../db.js';
+import { extractVendorFromPdfBytes, extractVendorFromPdfText } from './apVendorExtractor.js';
 import {
     extractGmailMessageText,
     sanitizeFileSegment,
     decodeGmailBody,
     collectGmailParts
 } from '../helpers/hgk-utils.js';
+import {
+    extractEnvelopeFromTags as extractEnvelopeFromTagsHelper,
+    resolveContributionDesignation
+} from '../helpers/pledger-utils.js';
 
-const DEFAULT_ROOT = 'Y:\\Folders\\St. Edmunds (SEEC)\\2026\\AR & Contributions\\james - temp test';
+const DEFAULT_LOCAL_BASES = {
+    budget: 'C:\\Users\\Secretary\\Dropbox\\Parish Administrator\\Accounting\\Pending AP',
+    envelope: 'C:\\Users\\Secretary\\Dropbox\\Parish Administrator\\Accounting\\Pending AR'
+};
+const DEFAULT_CANONICAL_BASES = {
+    budget: 'Y:\\Folders\\St. Edmunds (SEEC)\\2026\\AP & Expenses\\00 Karina (AP & Expenses)',
+    envelope: 'Y:\\Folders\\St. Edmunds (SEEC)\\2026\\AR & Contributions\\00 Karina (AR & Contributions)'
+};
 const PROCESSED_LABEL = 'ShareFile Routed';
 const execFileAsync = promisify(execFile);
-const DEFAULT_BASES = {
-    budget: DEFAULT_ROOT,
-    envelope: DEFAULT_ROOT
-};
 
-const getBaseDirectories = () => {
-    const raw = process.env.SHAREFILE_ROUTER_BASES || '';
-    if (!raw) return DEFAULT_BASES;
+const parseBaseDirectories = (raw, defaults) => {
+    if (!raw) return defaults;
     try {
         const parsed = JSON.parse(raw);
-        return { ...DEFAULT_BASES, ...parsed };
+        return { ...defaults, ...parsed };
     } catch {
         // Fallback for .env values that contain unescaped Windows backslashes.
         // Example:
@@ -48,10 +55,20 @@ const getBaseDirectories = () => {
             match = pattern.exec(raw);
         }
         return Object.keys(extracted).length
-            ? { ...DEFAULT_BASES, ...extracted }
-            : DEFAULT_BASES;
+            ? { ...defaults, ...extracted }
+            : defaults;
     }
 };
+
+const getLocalBaseDirectories = () => parseBaseDirectories(
+    process.env.SHAREFILE_ROUTER_LOCAL_BASES || '',
+    DEFAULT_LOCAL_BASES
+);
+
+const getCanonicalBaseDirectories = () => parseBaseDirectories(
+    process.env.SHAREFILE_ROUTER_CANONICAL_BASES || process.env.SHAREFILE_ROUTER_BASES || '',
+    DEFAULT_CANONICAL_BASES
+);
 
 const ensureLabel = async (gmail, name) => {
     const listResponse = await gmail.users.labels.list({ userId: 'me' });
@@ -405,6 +422,38 @@ const formatContributionFilenameBase = ({ timestamp, donor, amount, sourceToken 
     return parts.join(' ');
 };
 
+const sanitizeApVendorToken = (value) => sanitizeContributionToken(value, '').slice(0, 120);
+
+const resolveApVendor = async (pdfBytes, options = {}) => {
+    try {
+        const extracted = await extractVendorFromPdfBytes(pdfBytes, options);
+        const vendor = sanitizeApVendorToken(extracted?.vendor || '');
+        return {
+            vendor,
+            found: Boolean(vendor),
+            confidence: Number(extracted?.confidence || 0) || 0
+        };
+    } catch {
+        return { vendor: '', found: false, confidence: 0 };
+    }
+};
+
+const resolveApVendorFromContext = (metadata, bodyText, conversationText = '') => {
+    const text = [
+        String(metadata?.from || ''),
+        String(metadata?.subject || ''),
+        String(bodyText || ''),
+        String(conversationText || '')
+    ].join('\n');
+    const extracted = extractVendorFromPdfText(text);
+    const vendor = sanitizeApVendorToken(extracted?.vendor || '');
+    return {
+        vendor,
+        found: Boolean(vendor),
+        confidence: Number(extracted?.confidence || 0) || 0
+    };
+};
+
 const buildNoteText = (_metadata, extra = {}) => {
     if (String(extra?.routeKind || '').toUpperCase() === 'CONTRIBUTION') {
         const envelopeRaw = compactWhitespace(extra?.envelopeNumber || extra?.codeValue || '');
@@ -462,7 +511,8 @@ const buildInvoiceFilename = async ({
     targetDir,
     donor,
     amount,
-    sourceToken
+    sourceToken,
+    vendor = ''
 }) => {
     const time = timestamp instanceof Date && !Number.isNaN(timestamp.getTime())
         ? timestamp
@@ -474,7 +524,8 @@ const buildInvoiceFilename = async ({
     } else {
         const yearMonth = formatDate(time, 'yyyy.MM');
         const hhmmss = formatDate(time, 'HHmmss');
-        baseName = `${yearMonth} SEEC ${kind} ${hhmmss}`;
+        const vendorToken = sanitizeApVendorToken(vendor);
+        baseName = `${yearMonth} SEEC ${kind} ${vendorToken || hhmmss}`;
     }
 
     return ensureUniquePath(targetDir, baseName);
@@ -571,31 +622,7 @@ const loadEnvelopeDirectoryRows = () => {
 };
 
 const extractEnvelopeFromTags = (tagsValue) => {
-    let tags = [];
-    if (Array.isArray(tagsValue)) {
-        tags = tagsValue;
-    } else {
-        const raw = String(tagsValue || '').trim();
-        if (!raw) return '';
-        try {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) {
-                tags = parsed;
-            } else {
-                tags = [raw];
-            }
-        } catch {
-            tags = raw.split(',');
-        }
-    }
-
-    for (const tag of tags) {
-        const value = String(tag || '').trim();
-        if (!value) continue;
-        const match = value.match(/env-\s*([A-Za-z0-9-]+)/i);
-        if (match?.[1]) return match[1].trim();
-    }
-    return '';
+    return extractEnvelopeFromTagsHelper(tagsValue);
 };
 
 const lookupEnvelopeNumberByDonorName = (donorName) => {
@@ -794,7 +821,7 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback, designa
         (bofa?.donor || '') ||
         'Unknown donor';
 
-    const designation = normalizeContributionDesignation(
+    const candidateDesignation = normalizeContributionDesignation(
         designationFallback ||
         allocationDesignation ||
         findLabeledValue([
@@ -815,8 +842,12 @@ const parseContributionFields = ({ metadata, bodyText, envelopeFallback, designa
         String(envelopeFallback || '').trim() ||
         lookupEnvelopeNumberByDonorName(donor);
 
-    const isRentDesignation = /\brent\b/i.test(String(designation || ''));
+    const isRentDesignation = /\brent\b/i.test(String(candidateDesignation || ''));
     const envelopeNumber = envelopeFromEmailOrLookup || (isRentDesignation ? '' : 'Unknown envelope');
+    const designation = resolveContributionDesignation({
+        designation: candidateDesignation,
+        envelopeNumber
+    }).designation;
 
     const amount = bofa?.amount || extractWebsiteAmount() || '';
 
@@ -1095,7 +1126,6 @@ const moveFileSafe = async (sourcePath, targetPath) => {
 };
 
 const resolveOutputFilePath = (output, fileEntry) => {
-    const targetDir = String(output?.targetDir || '').trim();
     if (typeof fileEntry === 'string') {
         const raw = fileEntry.trim();
         if (!raw) return '';
@@ -1104,9 +1134,7 @@ const resolveOutputFilePath = (output, fileEntry) => {
     if (!fileEntry || typeof fileEntry !== 'object') return '';
     const explicitPath = String(fileEntry.path || fileEntry.filePath || fileEntry.file_path || '').trim();
     if (explicitPath) return explicitPath;
-    const name = String(fileEntry.name || fileEntry.fileName || fileEntry.filename || '').trim();
-    if (!name || !targetDir) return '';
-    return join(targetDir, name);
+    return '';
 };
 
 const hasExistingOutputFiles = async (output) => {
@@ -1123,6 +1151,117 @@ const hasExistingOutputFiles = async (output) => {
         }
     }
     return false;
+};
+
+const listDirectoryFiles = async (dirPath) => {
+    try {
+        const names = await readdir(dirPath);
+        const rows = await Promise.all(names.map(async (name) => {
+            const fullPath = join(dirPath, name);
+            try {
+                const info = await stat(fullPath);
+                if (!info.isFile()) return null;
+                return {
+                    name,
+                    path: fullPath,
+                    size: Number(info.size || 0),
+                    mtimeMs: Number(info.mtimeMs || 0)
+                };
+            } catch {
+                return null;
+            }
+        }));
+        return rows.filter(Boolean);
+    } catch {
+        return [];
+    }
+};
+
+const isSyncableFileName = (name) => String(name || '').toLowerCase().endsWith('.pdf');
+
+const syncLocalMirrorFromCanonical = async (codeType) => {
+    const localBases = getLocalBaseDirectories();
+    const canonicalBases = getCanonicalBaseDirectories();
+    const localDir = String(localBases?.[codeType] || '').trim();
+    const canonicalDir = String(canonicalBases?.[codeType] || '').trim();
+    if (!localDir || !canonicalDir) {
+        return { ok: false, reason: 'missing-base-config' };
+    }
+
+    try {
+        await mkdir(localDir, { recursive: true });
+    } catch {
+        return { ok: false, reason: 'local-dir-unavailable' };
+    }
+
+    try {
+        const info = await stat(canonicalDir);
+        if (!info?.isDirectory?.()) {
+            return { ok: false, reason: 'canonical-dir-unavailable' };
+        }
+    } catch {
+        return { ok: false, reason: 'canonical-dir-unavailable' };
+    }
+
+    const canonicalFiles = (await listDirectoryFiles(canonicalDir)).filter((file) => isSyncableFileName(file.name));
+
+    const canonicalByName = new Map(canonicalFiles.map((file) => [String(file.name || '').toLowerCase(), file]));
+    const localFiles = (await listDirectoryFiles(localDir)).filter((file) => isSyncableFileName(file.name));
+    const localByName = new Map(localFiles.map((file) => [String(file.name || '').toLowerCase(), file]));
+
+    let copied = 0;
+    for (const canonicalFile of canonicalFiles) {
+        const key = String(canonicalFile.name || '').toLowerCase();
+        const localFile = localByName.get(key);
+        const needsCopy = !localFile
+            || Number(localFile.size || 0) !== Number(canonicalFile.size || 0)
+            || Number(localFile.mtimeMs || 0) + 1000 < Number(canonicalFile.mtimeMs || 0);
+        if (!needsCopy) continue;
+        await copyFile(canonicalFile.path, join(localDir, canonicalFile.name));
+        copied += 1;
+    }
+
+    let removed = 0;
+    for (const localFile of localFiles) {
+        const key = String(localFile.name || '').toLowerCase();
+        if (canonicalByName.has(key)) continue;
+        try {
+            await unlink(localFile.path);
+            removed += 1;
+        } catch {
+            // Ignore local deletion failures and continue.
+        }
+    }
+
+    return { ok: true, copied, removed };
+};
+
+const publishLocalFileToCanonical = async ({ codeType, localPath }) => {
+    const canonicalBases = getCanonicalBaseDirectories();
+    const canonicalDir = String(canonicalBases?.[codeType] || '').trim();
+    const normalizedLocalPath = String(localPath || '').trim();
+    if (!canonicalDir || !normalizedLocalPath) {
+        return { ok: false, reason: 'missing-base-config' };
+    }
+    try {
+        await mkdir(canonicalDir, { recursive: true });
+        const targetPath = join(canonicalDir, basename(normalizedLocalPath));
+        await copyFile(normalizedLocalPath, targetPath);
+        return { ok: true, canonicalPath: targetPath };
+    } catch (error) {
+        return { ok: false, reason: String(error?.message || 'canonical-publish-failed') };
+    }
+};
+
+export const syncSharefileLocalMirrors = async ({ codeType = '' } = {}) => {
+    const targetType = String(codeType || '').trim();
+    if (targetType) {
+        return { [targetType]: await syncLocalMirrorFromCanonical(targetType) };
+    }
+    const results = {};
+    results.budget = await syncLocalMirrorFromCanonical('budget');
+    results.envelope = await syncLocalMirrorFromCanonical('envelope');
+    return results;
 };
 
 const convertToPdfIfNeeded = async (sourcePath, outDir) => {
@@ -1156,8 +1295,8 @@ const convertToPdfIfNeeded = async (sourcePath, outDir) => {
 };
 
 const buildTargetDir = ({ codeType }) => {
-    const bases = getBaseDirectories();
-    return bases[codeType] || DEFAULT_ROOT;
+    const bases = getLocalBaseDirectories();
+    return bases[codeType] || bases.budget || process.cwd();
 };
 
 const getSharefileJob = (messageId, codeType, codeValue) => {
@@ -1165,6 +1304,7 @@ const getSharefileJob = (messageId, codeType, codeValue) => {
     return db.prepare(`
         SELECT * FROM sharefile_jobs
         WHERE message_id = ? AND code_type = ? AND code_value = ?
+        ORDER BY created_at DESC, id DESC
         LIMIT 1
     `).get(messageId, codeType || '', codeValue || '');
 };
@@ -1172,22 +1312,102 @@ const getSharefileJob = (messageId, codeType, codeValue) => {
 const saveSharefileJob = ({ messageId, threadId, codeType, codeValue, output }) => {
     const now = new Date().toISOString();
     const id = `job-${randomUUID()}`;
-    db.prepare(`
-        INSERT INTO sharefile_jobs (id, message_id, thread_id, code_type, code_value, output_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-        id,
-        messageId,
-        threadId || null,
-        codeType || '',
-        codeValue || '',
-        JSON.stringify(output || {}),
-        now
-    );
-    return { id, created_at: now };
+    try {
+        db.prepare(`
+            INSERT INTO sharefile_jobs (id, message_id, thread_id, code_type, code_value, output_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            id,
+            messageId,
+            threadId || null,
+            codeType || '',
+            codeValue || '',
+            JSON.stringify(output || {}),
+            now
+        );
+        return { id, created_at: now };
+    } catch (error) {
+        const conflict = String(error?.message || '').toLowerCase().includes('unique');
+        if (!conflict) throw error;
+        const existing = getSharefileJob(messageId, codeType, codeValue);
+        if (!existing?.id) throw error;
+        db.prepare(`
+            UPDATE sharefile_jobs
+            SET thread_id = ?,
+                output_json = ?
+            WHERE id = ?
+        `).run(
+            threadId || null,
+            JSON.stringify(output || {}),
+            existing.id
+        );
+        return {
+            id: existing.id,
+            created_at: String(existing.created_at || now).trim() || now,
+            updated: true
+        };
+    }
+};
+
+const saveOrUpdateSharefileJob = ({ existingJobId = '', messageId, threadId, codeType, codeValue, output }) => {
+    const now = new Date().toISOString();
+    const normalizedMessageId = String(messageId || '').trim();
+    const normalizedCodeType = String(codeType || '').trim();
+    const normalizedCodeValue = String(codeValue || '').trim();
+    const normalizedExistingId = String(existingJobId || '').trim();
+    if (normalizedExistingId) {
+        const result = db.prepare(`
+            UPDATE sharefile_jobs
+            SET message_id = ?,
+                thread_id = ?,
+                code_type = ?,
+                code_value = ?,
+                output_json = ?
+            WHERE id = ?
+        `).run(
+            normalizedMessageId || null,
+            threadId || null,
+            normalizedCodeType,
+            normalizedCodeValue,
+            JSON.stringify(output || {}),
+            normalizedExistingId
+        );
+        if (result?.changes > 0) {
+            const existingRow = db.prepare('SELECT created_at FROM sharefile_jobs WHERE id = ? LIMIT 1').get(normalizedExistingId);
+            return { id: normalizedExistingId, created_at: String(existingRow?.created_at || now).trim() || now, updated: true };
+        }
+    }
+
+    const existingByLogicalKey = getSharefileJob(normalizedMessageId, normalizedCodeType, normalizedCodeValue);
+    if (existingByLogicalKey?.id) {
+        db.prepare(`
+            UPDATE sharefile_jobs
+            SET thread_id = ?,
+                output_json = ?
+            WHERE id = ?
+        `).run(
+            threadId || null,
+            JSON.stringify(output || {}),
+            existingByLogicalKey.id
+        );
+        return {
+            id: existingByLogicalKey.id,
+            created_at: String(existingByLogicalKey.created_at || now).trim() || now,
+            updated: true
+        };
+    }
+
+    return saveSharefileJob({
+        messageId: normalizedMessageId,
+        threadId,
+        codeType: normalizedCodeType,
+        codeValue: normalizedCodeValue,
+        output
+    });
 };
 
 export const recordSharefileRoutingEvent = ({
+    attemptId = '',
     jobId = null,
     messageId = null,
     threadId = null,
@@ -1198,21 +1418,66 @@ export const recordSharefileRoutingEvent = ({
     output = null
 } = {}) => {
     try {
+        const normalizedAttemptId = String(attemptId || '').trim();
+        const normalizedMessageId = String(messageId || '').trim();
+        const normalizedCodeType = String(codeType || '').trim();
+        const normalizedCodeValue = String(codeValue || '').trim();
+        const normalizedStatus = String(status || 'success').trim() || 'success';
+        if (normalizedAttemptId) {
+            const existing = db.prepare(`
+                SELECT id, created_at
+                FROM sharefile_job_events
+                WHERE attempt_id = ?
+                  AND message_id = ?
+                  AND code_type = ?
+                  AND code_value = ?
+                  AND status = ?
+                LIMIT 1
+            `).get(
+                normalizedAttemptId,
+                normalizedMessageId || null,
+                normalizedCodeType,
+                normalizedCodeValue,
+                normalizedStatus
+            );
+            if (existing?.id) {
+                db.prepare(`
+                    UPDATE sharefile_job_events
+                    SET job_id = ?,
+                        thread_id = ?,
+                        error_text = ?,
+                        output_json = ?
+                    WHERE id = ?
+                `).run(
+                    jobId || null,
+                    threadId || null,
+                    errorText || '',
+                    output ? JSON.stringify(output) : null,
+                    existing.id
+                );
+                return {
+                    id: existing.id,
+                    created_at: String(existing.created_at || '').trim() || new Date().toISOString(),
+                    deduped: true
+                };
+            }
+        }
         const id = `job-event-${randomUUID()}`;
         const now = new Date().toISOString();
         db.prepare(`
             INSERT INTO sharefile_job_events (
-                id, job_id, message_id, thread_id, code_type, code_value, status, error_text, output_json, created_at
+                id, attempt_id, job_id, message_id, thread_id, code_type, code_value, status, error_text, output_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
             id,
+            normalizedAttemptId || null,
             jobId || null,
-            messageId || null,
+            normalizedMessageId || null,
             threadId || null,
-            codeType || '',
-            codeValue || '',
-            status || 'success',
+            normalizedCodeType,
+            normalizedCodeValue,
+            normalizedStatus,
             errorText || '',
             output ? JSON.stringify(output) : null,
             now
@@ -1281,6 +1546,8 @@ export const routeShareFileEmails = async ({
 
     for (const entry of queuedEntries) {
         let tempDir = '';
+        let attemptId = '';
+        let existingJob = null;
         let message = null;
         let threadMessages = [];
         let effectiveMessageId = String(entry?.id || '').trim();
@@ -1339,6 +1606,7 @@ export const routeShareFileEmails = async ({
                 clientTs: new Date(Number(message?.internalDate) || Date.now()).toISOString()
             });
             await mkdir(resolvedRoot, { recursive: true });
+            await syncLocalMirrorFromCanonical(codeType).catch(() => ({ ok: false }));
 
             const noteText = buildNoteText(metadata, {
                 routeKind,
@@ -1356,6 +1624,9 @@ export const routeShareFileEmails = async ({
             const conversationText = !isContributionRoute && !useThreadPdfAttachments
                 ? buildConversationText(threadMessages)
                 : '';
+            const contextVendorMeta = isContributionRoute
+                ? { vendor: '', found: false, confidence: 0 }
+                : resolveApVendorFromContext(metadata, bodyText, conversationText);
             const routingTimestamp = new Date(Number(message?.internalDate) || Date.now());
             const filenameTimestamp = routeKind === 'CONTRIBUTION'
                 ? parseEmailHeaderTimestamp(contributionContext.metadata?.date, routingTimestamp)
@@ -1391,24 +1662,43 @@ export const routeShareFileEmails = async ({
                 }
             };
 
-            const existing = getSharefileJob(effectiveMessageId, codeType, codeValue);
-            if (existing) {
+            existingJob = getSharefileJob(effectiveMessageId, codeType, codeValue);
+            const attempt = startRoutingAttempt({
+                jobId: existingJob?.id || null,
+                messageId: effectiveMessageId,
+                threadId: threadId || null,
+                codeType,
+                codeValue,
+                source: 'poller'
+            });
+            attemptId = String(attempt?.id || '').trim();
+            if (existingJob) {
                 let existingOutput = {};
                 try {
-                    existingOutput = JSON.parse(existing.output_json || '{}');
+                    existingOutput = JSON.parse(existingJob.output_json || '{}');
                 } catch {
                     existingOutput = {};
                 }
                 const existingFilesPresent = await hasExistingOutputFiles(existingOutput);
                 if (existingFilesPresent) {
                     recordSharefileRoutingEvent({
-                        jobId: existing.id,
+                        attemptId,
+                        jobId: existingJob.id,
                         messageId: effectiveMessageId,
                         threadId: threadId || null,
                         codeType,
                         codeValue,
                         status: 'success',
                         output: existingOutput
+                    });
+                    completeRoutingAttempt({
+                        attemptId,
+                        jobId: existingJob.id,
+                        status: 'success',
+                        output: existingOutput,
+                        writtenFiles: (Array.isArray(existingOutput?.files) ? existingOutput.files : [])
+                            .map((fileEntry) => resolveOutputFilePath(existingOutput, fileEntry))
+                            .filter(Boolean)
                     });
                     await applySuccessLabels();
                     processed += 1;
@@ -1419,6 +1709,17 @@ export const routeShareFileEmails = async ({
             tempDir = join(tmpdir(), `sharefile-${randomUUID()}`);
             await mkdir(tempDir, { recursive: true });
             const outputs = [];
+            const canonicalSync = { published: 0, failed: 0, lastError: '' };
+            const syncOutputToCanonical = async (localPath) => {
+                const result = await publishLocalFileToCanonical({ codeType, localPath });
+                if (result?.ok) {
+                    canonicalSync.published += 1;
+                    return;
+                }
+                canonicalSync.failed += 1;
+                canonicalSync.lastError = String(result?.reason || '').trim();
+            };
+            let apVendor = contextVendorMeta.vendor || '';
             if (useThreadPdfAttachments) {
                 let index = 0;
                 for (const source of threadPdfAttachments) {
@@ -1434,22 +1735,26 @@ export const routeShareFileEmails = async ({
                     await writeFile(sourcePath, rawBytes);
                     const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
                     const pdfBytes = await readFile(pdfPath);
+                    const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: pdfPath });
+                    if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
                     const { filename, targetPath } = await buildInvoiceFilename({
                         kind: routeKind,
                         timestamp: filenameTimestamp,
                         targetDir: resolvedRoot,
                         donor: contributionMeta?.donor || '',
                         amount: contributionMeta?.amount || '',
-                        sourceToken
+                        sourceToken,
+                        vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
                     });
                     const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                     const tempPath = join(tempDir, filename);
                     await writeFile(tempPath, notedBytes);
                     await moveFileSafe(tempPath, targetPath);
+                    await syncOutputToCanonical(targetPath);
                     outputs.push(targetPath);
                     index += 1;
                 }
-            } else if (!isContributionRoute || attachments.length === 0) {
+            } else if (attachments.length === 0) {
                 let pdfBytes;
                 try {
                     const html = isContributionRoute
@@ -1465,18 +1770,22 @@ export const routeShareFileEmails = async ({
                         pdfBytes = await renderEmailToPdf({ subject: 'Email conversation' }, conversationText || bodyText);
                     }
                 }
+                const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: '' });
+                if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
                 const { filename, targetPath } = await buildInvoiceFilename({
                     kind: routeKind,
                     timestamp: filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
-                    sourceToken
+                    sourceToken,
+                    vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);
                 await writeFile(tempPath, notedBytes);
                 await moveFileSafe(tempPath, targetPath);
+                await syncOutputToCanonical(targetPath);
                 outputs.push(targetPath);
             } else {
                 let index = 0;
@@ -1493,18 +1802,22 @@ export const routeShareFileEmails = async ({
                     await writeFile(sourcePath, rawBytes);
                     const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
                     const pdfBytes = await readFile(pdfPath);
+                    const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: pdfPath });
+                    if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
                     const { filename, targetPath } = await buildInvoiceFilename({
                         kind: routeKind,
                         timestamp: filenameTimestamp,
                         targetDir: resolvedRoot,
                         donor: contributionMeta?.donor || '',
                         amount: contributionMeta?.amount || '',
-                        sourceToken
+                        sourceToken,
+                        vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
                     });
                     const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                     const tempPath = join(tempDir, filename);
                     await writeFile(tempPath, notedBytes);
                     await moveFileSafe(tempPath, targetPath);
+                    await syncOutputToCanonical(targetPath);
                     outputs.push(targetPath);
                     index += 1;
                 }
@@ -1512,9 +1825,21 @@ export const routeShareFileEmails = async ({
 
             const output = {
                 targetDir: resolvedRoot,
-                files: outputs
+                files: outputs,
+                routing: {
+                    routeKind,
+                    envelopeNumber: contributionMeta?.envelopeNumber || codeValue || '',
+                    designation: contributionMeta?.designation || '',
+                    noteText: routeKind === 'CONTRIBUTION' ? noteText : '',
+                    vendor: routeKind === 'CONTRIBUTION' ? '' : apVendor,
+                    vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor),
+                    canonicalPublishedCount: canonicalSync.published,
+                    canonicalFailedCount: canonicalSync.failed,
+                    canonicalLastError: canonicalSync.lastError || ''
+                }
             };
-            const job = saveSharefileJob({
+            const job = saveOrUpdateSharefileJob({
+                existingJobId: existingJob?.id || '',
                 messageId: effectiveMessageId,
                 threadId: threadId || null,
                 codeType,
@@ -1522,6 +1847,7 @@ export const routeShareFileEmails = async ({
                 output
             });
             recordSharefileRoutingEvent({
+                attemptId,
                 jobId: job.id,
                 messageId: effectiveMessageId,
                 threadId: threadId || null,
@@ -1530,6 +1856,13 @@ export const routeShareFileEmails = async ({
                 status: 'success',
                 output
             });
+            completeRoutingAttempt({
+                attemptId,
+                jobId: job.id,
+                status: 'success',
+                output,
+                writtenFiles: outputs
+            });
 
             await applySuccessLabels();
             processed += 1;
@@ -1537,10 +1870,18 @@ export const routeShareFileEmails = async ({
             failed += 1;
             console.error('ShareFile route emails poll error:', error);
             recordSharefileRoutingEvent({
+                attemptId,
+                jobId: existingJob?.id || null,
                 messageId: effectiveMessageId,
                 threadId: message?.threadId || null,
                 codeType,
                 codeValue,
+                status: 'failure',
+                errorText: error?.message || 'Failed to route email'
+            });
+            completeRoutingAttempt({
+                attemptId,
+                jobId: existingJob?.id || null,
                 status: 'failure',
                 errorText: error?.message || 'Failed to route email'
             });
@@ -1552,6 +1893,85 @@ export const routeShareFileEmails = async ({
     }
 
     return { processed, failed, total: queuedEntries.length, skippedThreadDuplicates };
+};
+
+const startRoutingAttempt = ({
+    jobId = null,
+    messageId = null,
+    threadId = null,
+    codeType = '',
+    codeValue = '',
+    source = 'manual'
+} = {}) => {
+    try {
+        const id = `routing-attempt-${randomUUID()}`;
+        const now = new Date().toISOString();
+        db.prepare(`
+            INSERT INTO routing_attempts (
+                id, job_id, message_id, thread_id, code_type, code_value, source,
+                status, error_text, output_json, written_files_json,
+                started_at, completed_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+            id,
+            jobId || null,
+            messageId || null,
+            threadId || null,
+            codeType || '',
+            codeValue || '',
+            source || 'manual',
+            'started',
+            '',
+            null,
+            JSON.stringify([]),
+            now,
+            null,
+            now,
+            now
+        );
+        return { id, startedAt: now };
+    } catch (error) {
+        console.warn('Failed to create routing attempt:', error);
+        return null;
+    }
+};
+
+const completeRoutingAttempt = ({
+    attemptId = '',
+    jobId = null,
+    status = 'success',
+    errorText = '',
+    output = null,
+    writtenFiles = []
+} = {}) => {
+    const id = String(attemptId || '').trim();
+    if (!id) return;
+    try {
+        const now = new Date().toISOString();
+        db.prepare(`
+            UPDATE routing_attempts
+            SET job_id = ?,
+                status = ?,
+                error_text = ?,
+                output_json = ?,
+                written_files_json = ?,
+                completed_at = ?,
+                updated_at = ?
+            WHERE id = ?
+        `).run(
+            jobId || null,
+            status || 'success',
+            errorText || '',
+            output ? JSON.stringify(output) : null,
+            JSON.stringify(Array.isArray(writtenFiles) ? writtenFiles : []),
+            now,
+            now,
+            id
+        );
+    } catch (error) {
+        console.warn('Failed to finalize routing attempt:', error);
+    }
 };
 
 export const resolveSharefileMessageId = async (threadId, tokensOverride = null) => {
@@ -1577,14 +1997,13 @@ export const routeSharefileMessage = async ({
     rootPath,
     archive = true,
     extraMeta = {},
-    tokensOverride = null
+    tokensOverride = null,
+    messageOnly = true,
+    allowIdempotent = false
 } = {}) => {
     const tokens = tokensOverride || getSharefileGmailTokens();
     if (!tokens) {
         throw new Error('No ShareFile Gmail tokens configured');
-    }
-    if (!messageId && threadId) {
-        messageId = await resolveSharefileMessageId(threadId, tokens);
     }
     if (!messageId) {
         throw new Error('Missing messageId');
@@ -1594,47 +2013,15 @@ export const routeSharefileMessage = async ({
     const labelId = await ensureLabel(gmail, PROCESSED_LABEL);
     let effectiveMessageId = messageId;
     let message;
-    try {
-        const messageResponse = await gmail.users.messages.get({
-            userId: 'me',
-            id: effectiveMessageId,
-            format: 'full'
-        });
-        message = messageResponse.data;
-    } catch (error) {
-        const status = Number(error?.code || error?.response?.status || 0);
-        const notFound = status === 404 || String(error?.message || '').includes('Requested entity was not found.');
-        if (!notFound || !threadId) throw error;
-
-        const resolvedMessageId = await resolveSharefileMessageId(threadId, tokens);
-        if (!resolvedMessageId || resolvedMessageId === effectiveMessageId) throw error;
-
-        const retryResponse = await gmail.users.messages.get({
-            userId: 'me',
-            id: resolvedMessageId,
-            format: 'full'
-        });
-        effectiveMessageId = resolvedMessageId;
-        message = retryResponse.data;
-    }
+    const messageResponse = await gmail.users.messages.get({
+        userId: 'me',
+        id: effectiveMessageId,
+        format: 'full'
+    });
+    message = messageResponse.data;
     messageId = effectiveMessageId;
-    let threadMessages = [];
     const effectiveThreadId = String(threadId || message?.threadId || '').trim();
-    if (effectiveThreadId) {
-        try {
-            const threadResponse = await gmail.users.threads.get({
-                userId: 'me',
-                id: effectiveThreadId,
-                format: 'full'
-            });
-            threadMessages = Array.isArray(threadResponse.data?.messages) ? threadResponse.data.messages : [];
-        } catch (error) {
-            console.warn('Failed to fetch full thread for routing, falling back to single message:', error?.message || error);
-        }
-    }
-    if (threadMessages.length === 0) {
-        threadMessages = [message];
-    }
+    const threadMessages = [message];
     const metadata = parseEmailMetadata(message);
     const bodyText = extractGmailMessageText(message) || message.snippet || '';
     const contributionContext = resolveContributionContext(metadata, bodyText);
@@ -1661,11 +2048,17 @@ export const routeSharefileMessage = async ({
     });
     const attachments = collectAttachments(message.payload);
     const isContributionRoute = routeKind === 'CONTRIBUTION';
-    const threadPdfAttachments = !isContributionRoute
+    const allowThreadContext = !messageOnly;
+    const threadPdfAttachments = !isContributionRoute && allowThreadContext
         ? collectThreadPdfAttachments(threadMessages)
         : [];
     const useThreadPdfAttachments = !isContributionRoute && threadPdfAttachments.length > 0;
-    const conversationText = !isContributionRoute && !useThreadPdfAttachments ? buildConversationText(threadMessages) : '';
+    const conversationText = !isContributionRoute && allowThreadContext && !useThreadPdfAttachments
+        ? buildConversationText(threadMessages)
+        : '';
+    const contextVendorMeta = isContributionRoute
+        ? { vendor: '', found: false, confidence: 0 }
+        : resolveApVendorFromContext(metadata, bodyText, conversationText);
     const clientTsDate = extraMeta?.clientTs ? new Date(extraMeta.clientTs) : null;
     const routingTimestamp = clientTsDate && !Number.isNaN(clientTsDate.getTime())
         ? clientTsDate
@@ -1683,16 +2076,34 @@ export const routeSharefileMessage = async ({
         clientTs: extraMeta.clientTs
     });
     await mkdir(resolvedRoot, { recursive: true });
+    await syncLocalMirrorFromCanonical(extraMeta.codeType).catch(() => ({ ok: false }));
     const tempDir = join(tmpdir(), `sharefile-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
 
+    let existing = null;
+    let attemptId = '';
     try {
-        const existing = getSharefileJob(messageId, extraMeta.codeType, extraMeta.codeValue);
-        if (existing) {
-            const existingOutput = JSON.parse(existing.output_json || '{}');
+        existing = getSharefileJob(messageId, extraMeta.codeType, extraMeta.codeValue);
+        const attempt = startRoutingAttempt({
+            jobId: existing?.id || null,
+            messageId,
+            threadId: effectiveThreadId || null,
+            codeType: extraMeta.codeType,
+            codeValue: extraMeta.codeValue,
+            source: 'manual'
+        });
+        attemptId = String(attempt?.id || '').trim();
+        if (allowIdempotent && existing) {
+            let existingOutput = {};
+            try {
+                existingOutput = JSON.parse(existing.output_json || '{}');
+            } catch {
+                existingOutput = {};
+            }
             const existingFilesPresent = await hasExistingOutputFiles(existingOutput);
             if (existingFilesPresent) {
                 recordSharefileRoutingEvent({
+                    attemptId,
                     jobId: existing.id,
                     messageId,
                     threadId: threadId || message.threadId || null,
@@ -1701,11 +2112,34 @@ export const routeSharefileMessage = async ({
                     status: 'success',
                     output: existingOutput
                 });
+                completeRoutingAttempt({
+                    attemptId,
+                    jobId: existing.id,
+                    status: 'success',
+                    output: existingOutput,
+                    writtenFiles: (Array.isArray(existingOutput?.files) ? existingOutput.files : [])
+                        .map((fileEntry) => resolveOutputFilePath(existingOutput, fileEntry))
+                        .filter(Boolean)
+                });
                 return { ok: true, idempotent: true, output: existingOutput };
             }
         }
 
         const outputFiles = [];
+        const canonicalSync = { published: 0, failed: 0, lastError: '' };
+        const syncOutputToCanonical = async (localPath) => {
+            const result = await publishLocalFileToCanonical({
+                codeType: extraMeta.codeType,
+                localPath
+            });
+            if (result?.ok) {
+                canonicalSync.published += 1;
+                return;
+            }
+            canonicalSync.failed += 1;
+            canonicalSync.lastError = String(result?.reason || '').trim();
+        };
+        let apVendor = contextVendorMeta.vendor || '';
         if (useThreadPdfAttachments) {
             let index = 0;
             for (const source of threadPdfAttachments) {
@@ -1721,22 +2155,26 @@ export const routeSharefileMessage = async ({
                 await writeFile(sourcePath, rawBytes);
                 const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
                 const pdfBytes = await readFile(pdfPath);
+                const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: pdfPath });
+                if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
                 const { filename, targetPath } = await buildInvoiceFilename({
                     kind: routeKind,
                     timestamp: filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
-                    sourceToken
+                    sourceToken,
+                    vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);
                 await writeFile(tempPath, notedBytes);
                 await moveFileSafe(tempPath, targetPath);
-                outputFiles.push({ name: filename, bytes: notedBytes.length });
+                await syncOutputToCanonical(targetPath);
+                outputFiles.push({ name: filename, path: targetPath, bytes: notedBytes.length });
                 index += 1;
             }
-        } else if (!isContributionRoute || attachments.length === 0) {
+        } else if (attachments.length === 0) {
             let pdfBytes;
             try {
                 const html = isContributionRoute
@@ -1752,19 +2190,23 @@ export const routeSharefileMessage = async ({
                     pdfBytes = await renderEmailToPdf({ subject: 'Email conversation' }, conversationText || bodyText);
                 }
             }
+            const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: '' });
+            if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
             const { filename, targetPath } = await buildInvoiceFilename({
                 kind: routeKind,
                 timestamp: filenameTimestamp,
                 targetDir: resolvedRoot,
                 donor: contributionMeta?.donor || '',
                 amount: contributionMeta?.amount || '',
-                sourceToken
+                sourceToken,
+                vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
             });
             const notedBytes = await addNoteToPdf(pdfBytes, noteText);
             const tempPath = join(tempDir, filename);
             await writeFile(tempPath, notedBytes);
             await moveFileSafe(tempPath, targetPath);
-            outputFiles.push({ name: filename, bytes: notedBytes.length });
+            await syncOutputToCanonical(targetPath);
+            outputFiles.push({ name: filename, path: targetPath, bytes: notedBytes.length });
         } else {
             let index = 0;
             for (const attachment of attachments) {
@@ -1780,25 +2222,29 @@ export const routeSharefileMessage = async ({
                 await writeFile(sourcePath, rawBytes);
                 const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
                 const pdfBytes = await readFile(pdfPath);
+                const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: pdfPath });
+                if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
                 const { filename, targetPath } = await buildInvoiceFilename({
                     kind: routeKind,
                     timestamp: filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
-                    sourceToken
+                    sourceToken,
+                    vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);
                 await writeFile(tempPath, notedBytes);
                 await moveFileSafe(tempPath, targetPath);
-                outputFiles.push({ name: filename, bytes: notedBytes.length });
+                await syncOutputToCanonical(targetPath);
+                outputFiles.push({ name: filename, path: targetPath, bytes: notedBytes.length });
                 index += 1;
             }
         }
 
         const thread = threadId || message.threadId;
-        if (thread) {
+        if (thread && !messageOnly) {
             await gmail.users.threads.modify({
                 userId: 'me',
                 id: thread,
@@ -1819,9 +2265,21 @@ export const routeSharefileMessage = async ({
         }
         const output = {
             targetDir: resolvedRoot,
-            files: outputFiles
+            files: outputFiles,
+            routing: {
+                routeKind,
+                envelopeNumber: contributionMeta?.envelopeNumber || extraMeta.codeValue || '',
+                designation: contributionMeta?.designation || '',
+                noteText: routeKind === 'CONTRIBUTION' ? noteText : '',
+                vendor: routeKind === 'CONTRIBUTION' ? '' : apVendor,
+                vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor),
+                canonicalPublishedCount: canonicalSync.published,
+                canonicalFailedCount: canonicalSync.failed,
+                canonicalLastError: canonicalSync.lastError || ''
+            }
         };
-        const job = saveSharefileJob({
+        const job = saveOrUpdateSharefileJob({
+            existingJobId: existing?.id || '',
             messageId,
             threadId: thread || null,
             codeType: extraMeta.codeType,
@@ -1829,6 +2287,7 @@ export const routeSharefileMessage = async ({
             output
         });
         recordSharefileRoutingEvent({
+            attemptId,
             jobId: job.id,
             messageId,
             threadId: thread || null,
@@ -1837,7 +2296,34 @@ export const routeSharefileMessage = async ({
             status: 'success',
             output
         });
+        completeRoutingAttempt({
+            attemptId,
+            jobId: job.id,
+            status: 'success',
+            output,
+            writtenFiles: outputFiles
+                .map((file) => String(file?.path || '').trim())
+                .filter(Boolean)
+        });
         return { ok: true, jobId: job.id, resolved: { messageId, threadId: thread || null }, output };
+    } catch (error) {
+        recordSharefileRoutingEvent({
+            attemptId,
+            jobId: existing?.id || null,
+            messageId,
+            threadId: effectiveThreadId || null,
+            codeType: extraMeta.codeType,
+            codeValue: extraMeta.codeValue,
+            status: 'failure',
+            errorText: error?.message || 'Failed to route email'
+        });
+        completeRoutingAttempt({
+            attemptId,
+            jobId: existing?.id || null,
+            status: 'failure',
+            errorText: error?.message || 'Failed to route email'
+        });
+        throw error;
     } finally {
         await rm(tempDir, { recursive: true, force: true });
     }

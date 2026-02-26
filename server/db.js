@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './db/schema.js';
 import { vestryChecklistItems } from './vestryChecklistData.js';
+import { syncPledgerFlagsInPeople } from './helpers/pledger-utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -63,6 +64,7 @@ sqlite.exec(`
 
     CREATE TABLE IF NOT EXISTS sharefile_job_events (
         id TEXT PRIMARY KEY,
+        attempt_id TEXT,
         job_id TEXT,
         message_id TEXT,
         thread_id TEXT,
@@ -80,7 +82,54 @@ sqlite.exec(`
         enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS routing_attempts (
+        id TEXT PRIMARY KEY,
+        job_id TEXT,
+        message_id TEXT,
+        thread_id TEXT,
+        code_type TEXT,
+        code_value TEXT,
+        source TEXT,
+        status TEXT NOT NULL,
+        error_text TEXT,
+        output_json TEXT,
+        written_files_json TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_routing_attempts_created_at ON routing_attempts(created_at);
+    CREATE INDEX IF NOT EXISTS idx_routing_attempts_job_id ON routing_attempts(job_id);
+    CREATE INDEX IF NOT EXISTS idx_sharefile_job_events_attempt_id ON sharefile_job_events(attempt_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sharefile_job_events_attempt_dedupe
+        ON sharefile_job_events(attempt_id, message_id, code_type, code_value, status)
+        WHERE attempt_id IS NOT NULL;
 `);
+
+const ensureSharefileJobEventsColumns = () => {
+    const table = sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sharefile_job_events'
+    `).get();
+    if (!table) return;
+
+    const columns = sqlite.prepare('PRAGMA table_info(sharefile_job_events)').all().map((col) => col.name);
+    const columnSet = new Set(columns);
+    if (!columnSet.has('attempt_id')) {
+        sqlite.exec('ALTER TABLE sharefile_job_events ADD COLUMN attempt_id TEXT');
+    }
+
+    sqlite.exec('CREATE INDEX IF NOT EXISTS idx_sharefile_job_events_attempt_id ON sharefile_job_events(attempt_id)');
+    sqlite.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sharefile_job_events_attempt_dedupe
+            ON sharefile_job_events(attempt_id, message_id, code_type, code_value, status)
+            WHERE attempt_id IS NOT NULL
+    `);
+};
+
+ensureSharefileJobEventsColumns();
 
 const seedVestryChecklist = () => {
     const count = sqlite.prepare('SELECT count(*) as count FROM vestry_checklist').get().count;
@@ -127,9 +176,12 @@ const ensurePeopleColumns = () => {
     addColumn('city');
     addColumn('state');
     addColumn('postal_code');
+    addColumn('envelope_number');
+    addColumn('is_pledger');
 };
 
 ensurePeopleColumns();
+syncPledgerFlagsInPeople(sqlite);
 
 console.log('Database initialized at', dbPath);
 
