@@ -24,6 +24,12 @@ const TaskAdmin = () => {
     const [templateInstances, setTemplateInstances] = useState([]);
     const [instancesLoading, setInstancesLoading] = useState(false);
     const [instancesError, setInstancesError] = useState('');
+    const [engineHealth, setEngineHealth] = useState(null);
+    const [engineHealthLoading, setEngineHealthLoading] = useState(false);
+    const [enginePreview, setEnginePreview] = useState(null);
+    const [enginePreviewLoading, setEnginePreviewLoading] = useState(false);
+    const [engineActionError, setEngineActionError] = useState('');
+    const [rehydrateBusy, setRehydrateBusy] = useState(false);
     const [eventTypes, setEventTypes] = useState([]);
     const [templateOriginType, setTemplateOriginType] = useState('sunday');
     const [templateOriginId, setTemplateOriginId] = useState(null);
@@ -172,9 +178,76 @@ const TaskAdmin = () => {
         }
     }, []);
 
+    const loadEngineHealth = useCallback(async () => {
+        setEngineHealthLoading(true);
+        setEngineActionError('');
+        try {
+            const response = await fetch(`${API_URL}/tasks/engine/health`);
+            if (!response.ok) throw new Error('Failed to load task engine health');
+            const data = await response.json();
+            setEngineHealth(data || null);
+        } catch (err) {
+            console.error('Failed to load task engine health:', err);
+            setEngineHealth(null);
+            setEngineActionError('Unable to load task engine health.');
+        } finally {
+            setEngineHealthLoading(false);
+        }
+    }, []);
+
+    const previewOperationsSeed = useCallback(async (rehydrate = false) => {
+        setEnginePreviewLoading(true);
+        setEngineActionError('');
+        try {
+            const params = new URLSearchParams({ origin_type: 'operations' });
+            if (rehydrate) params.set('rehydrate', '1');
+            const response = await fetch(`${API_URL}/tasks/generator/preview?${params.toString()}`);
+            if (!response.ok) throw new Error('Failed to preview generator');
+            const data = await response.json();
+            setEnginePreview(data?.preview || null);
+        } catch (err) {
+            console.error('Failed to preview task generator:', err);
+            setEnginePreview(null);
+            setEngineActionError('Unable to preview task generation.');
+        } finally {
+            setEnginePreviewLoading(false);
+        }
+    }, []);
+
+    const rehydrateOperationsSeed = useCallback(async () => {
+        setRehydrateBusy(true);
+        setEngineActionError('');
+        try {
+            const response = await fetch(`${API_URL}/tasks/generator/rehydrate?origin_type=operations`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            if (!response.ok) throw new Error('Failed to rehydrate recurring tasks');
+            await Promise.all([
+                loadOrigins(),
+                loadOriginLinksAll(),
+                loadEngineHealth(),
+                previewOperationsSeed(false)
+            ]);
+            if (selectedOrigin) {
+                await loadOriginTasks(selectedOrigin.origin_type, selectedOrigin.origin_id);
+            }
+        } catch (err) {
+            console.error('Failed to rehydrate recurring tasks:', err);
+            setEngineActionError('Unable to rehydrate recurring tasks.');
+        } finally {
+            setRehydrateBusy(false);
+        }
+    }, [loadEngineHealth, loadOriginLinksAll, loadOriginTasks, loadOrigins, previewOperationsSeed, selectedOrigin]);
+
     useEffect(() => {
         loadOrigins();
     }, [loadOrigins]);
+
+    useEffect(() => {
+        loadEngineHealth();
+        previewOperationsSeed(false);
+    }, [loadEngineHealth, previewOperationsSeed]);
 
     useEffect(() => {
         loadOriginLinksAll();
@@ -455,7 +528,11 @@ const TaskAdmin = () => {
             if (selectedOrigin) {
                 await loadOriginTasks(selectedOrigin.origin_type, selectedOrigin.origin_id);
             }
-            await loadOrigins();
+            await Promise.all([
+                loadOrigins(),
+                loadEngineHealth(),
+                previewOperationsSeed(false)
+            ]);
         } catch (err) {
             console.error('Failed to seed templates:', err);
             setTemplatesError('Unable to seed templates.');
@@ -592,6 +669,81 @@ const TaskAdmin = () => {
                 <div className="task-admin-column">
                     <Card className="task-admin-card">
                         <div className="task-admin-card-header">
+                            <h2>Engine Health</h2>
+                            <div className="template-scope-controls">
+                                <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={() => previewOperationsSeed(false)}
+                                    disabled={enginePreviewLoading}
+                                >
+                                    {enginePreviewLoading ? 'Previewing...' : 'Preview Ops Seed'}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={rehydrateOperationsSeed}
+                                    disabled={rehydrateBusy}
+                                >
+                                    {rehydrateBusy ? 'Rehydrating...' : 'Rehydrate Ops'}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    onClick={loadEngineHealth}
+                                    disabled={engineHealthLoading}
+                                >
+                                    {engineHealthLoading ? 'Refreshing...' : 'Refresh Health'}
+                                </button>
+                            </div>
+                        </div>
+                        {engineActionError && <div className="empty-state">{engineActionError}</div>}
+                        {engineHealth && (
+                            <div className="engine-health-grid">
+                                <div>
+                                    <strong>Last Seed</strong>
+                                    <div className="origin-meta">{engineHealth.runtime?.lastSeedAt || 'Never'}</div>
+                                </div>
+                                <div>
+                                    <strong>Last Archive Sweep</strong>
+                                    <div className="origin-meta">{engineHealth.runtime?.lastArchiveSweepAt || 'Never'}</div>
+                                </div>
+                                <div>
+                                    <strong>Archived Last Sweep</strong>
+                                    <div className="origin-meta">{engineHealth.runtime?.lastArchiveArchivedCount ?? 0}</div>
+                                </div>
+                            </div>
+                        )}
+                        {engineHealth && Array.isArray(engineHealth.operationsByOrigin) && (
+                            <div className="engine-health-table">
+                                {engineHealth.operationsByOrigin.map((row) => (
+                                    <div key={row.origin_id} className="engine-health-row">
+                                        <span>{row.origin_id}</span>
+                                        <span>{row.active} active / {row.total} total</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {enginePreview && (
+                            <div className="engine-preview">
+                                <div className="origin-meta">
+                                    Plan: {enginePreview.summary?.total || 0} total, {enginePreview.summary?.create || 0} create,
+                                    {' '}{enginePreview.summary?.reactivate || 0} reactivate, {enginePreview.summary?.update || 0} update
+                                </div>
+                                <div className="engine-health-table">
+                                    {(enginePreview.items || []).slice(0, 12).map((item, index) => (
+                                        <div key={`${item.originId}-${item.originEvent}-${item.listKey}-${index}`} className="engine-health-row">
+                                            <span>{item.action.toUpperCase()} {item.originId}</span>
+                                            <span>{item.title}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </Card>
+
+                    <Card className="task-admin-card">
+                        <div className="task-admin-card-header">
                             <h2>Recurring Templates</h2>
                             <div className="template-scope-controls">
                                 <select
@@ -622,6 +774,8 @@ const TaskAdmin = () => {
                                     >
                                         <option value="weekly">Weekly</option>
                                         <option value="timesheets">Timesheets</option>
+                                        <option value="monthly">Monthly</option>
+                                        <option value="yearly">Yearly</option>
                                     </select>
                                 )}
                                 {templateOriginType === 'event' && (

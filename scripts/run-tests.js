@@ -485,6 +485,32 @@ const tests = [
         }
     },
     {
+        name: 'AP vendor extractor prefers Amazon sender over incidental Staples token',
+        run: async () => {
+            const sample = [
+                'From: Amazon Orders <auto-confirm@amazon.com>',
+                'Subject: Your order invoice',
+                'Thank you for your order.',
+                'Staples heavy duty staples were included in item details.',
+                'Amazon order #113-1234567-1234567'
+            ].join('\n');
+            const result = AP_VENDOR_TEST.extractVendorFromPdfText(sample);
+            assert.equal(result.vendor, 'Amazon');
+        }
+    },
+    {
+        name: 'AP vendor extractor returns no vendor for ambiguous peer signals',
+        run: async () => {
+            const sample = [
+                'Subject: Invoice notice',
+                'amazon order update',
+                'staples order update'
+            ].join('\n');
+            const result = AP_VENDOR_TEST.extractVendorFromPdfText(sample);
+            assert.equal(result.vendor, '');
+        }
+    },
+    {
         name: 'AP vendor extractor returns no match for unrelated text',
         run: async () => {
             const sample = 'This PDF has no invoice or sender identifiers';

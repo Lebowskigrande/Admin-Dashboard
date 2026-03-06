@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Task Engine UX Revamp Mockups</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --panel: #fffdf8;
+      --panel-2: #f8f6ef;
+      --ink: #13233a;
+      --muted: #54657f;
+      --line: #d7d0c2;
+      --ok: #217a42;
+      --warn: #a55f00;
+      --alert: #9c2d2d;
+      --accent: #0b5c87;
+      --shadow: 0 14px 34px rgba(19, 35, 58, 0.1);
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Avenir Next", "Helvetica Neue", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 88% 3%, #dbe8f3 0%, transparent 25%),
+        radial-gradient(circle at 5% 90%, #e9e2d1 0%, transparent 20%),
+        var(--bg);
+      line-height: 1.35;
+    }
+
+    .shell {
+      max-width: 1300px;
+      margin: 0 auto;
+      padding: 24px 18px 28px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero {
+      background: linear-gradient(100deg, #163451, #0b5c87);
+      color: #f3f8ff;
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero h1 { margin: 0 0 6px; font-size: 1.35rem; letter-spacing: 0.02em; }
+    .hero p { margin: 0; opacity: 0.9; }
+
+    .layout {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .card-h {
+      background: var(--panel-2);
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-h h2 { margin: 0; font-size: 1rem; }
+    .card-b { padding: 12px 14px 14px; }
+
+    .pills { display: flex; gap: 7px; flex-wrap: wrap; }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      background: #fff;
+      color: var(--muted);
+    }
+    .pill.active {
+      background: #dce9f2;
+      color: #133148;
+      border-color: #93adc0;
+      font-weight: 600;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 8px;
+    }
+    .metric .k { font-size: 0.73rem; color: var(--muted); }
+    .metric .v { font-size: 1.15rem; font-weight: 700; }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.65fr) minmax(0, 1.35fr);
+      gap: 10px;
+    }
+
+    .list {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      max-height: 360px;
+      overflow: auto;
+    }
+    .item {
+      padding: 10px 10px;
+      border-bottom: 1px solid #efe8da;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+    }
+    .item:last-child { border-bottom: none; }
+    .item.active { background: #eef4f7; }
+    .title { font-size: 0.9rem; font-weight: 600; }
+    .meta { font-size: 0.75rem; color: var(--muted); margin-top: 3px; }
+
+    .status.ok { color: var(--ok); font-weight: 700; }
+    .status.warn { color: var(--warn); font-weight: 700; }
+    .status.alert { color: var(--alert); font-weight: 700; }
+
+    .table {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.84rem;
+    }
+    th, td {
+      padding: 8px 9px;
+      border-bottom: 1px solid #efe8da;
+      text-align: left;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 190px;
+    }
+    th { background: #f6f2e8; font-size: 0.73rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+    tr:last-child td { border-bottom: none; }
+
+    .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .btn {
+      border: 1px solid #96adbe;
+      background: #fff;
+      color: #173652;
+      padding: 6px 10px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .btn.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .note {
+      margin-top: 9px;
+      font-size: 0.77rem;
+      color: var(--muted);
+    }
+
+    @media (max-width: 1000px) {
+      .layout { grid-template-columns: 1fr; }
+      .split { grid-template-columns: 1fr; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <h1>Task Engine UX Revamp</h1>
+      <p>Two alternative interaction models: (A) Operations Cockpit for daily confidence, (B) Template Studio for editing precision.</p>
+    </section>
+
+    <section class="layout">
+      <article class="card">
+        <header class="card-h">
+          <h2>A. Operations Cockpit</h2>
+          <div class="pills">
+            <span class="pill active">Operations</span>
+            <span class="pill">Sunday</span>
+            <span class="pill">Vestry</span>
+            <span class="pill">Event</span>
+          </div>
+        </header>
+        <div class="card-b">
+          <div class="metric-grid">
+            <div class="metric"><div class="k">Current Week</div><div class="v">7 Open</div></div>
+            <div class="metric"><div class="k">Timesheets</div><div class="v">1 Active</div></div>
+            <div class="metric"><div class="k">Seed Drift</div><div class="v">0</div></div>
+            <div class="metric"><div class="k">Engine Health</div><div class="v status ok">Healthy</div></div>
+          </div>
+
+          <div class="split">
+            <div class="list">
+              <div class="item active">
+                <div><div class="title">Weekly - 2026-03-02</div><div class="meta">7 active / 7 total</div></div>
+                <div class="status ok">OK</div>
+              </div>
+              <div class="item">
+                <div><div class="title">Timesheets - 2026-03-a</div><div class="meta">1 active / 1 total</div></div>
+                <div class="status ok">OK</div>
+              </div>
+              <div class="item">
+                <div><div class="title">Monthly - 2026-03</div><div class="meta">0 active / 0 total</div></div>
+                <div class="status warn">Empty</div>
+              </div>
+              <div class="item">
+                <div><div class="title">Legacy - operations</div><div class="meta">0 active / 8 total</div></div>
+                <div class="status alert">Legacy</div>
+              </div>
+            </div>
+
+            <div>
+              <div class="table">
+                <table>
+                  <thead>
+                    <tr><th>Action</th><th>Task</th><th>Due</th><th>Owner</th><th>State</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>Next</td><td>Collect offering checks</td><td>Mar 6</td><td>Ops</td><td>Open</td></tr>
+                    <tr><td>Queue</td><td>Code checks and envelopes</td><td>Mar 6</td><td>Ops</td><td>Open</td></tr>
+                    <tr><td>Queue</td><td>Scan and send to ESP</td><td>Mar 6</td><td>Ops</td><td>Open</td></tr>
+                    <tr><td>Health</td><td>Generator preview creates 0</td><td>-</td><td>Engine</td><td>Stable</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="actions">
+                <button class="btn">Preview Seed</button>
+                <button class="btn">Run Seed</button>
+                <button class="btn primary">Rehydrate Legacy</button>
+              </div>
+              <div class="note">Design intent: show confidence first (what’s healthy, what needs action), editing second.</div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <header class="card-h">
+          <h2>B. Template Studio</h2>
+          <div class="pills">
+            <span class="pill active">Weekly</span>
+            <span class="pill">Timesheets</span>
+            <span class="pill">Monthly</span>
+            <span class="pill">Yearly</span>
+          </div>
+        </header>
+        <div class="card-b">
+          <div class="split">
+            <div class="list">
+              <div class="item active">
+                <div><div class="title">Deposits (Sequential)</div><div class="meta">6 steps</div></div>
+                <div class="status ok">Live</div>
+              </div>
+              <div class="item">
+                <div><div class="title">Weekly Ops (Parallel)</div><div class="meta">4 steps</div></div>
+                <div class="status ok">Live</div>
+              </div>
+              <div class="item">
+                <div><div class="title">Timesheets (Sequential)</div><div class="meta">3 steps</div></div>
+                <div class="status ok">Live</div>
+              </div>
+            </div>
+
+            <div>
+              <div class="table">
+                <table>
+                  <thead>
+                    <tr><th>Step</th><th>Title</th><th>Sort</th><th>Due Offset</th><th>Priority</th><th>Active</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>collect</td><td>Get offering checks</td><td>10</td><td>0</td><td>55</td><td>Yes</td></tr>
+                    <tr><td>slips</td><td>Make deposit slips</td><td>20</td><td>0</td><td>55</td><td>Yes</td></tr>
+                    <tr><td>code</td><td>Code checks/envelopes</td><td>30</td><td>0</td><td>55</td><td>Yes</td></tr>
+                    <tr><td>scan</td><td>Scan checks/envelopes</td><td>40</td><td>0</td><td>55</td><td>Yes</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="actions">
+                <button class="btn">Duplicate List</button>
+                <button class="btn">Validate</button>
+                <button class="btn primary">Save Draft</button>
+                <button class="btn primary">Publish</button>
+              </div>
+              <div class="note">Design intent: editing workflow with draft/publish protects against accidental live changes.</div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

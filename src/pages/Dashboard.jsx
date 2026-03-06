@@ -187,6 +187,7 @@ const Dashboard = () => {
     const [tasksLoading, setTasksLoading] = useState(true);
     const [detailTasks, setDetailTasks] = useState([]);
     const [detailLoading, setDetailLoading] = useState(false);
+    const [taskFilter, setTaskFilter] = useState('all');
     const [weatherState, setWeatherState] = useState({ loading: true, data: null, error: null });
 
     const today = useMemo(() => startOfDay(new Date()), []);
@@ -353,6 +354,73 @@ const Dashboard = () => {
         return cleaned || raw;
     }, []);
 
+    const getDueMeta = useCallback((task) => {
+        if (!task?.due_at) return { label: 'No due date', className: 'due-pill-neutral', rank: 5 };
+        const due = startOfDay(new Date(task.due_at));
+        if (Number.isNaN(due.getTime())) return { label: 'No due date', className: 'due-pill-neutral', rank: 5 };
+        const delta = Math.round((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (delta < 0) return { label: 'Overdue', className: 'due-pill-overdue', rank: 0 };
+        if (delta === 0) return { label: 'Today', className: 'due-pill-today', rank: 1 };
+        if (delta === 1) return { label: 'Tomorrow', className: 'due-pill-tomorrow', rank: 2 };
+        return { label: format(due, 'MMM d'), className: 'due-pill-future', rank: 3 };
+    }, [today]);
+
+    const sortedTaskList = useMemo(() => {
+        const rows = taskList.map((task) => ({ task, due: getDueMeta(task) }));
+        rows.sort((a, b) => {
+            if (a.due.rank !== b.due.rank) return a.due.rank - b.due.rank;
+            const pA = Number(a.task?.priority_effective || 0);
+            const pB = Number(b.task?.priority_effective || 0);
+            if (pA !== pB) return pB - pA;
+            const dA = a.task?.due_at ? new Date(a.task.due_at).getTime() : Number.POSITIVE_INFINITY;
+            const dB = b.task?.due_at ? new Date(b.task.due_at).getTime() : Number.POSITIVE_INFINITY;
+            return dA - dB;
+        });
+        return rows;
+    }, [taskList, getDueMeta]);
+
+    const filteredTaskRows = useMemo(() => {
+        if (taskFilter === 'all') return sortedTaskList;
+        if (taskFilter === 'overdue') return sortedTaskList.filter((row) => row.due.rank === 0);
+        if (taskFilter === 'today') return sortedTaskList.filter((row) => row.due.rank === 1);
+        if (taskFilter === 'this_week') {
+            const end = addDays(today, 6);
+            return sortedTaskList.filter((row) => {
+                if (!row.task?.due_at) return false;
+                const due = startOfDay(new Date(row.task.due_at));
+                if (Number.isNaN(due.getTime())) return false;
+                return due >= today && due <= end;
+            });
+        }
+        return sortedTaskList;
+    }, [sortedTaskList, taskFilter, today]);
+
+    useEffect(() => {
+        if (!filteredTaskRows.length) return;
+        const inFilter = filteredTaskRows.some((row) => row.task.id === selectedTaskId);
+        if (!inFilter) setSelectedTaskId(filteredTaskRows[0].task.id);
+    }, [filteredTaskRows, selectedTaskId]);
+
+    const dashboardKpis = useMemo(() => {
+        const overdue = sortedTaskList.filter((row) => row.due.rank === 0).length;
+        const dueToday = sortedTaskList.filter((row) => row.due.rank === 1).length;
+        return {
+            openTasks: taskList.length,
+            overdue,
+            dueToday
+        };
+    }, [sortedTaskList, taskList.length]);
+
+    const openTaskOrigin = useCallback((task) => {
+        if (!task) return;
+        if (task.origin_type === 'sunday') return navigate(`/sunday?date=${encodeURIComponent(task.origin_id || '')}`);
+        if (task.origin_type === 'vestry') return navigate('/vestry');
+        if (task.origin_type === 'event') return navigate('/calendar');
+        if (task.origin_type === 'ticket') return navigate('/buildings');
+        if (task.origin_type === 'operations') return navigate('/tasks');
+        return null;
+    }, [navigate]);
+
 
 
     const weekSchedule = useMemo(() => {
@@ -408,7 +476,7 @@ const Dashboard = () => {
             <header className="dashboard-header page-header-bar">
                 <div className="dashboard-header-main page-header-title">
                     <h1>Dashboard Overview</h1>
-                    <p className="welcome-text page-header-subtitle">Welcome back, Administrator. Here's what's happening today.</p>
+                    <p className="welcome-text page-header-subtitle">Operational snapshot, top priorities, and weekly schedule in one view.</p>
                 </div>
                 <div className="dashboard-weather" aria-live="polite">
                     {weatherState.loading && (
@@ -498,6 +566,29 @@ const Dashboard = () => {
                 </div>
             </header>
 
+            <section className="dashboard-kpi-strip">
+                <Card className="dashboard-kpi-card">
+                    <div className="dashboard-kpi-label">Open Tasks</div>
+                    <div className="dashboard-kpi-value">{dashboardKpis.openTasks}</div>
+                </Card>
+                <Card className="dashboard-kpi-card">
+                    <div className="dashboard-kpi-label">Overdue</div>
+                    <div className="dashboard-kpi-value">{dashboardKpis.overdue}</div>
+                </Card>
+                <Card className="dashboard-kpi-card">
+                    <div className="dashboard-kpi-label">Due Today</div>
+                    <div className="dashboard-kpi-value">{dashboardKpis.dueToday}</div>
+                </Card>
+                <Card className="dashboard-kpi-card">
+                    <div className="dashboard-kpi-label">Events Today</div>
+                    <div className="dashboard-kpi-value">{todayEvents.length}</div>
+                </Card>
+                <Card className="dashboard-kpi-card">
+                    <div className="dashboard-kpi-label">Events This Week</div>
+                    <div className="dashboard-kpi-value">{weekSchedule.reduce((sum, day) => sum + day.items.length, 0)}</div>
+                </Card>
+            </section>
+
             <div className="dashboard-columns">
                 <div className="dashboard-column">
                     <Card className="dashboard-card today-card">
@@ -520,18 +611,35 @@ const Dashboard = () => {
                     </Card>
                     <Card className="dashboard-card">
                         <div className="dashboard-card-header badge-corner">
-                            <h2>Task List</h2>
-                            <span className="count-badge" aria-label={`${taskList.length} tasks`}>
-                                {taskList.length}
+                            <h2>Focus Queue</h2>
+                            <span className="count-badge" aria-label={`${filteredTaskRows.length} tasks`}>
+                                {filteredTaskRows.length}
                             </span>
+                        </div>
+                        <div className="dashboard-filter-chips">
+                            {[
+                                { key: 'all', label: 'All' },
+                                { key: 'overdue', label: 'Overdue' },
+                                { key: 'today', label: 'Today' },
+                                { key: 'this_week', label: 'This Week' }
+                            ].map((filter) => (
+                                <button
+                                    key={filter.key}
+                                    type="button"
+                                    className={`dashboard-filter-chip ${taskFilter === filter.key ? 'active' : ''}`}
+                                    onClick={() => setTaskFilter(filter.key)}
+                                >
+                                    {filter.label}
+                                </button>
+                            ))}
                         </div>
                         {tasksLoading ? (
                             <p className="loading-text">Loading tasks...</p>
-                        ) : taskList.length === 0 ? (
-                            <p className="no-events">No active tasks.</p>
+                        ) : filteredTaskRows.length === 0 ? (
+                            <p className="no-events">No tasks in this filter.</p>
                         ) : (
                             <div className="dashboard-ticket-list dashboard-task-list">
-                                {taskList.map((task) => {
+                                {filteredTaskRows.map(({ task, due }) => {
                                     const progressLabel = getTaskProgressLabel(task);
                                     return (
                                         <button
@@ -546,6 +654,9 @@ const Dashboard = () => {
                                                     <h4>{formatTaskText(task.text)}</h4>
                                                 </div>
                                                 <div className="task-row-meta">
+                                                    <span className={`priority-pill ${due.className}`}>
+                                                        {due.label}
+                                                    </span>
                                                     <span className={`priority-pill ${getPriorityClass(task)}`}>
                                                         {formatPriorityLabel(task)}
                                                     </span>
@@ -568,7 +679,7 @@ const Dashboard = () => {
                 <div className="dashboard-column">
                     <Card className="dashboard-card task-detail-card">
                         <div className="dashboard-card-header">
-                            <h2>Task Details</h2>
+                            <h2>Selected Task</h2>
                         </div>
                         {!selectedTask ? (
                             <p className="no-events">Select a task to see details.</p>
@@ -578,6 +689,9 @@ const Dashboard = () => {
                                     <div>
                                         <div className="task-detail-title">{selectedTask.text}</div>
                                         <div className="task-detail-meta">
+                                            <span className={`priority-pill ${getDueMeta(selectedTask).className}`}>
+                                                {getDueMeta(selectedTask).label}
+                                            </span>
                                             <span className={`priority-pill ${getPriorityClass(selectedTask)}`}>
                                                 {formatPriorityLabel(selectedTask)}
                                             </span>
@@ -602,33 +716,13 @@ const Dashboard = () => {
                                     {selectedTask.list_title && (
                                         <div className="muted">List: {selectedTask.list_title}</div>
                                     )}
-                                    {selectedTask.origin_type === 'sunday' && (
-                                        <button
-                                            className="btn-secondary"
-                                            type="button"
-                                            onClick={() => navigate(`/sunday?date=${selectedTask.origin_id}`)}
-                                        >
-                                            Open Sunday Planner
-                                        </button>
-                                    )}
-                                    {selectedTask.origin_type === 'vestry' && (
-                                        <button
-                                            className="btn-secondary"
-                                            type="button"
-                                            onClick={() => navigate('/vestry')}
-                                        >
-                                            Open Vestry
-                                        </button>
-                                    )}
-                                    {selectedTask.origin_type === 'event' && (
-                                        <button
-                                            className="btn-secondary"
-                                            type="button"
-                                            onClick={() => navigate('/calendar')}
-                                        >
-                                            Open Calendar
-                                        </button>
-                                    )}
+                                    <button
+                                        className="btn-secondary"
+                                        type="button"
+                                        onClick={() => openTaskOrigin(selectedTask)}
+                                    >
+                                        Open Origin
+                                    </button>
                                 </div>
                                 <div className="task-origin-list">
                                     <div className="task-origin-title">Tasks in this origin</div>

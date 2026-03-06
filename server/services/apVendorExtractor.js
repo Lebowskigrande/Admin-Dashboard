@@ -18,6 +18,19 @@ const extractEmailDomains = (value) => {
     const matches = [...text.matchAll(/\b[a-z0-9._%+-]+@([a-z0-9.-]+\.[a-z]{2,})\b/g)];
     return Array.from(new Set(matches.map((m) => m[1]).filter(Boolean)));
 };
+const extractHeaderValue = (text, headerName) => {
+    const pattern = new RegExp(`(?:^|\\n)\\s*${headerName}\\s*:\\s*([^\\n]+)`, 'i');
+    const match = String(text || '').match(pattern);
+    return compactWhitespace(match?.[1] || '');
+};
+
+const extractFromHeaderDomains = (value) => {
+    const fromValue = extractHeaderValue(value, 'from');
+    if (!fromValue) return [];
+    return extractEmailDomains(fromValue);
+};
+
+const extractSubjectLine = (value) => extractHeaderValue(value, 'subject');
 
 const GENERIC_EMAIL_DOMAINS = new Set([
     'gmail.com',
@@ -109,6 +122,8 @@ const DOMAIN_VENDOR_MAP = [
     { domain: 'americanfirstresponder.com', vendor: 'American First Responder', score: 8 },
     { domain: 'zoom.us', vendor: 'Zoom', score: 8 },
     { domain: 'amazon.com', vendor: 'Amazon', score: 8 },
+    { domain: 'staples.com', vendor: 'Staples', score: 8 },
+    { domain: 'staplesadvantage.com', vendor: 'Staples', score: 8 },
     { domain: 'techsoup.org', vendor: 'TechSoup', score: 8 },
     { domain: 'networksolutions.com', vendor: 'Network Solutions', score: 8 }
 ];
@@ -123,17 +138,31 @@ const CONTENT_RULES = [
     { vendor: 'American First Responder', patterns: [/\bamerican first responder\b/i, /@americanfirstresponder\.com/i] },
     { vendor: 'Zoom', patterns: [/\bzoom account renewal\b/i, /\bbilling@zoom\.us\b/i, /\bzoom\.us\b/i] },
     { vendor: 'Amazon', patterns: [/\bamazon\.com\b/i, /\bauto-confirm@amazon\.com\b/i] },
+    { vendor: 'Staples', patterns: [/\bstaples\b/i, /@staples(?:advantage)?\.com/i] },
     { vendor: 'TechSoup', patterns: [/\btechsoup\b/i, /@e\.techsoup\.org/i] },
     { vendor: 'Network Solutions', patterns: [/\bnetwork solutions\b/i] }
+];
+const STRONG_VENDOR_PATTERNS = [
+    { vendor: 'Amazon', patterns: [/\bamazon order\b/i, /\bamazon\.com\b/i, /@amazon\.com/i, /\bsold by amazon\b/i] },
+    { vendor: 'Staples', patterns: [/\bstaples(?:\.com)?\b/i, /@staples(?:advantage)?\.com/i] }
 ];
 
 const scoreFromDomainHints = (text) => {
     const domains = extractEmailDomains(text);
+    const fromDomains = extractFromHeaderDomains(text);
     const scores = new Map();
+    const add = (vendor, amount) => scores.set(vendor, (scores.get(vendor) || 0) + amount);
     for (const domain of domains) {
         for (const hint of DOMAIN_VENDOR_MAP) {
             if (!domain.endsWith(hint.domain)) continue;
-            scores.set(hint.vendor, (scores.get(hint.vendor) || 0) + hint.score);
+            add(hint.vendor, hint.score);
+        }
+    }
+    // From-header sender domain is a strong signal and should dominate generic token hits.
+    for (const domain of fromDomains) {
+        for (const hint of DOMAIN_VENDOR_MAP) {
+            if (!domain.endsWith(hint.domain)) continue;
+            add(hint.vendor, hint.score + 12);
         }
     }
     return scores;
@@ -142,7 +171,8 @@ const scoreFromDomainHints = (text) => {
 const scoreFromVendorSignatures = (text) => {
     if (!VENDOR_SIGNATURES.length) return new Map();
     const scores = new Map();
-    const domains = extractEmailDomains(text);
+    const normalized = normalizeText(text);
+    const domains = extractEmailDomains(normalized);
     for (const signature of VENDOR_SIGNATURES) {
         let domainHit = 0;
         let subjectHit = 0;
@@ -158,7 +188,7 @@ const scoreFromVendorSignatures = (text) => {
 
         for (const token of signature.subjectTokens) {
             if (!token) continue;
-            if (text.includes(token)) subjectHit += 1;
+            if (normalized.includes(token)) subjectHit += 1;
         }
 
         // Guardrail: avoid over-matching generic domains (gmail/outlook/etc) unless subject aligns.
@@ -169,7 +199,10 @@ const scoreFromVendorSignatures = (text) => {
         }
 
         if (domainHit === 0 && subjectHit === 0) continue;
-        const weighted = Math.round(((domainHit * 7) + (subjectHit * 5)) * signature.priority * signature.confidence);
+        const weighted = Math.min(
+            18,
+            Math.round(((domainHit * 7) + (subjectHit * 5)) * signature.priority * signature.confidence)
+        );
         if (weighted <= 0) continue;
         scores.set(signature.vendor, (scores.get(signature.vendor) || 0) + weighted);
     }
@@ -178,13 +211,35 @@ const scoreFromVendorSignatures = (text) => {
 
 const scoreFromContentRules = (text) => {
     const scores = new Map();
+    const subject = extractSubjectLine(text);
+    const normalized = normalizeText(text);
     for (const rule of CONTENT_RULES) {
+        let subjectHits = 0;
+        let bodyHits = 0;
+        for (const pattern of rule.patterns) {
+            if (pattern.test(subject)) subjectHits += 1;
+            if (pattern.test(normalized)) bodyHits += 1;
+        }
+        const score = (subjectHits * 6) + (bodyHits * 3);
+        if (score > 0) {
+            scores.set(rule.vendor, (scores.get(rule.vendor) || 0) + score);
+        }
+    }
+    return scores;
+};
+
+const scoreFromStrongPatterns = (text) => {
+    const scores = new Map();
+    const subject = extractSubjectLine(text);
+    const normalized = normalizeText(text);
+    for (const rule of STRONG_VENDOR_PATTERNS) {
         let hits = 0;
         for (const pattern of rule.patterns) {
-            if (pattern.test(text)) hits += 1;
+            if (pattern.test(subject)) hits += 2;
+            if (pattern.test(normalized)) hits += 1;
         }
         if (hits > 0) {
-            scores.set(rule.vendor, (scores.get(rule.vendor) || 0) + (hits * 4));
+            scores.set(rule.vendor, (scores.get(rule.vendor) || 0) + (hits * 5));
         }
     }
     return scores;
@@ -253,31 +308,38 @@ const pickTopVendor = (scores) => {
         return { vendor: '', confidence: 0, candidates: [] };
     }
     const [vendor, score] = ranked[0];
+    const secondScore = Number(ranked[1]?.[1] || 0);
     const total = ranked.reduce((sum, [, s]) => sum + s, 0) || score;
-    const confidence = Math.max(0.1, Math.min(0.99, score / total));
+    const margin = Math.max(0, score - secondScore);
+    const confidence = Math.max(0.1, Math.min(0.99, (score + margin) / (total + 1)));
     return {
         vendor,
         confidence,
+        margin,
         candidates: ranked.map(([name, s]) => ({ vendor: name, score: s }))
     };
 };
 
 export const extractVendorFromPdfText = (text) => {
-    const normalized = normalizeText(text);
+    const rawText = String(text || '');
+    const normalized = normalizeText(rawText);
     if (!normalized) {
         return { vendor: '', confidence: 0, method: 'empty-text', candidates: [] };
     }
-    const signatureScores = scoreFromVendorSignatures(normalized);
-    const domainScores = scoreFromDomainHints(normalized);
-    const contentScores = scoreFromContentRules(normalized);
-    const merged = mergeScores(signatureScores, domainScores, contentScores);
+    const signatureScores = scoreFromVendorSignatures(rawText);
+    const domainScores = scoreFromDomainHints(rawText);
+    const contentScores = scoreFromContentRules(rawText);
+    const strongPatternScores = scoreFromStrongPatterns(rawText);
+    const merged = mergeScores(signatureScores, domainScores, contentScores, strongPatternScores);
     const best = pickTopVendor(merged);
     const topScore = Number(best?.candidates?.[0]?.score || 0);
-    if (!best.vendor || topScore < MIN_VENDOR_MATCH_SCORE) {
+    const secondScore = Number(best?.candidates?.[1]?.score || 0);
+    const ambiguous = best.vendor && topScore >= MIN_VENDOR_MATCH_SCORE && (topScore - secondScore) < 3 && topScore < 24;
+    if (!best.vendor || topScore < MIN_VENDOR_MATCH_SCORE || ambiguous) {
         return {
             vendor: '',
             confidence: 0,
-            method: 'no-match',
+            method: ambiguous ? 'ambiguous-match' : 'no-match',
             candidates: best.candidates
         };
     }

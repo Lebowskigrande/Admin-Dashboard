@@ -20,7 +20,9 @@ import {
     seedSundayTasksFromTemplates,
     seedVestryTasksFromTemplates,
     seedOperationsTasksFromTemplates,
-    seedEventTasksForOccurrence
+    seedEventTasksForOccurrence,
+    previewOperationsSeedPlan,
+    getTaskEngineHealth
 } from '../services/taskEngine.js';
 import { upsertEntityLink } from '../helpers/entity-utils.js';
 
@@ -527,6 +529,45 @@ router.delete('/tasks/:id', (req, res) => {
     res.json({ success: true });
 });
 
+router.get('/tasks/engine/health', (_req, res) => {
+    try {
+        const health = getTaskEngineHealth();
+        res.json(health);
+    } catch (error) {
+        console.error('Task engine health error:', error);
+        res.status(500).json({ error: 'Failed to load task engine health' });
+    }
+});
+
+router.get('/tasks/generator/preview', (req, res) => {
+    try {
+        const originType = String(req.query.origin_type || 'operations').trim().toLowerCase();
+        const rehydrate = String(req.query.rehydrate || '').trim() === '1';
+        if (originType !== 'operations') {
+            return res.status(400).json({ error: 'Only operations preview is currently supported' });
+        }
+        const preview = previewOperationsSeedPlan({ rehydrate });
+        return res.json({ ok: true, origin_type: originType, preview });
+    } catch (error) {
+        console.error('Task generator preview error:', error);
+        return res.status(500).json({ error: 'Failed to generate preview' });
+    }
+});
+
+router.post('/tasks/generator/rehydrate', (req, res) => {
+    try {
+        const originType = String(req.query.origin_type || req.body?.origin_type || 'operations').trim().toLowerCase();
+        if (originType !== 'operations') {
+            return res.status(400).json({ error: 'Only operations rehydrate is currently supported' });
+        }
+        const result = seedOperationsTasksFromTemplates({ rehydrate: true });
+        return res.json({ ok: true, origin_type: originType, result });
+    } catch (error) {
+        console.error('Task generator rehydrate error:', error);
+        return res.status(500).json({ error: 'Failed to rehydrate recurring tasks' });
+    }
+});
+
 // --- Origins ---
 
 router.get('/task-origins', (req, res) => {
@@ -937,8 +978,13 @@ router.get('/recurring-templates/instances', (req, res) => {
         if (task.origin_type !== originType) return false;
         if (listKey && (task.list_key || 'default') !== listKey) return false;
         if (originType === 'operations' && originId) {
-            if (originId === 'weekly') return String(task.origin_id || '').startsWith('weekly-');
+            if (originId === 'weekly') {
+                const current = String(task.origin_id || '');
+                return current.startsWith('weekly-') || current === 'operations';
+            }
             if (originId === 'timesheets') return String(task.origin_id || '').startsWith('timesheets-');
+            if (originId === 'monthly') return String(task.origin_id || '').startsWith('monthly-');
+            if (originId === 'yearly') return String(task.origin_id || '').startsWith('yearly-');
             return task.origin_id === originId;
         }
         if (originType === 'event' && originId) {

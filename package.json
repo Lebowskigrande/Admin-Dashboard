@@ -29,6 +29,7 @@
     "hygiene:quick": "npm run test:quick && npm run check:contracts && npm run smoke:routes",
     "test:db:save": "node scripts/test-db-snapshot.js save",
     "test:db:restore": "node scripts/test-db-snapshot.js restore",
+    "tasks:repair": "node scripts/repair-task-engine.js",
     "setup:hooks": "git config core.hooksPath .githooks"
   },
   "dependencies": {

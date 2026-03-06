@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Task List UX Mockup</title>
+  <style>
+    :root {
+      --bg: #f2efe8;
+      --panel: #fffdf8;
+      --ink: #152238;
+      --muted: #5a6881;
+      --line: #d8cfbf;
+      --accent: #0b5c87;
+      --good: #1f7a42;
+      --warn: #a46106;
+      --bad: #9f2f2f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Avenir Next", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 95% 8%, #d8e8f4 0%, transparent 23%),
+        radial-gradient(circle at 8% 94%, #ede4d2 0%, transparent 20%),
+        var(--bg);
+    }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px; display: grid; gap: 14px; }
+    .hero {
+      background: linear-gradient(110deg, #173452, #0b5c87);
+      color: #eef6ff;
+      border-radius: 14px;
+      padding: 14px 16px;
+    }
+    .hero h1 { margin: 0 0 4px; font-size: 1.2rem; }
+    .hero p { margin: 0; opacity: 0.9; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .h {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #f8f4eb;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .h h2 { margin: 0; font-size: 0.98rem; }
+    .b { padding: 11px 12px 13px; }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .kpi { border: 1px solid var(--line); border-radius: 10px; padding: 7px; background: #fff; }
+    .kpi .l { color: var(--muted); font-size: 0.72rem; }
+    .kpi .v { font-weight: 700; font-size: 1.05rem; }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; font-size: 0.75rem; background: #fff; color: var(--muted); }
+    .chip.on { background: #e2edf5; color: #15324b; border-color: #94aec2; font-weight: 600; }
+    .list { display: grid; gap: 7px; }
+    .row {
+      border: 1px solid #e7decd;
+      border-radius: 11px;
+      padding: 8px 9px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 7px;
+      background: #fff;
+    }
+    .t { font-weight: 600; font-size: 0.88rem; }
+    .m { color: var(--muted); font-size: 0.74rem; margin-top: 2px; }
+    .pill { border-radius: 999px; font-size: 0.72rem; padding: 2px 8px; border: 1px solid; height: fit-content; }
+    .p-bad { color: var(--bad); border-color: #e7b0b0; background: #fff3f3; }
+    .p-warn { color: var(--warn); border-color: #e8cb9e; background: #fff8ee; }
+    .p-good { color: var(--good); border-color: #a9d8b8; background: #f1fbf4; }
+    .split { display: grid; grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr); gap: 9px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; background: #fff; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    th, td { padding: 8px; border-bottom: 1px solid #efe6d8; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    th { text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.7rem; color: var(--muted); background: #f8f3e8; }
+    tr:last-child td { border-bottom: none; }
+    .actions { margin-top: 9px; display: flex; gap: 7px; flex-wrap: wrap; }
+    .btn { border: 1px solid #98aebd; background: #fff; color: #15324b; border-radius: 8px; padding: 5px 9px; font-size: 0.78rem; font-weight: 600; }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .note { margin-top: 8px; font-size: 0.75rem; color: var(--muted); }
+    @media (max-width: 1000px) {
+      .grid { grid-template-columns: 1fr; }
+      .kpis { grid-template-columns: repeat(2, minmax(0,1fr)); }
+      .split { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>Task List UX Concepts</h1>
+      <p>Objective: make the page instantly scannable while preserving your detailed control.</p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <header class="h">
+          <h2>A. Glance Board</h2>
+          <div class="chips">
+            <span class="chip on">This Week</span>
+            <span class="chip">Next Week</span>
+            <span class="chip">Later</span>
+          </div>
+        </header>
+        <div class="b">
+          <div class="kpis">
+            <div class="kpi"><div class="l">Open</div><div class="v">12</div></div>
+            <div class="kpi"><div class="l">Overdue</div><div class="v">2</div></div>
+            <div class="kpi"><div class="l">Due Today</div><div class="v">3</div></div>
+            <div class="kpi"><div class="l">Done This Week</div><div class="v">14</div></div>
+          </div>
+          <div class="list">
+            <div class="row">
+              <div><div class="t">Deposits - collect offering checks</div><div class="m">Operations - Weekly 2026-03-02 - Next: collect</div></div>
+              <span class="pill p-bad">Overdue</span>
+            </div>
+            <div class="row">
+              <div><div class="t">Timesheets - scan and send to ESP</div><div class="m">Operations - Timesheets 2026-03-a - Step 2/3</div></div>
+              <span class="pill p-warn">Today</span>
+            </div>
+            <div class="row">
+              <div><div class="t">Sunday bulletin draft review</div><div class="m">Sunday - Mar 8 - Next: finalize draft</div></div>
+              <span class="pill p-good">On Track</span>
+            </div>
+          </div>
+          <div class="note">Uses one unified list sorted by urgency instead of three separate cards to reduce scanning friction.</div>
+        </div>
+      </article>
+
+      <article class="card">
+        <header class="h">
+          <h2>B. Focus Workflow</h2>
+          <div class="chips">
+            <span class="chip on">All Types</span>
+            <span class="chip">Operations</span>
+            <span class="chip">Sunday</span>
+            <span class="chip">Event</span>
+          </div>
+        </header>
+        <div class="b">
+          <div class="split">
+            <div class="list">
+              <div class="row"><div><div class="t">Weekly Deposits</div><div class="m">7 open / 7 total</div></div><span class="pill p-warn">Due Fri</span></div>
+              <div class="row"><div><div class="t">Timesheets</div><div class="m">1 open / 1 total</div></div><span class="pill p-good">On Track</span></div>
+              <div class="row"><div><div class="t">Sunday Mar 8</div><div class="m">4 open / 9 total</div></div><span class="pill p-warn">Upcoming</span></div>
+            </div>
+            <div>
+              <table>
+                <thead>
+                  <tr><th>Step</th><th>Task</th><th>Due</th><th>Status</th><th>Progress</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>collect</td><td>Get offering checks</td><td>Mar 6</td><td>Open</td><td>1/6</td></tr>
+                  <tr><td>slips</td><td>Make deposit slips</td><td>Mar 6</td><td>Open</td><td>2/6</td></tr>
+                  <tr><td>code</td><td>Code checks/envelopes</td><td>Mar 6</td><td>Open</td><td>3/6</td></tr>
+                </tbody>
+              </table>
+              <div class="actions">
+                <button class="btn">Previous Step</button>
+                <button class="btn primary">Complete Next Step</button>
+                <button class="btn">Quick Note</button>
+                <button class="btn">Open Source</button>
+              </div>
+              <div class="note">Separates “pick what to work on” (left) from “execute quickly” (right) with fewer context switches.</div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

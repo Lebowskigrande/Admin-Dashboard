@@ -43,6 +43,11 @@
     background: var(--list-hover-bg);
 }
 
+.task-add-hint {
+    font-size: 0.72rem;
+    color: var(--color-text-secondary);
+}
+
 .tasks-list-header {
     display: flex;
     justify-content: space-between;
@@ -103,6 +108,68 @@
 .task-add-form input:focus {
     outline: none;
     border-color: var(--color-primary);
+}
+
+.task-due-select {
+    padding: var(--space-sm);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: var(--radius-md);
+    background: #fff;
+    min-width: 130px;
+    font-family: inherit;
+}
+
+.todo-kpi-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.5rem;
+    margin: 0 0 var(--space-sm);
+}
+
+.todo-kpi-card {
+    border: 1px solid rgba(15, 23, 42, 0.1);
+    border-radius: 10px;
+    background: #fff;
+    padding: 0.45rem 0.65rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+
+.todo-kpi-label {
+    font-size: 0.72rem;
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.todo-kpi-value {
+    font-size: 1.1rem;
+    color: var(--color-text-main);
+}
+
+.todo-filter-chips {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin: 0 0 var(--space-sm);
+}
+
+.todo-chip {
+    border: 1px solid rgba(15, 23, 42, 0.14);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--color-text-secondary);
+    padding: 0.25rem 0.65rem;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.todo-chip.active {
+    background: #e8f1f7;
+    border-color: #90afc5;
+    color: #173752;
+    font-weight: 600;
 }
 
 .task-list-wrapper {
@@ -315,6 +382,23 @@
 .origin-meta {
     font-size: 0.75rem;
     color: var(--color-text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.origin-bucket-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.06rem 0.45rem;
+    border-radius: 999px;
+    border: 1px solid rgba(15, 23, 42, 0.16);
+    background: rgba(255, 255, 255, 0.75);
+    color: var(--color-text-secondary);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 .origin-counts {
@@ -982,6 +1066,10 @@
 }
 
 @media (max-width: 1024px) {
+    .todo-kpi-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .tasks-layout {
         grid-template-columns: 1fr;
     }
@@ -1008,6 +1096,10 @@
 
     .task-add-form {
         flex-direction: column;
+    }
+
+    .task-due-select {
+        width: 100%;
     }
 
     .task-project-input {

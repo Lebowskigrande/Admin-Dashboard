@@ -59,6 +59,13 @@ const TodoListCard = ({
                             const progressMeta = getTaskProgressMeta(task);
                             const colorClass = getOriginColorClass(origin.sample?.origin_type);
                             const isActive = row.originKey === selectedOriginKey && task?.id === selectedTaskId;
+                            const bucketLabel = row.bucket === 'this_week'
+                                ? 'This Week'
+                                : row.bucket === 'next_week'
+                                    ? 'Next Week'
+                                    : row.bucket === 'later'
+                                        ? 'Later'
+                                        : '';
                             return (
                                 <div
                                     key={`${row.originKey}:${task?.id || list.key}`}
@@ -78,6 +85,7 @@ const TodoListCard = ({
                                         <div className="origin-meta">
                                             {originLabel}
                                             {originSubtitle ? ` - ${originSubtitle}` : ''}
+                                            {bucketLabel ? <span className="origin-bucket-pill">{bucketLabel}</span> : null}
                                         </div>
                                     </div>
                                     <div className="origin-cell origin-cell-next">

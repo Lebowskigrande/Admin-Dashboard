@@ -31,6 +31,39 @@ const buildDueDateInput = (dueAt) => {
     }
 };
 
+const toDateKey = (date) => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
+const getDueAtFromPreset = (preset) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let due = null;
+    if (preset === 'today') {
+        due = new Date(today);
+    } else if (preset === 'tomorrow') {
+        due = new Date(today);
+        due.setDate(due.getDate() + 1);
+    } else if (preset === 'friday') {
+        due = new Date(today);
+        const day = due.getDay(); // 0..6
+        const delta = (5 - day + 7) % 7;
+        due.setDate(due.getDate() + delta);
+    } else if (preset === 'next-monday') {
+        due = new Date(today);
+        const day = due.getDay(); // 0..6
+        let delta = (1 - day + 7) % 7;
+        if (delta === 0) delta = 7;
+        due.setDate(due.getDate() + delta);
+    }
+    if (!due) return null;
+    return `${toDateKey(due)}T00:00:00`;
+};
+
 export const useTodoData = () => {
     const [taskList, setTaskList] = useState([]);
     const [selectedOriginKey, setSelectedOriginKey] = useState('');
@@ -38,6 +71,7 @@ export const useTodoData = () => {
     const [tasksLoading, setTasksLoading] = useState(true);
     const [error, setError] = useState('');
     const [newTask, setNewTask] = useState('');
+    const [newTaskDuePreset, setNewTaskDuePreset] = useState('');
     const [projectName, setProjectName] = useState('Operations');
     const [taskModalOpen, setTaskModalOpen] = useState(false);
     const [taskDraft, setTaskDraft] = useState({
@@ -419,11 +453,11 @@ export const useTodoData = () => {
         setTaskModalOpen(true);
     }, []);
 
-    const addTask = async (event) => {
-        event.preventDefault();
+    const createTaskFromQuickAdd = async ({ openDetails = false } = {}) => {
         const trimmed = newTask.trim();
         if (!trimmed) return;
         const projectLabel = projectName.trim() || 'Operations';
+        const dueAt = getDueAtFromPreset(newTaskDuePreset);
         try {
             const response = await fetch(`${API_URL}/tasks`, {
                 method: 'POST',
@@ -431,18 +465,31 @@ export const useTodoData = () => {
                 body: JSON.stringify({
                     text: trimmed,
                     source_type: 'operations',
-                    source_id: projectLabel.toLowerCase().replace(/\s+/g, '-')
+                    source_id: projectLabel.toLowerCase().replace(/\s+/g, '-'),
+                    due_at: dueAt
                 })
             });
             if (!response.ok) throw new Error('Failed to create task');
             const created = await response.json();
             setNewTask('');
+            setNewTaskDuePreset('');
             await loadAllTasks();
-            openTaskModal(created);
+            if (openDetails) {
+                openTaskModal(created);
+            }
         } catch (err) {
             console.error('Failed to create task:', err);
             setError('Unable to add task. Please try again.');
         }
+    };
+
+    const addTask = async (event) => {
+        event.preventDefault();
+        await createTaskFromQuickAdd({ openDetails: false });
+    };
+
+    const addTaskWithDetails = async () => {
+        await createTaskFromQuickAdd({ openDetails: true });
     };
 
     const saveTaskDetails = async () => {
@@ -570,7 +617,9 @@ export const useTodoData = () => {
         PRIORITY_OPTIONS,
         tasksLoading,
         error,
+        taskList,
         newTask,
+        newTaskDuePreset,
         projectName,
         showCompleted,
         taskModalOpen,
@@ -593,6 +642,7 @@ export const useTodoData = () => {
         parentOriginLabel,
         setProjectName,
         setNewTask,
+        setNewTaskDuePreset,
         setShowCompleted,
         setTaskModalOpen,
         setTaskDraft,
@@ -603,6 +653,7 @@ export const useTodoData = () => {
         setNestedTasks,
         setNestedLoading,
         addTask,
+        addTaskWithDetails,
         saveTaskDetails,
         saveTaskNotes,
         updateTaskProgress,

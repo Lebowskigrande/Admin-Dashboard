@@ -54,10 +54,18 @@ const applyTaskArchiving = () => {
     const archiveStmt = db.prepare('UPDATE task_instances SET archived_at = ? WHERE id = ?');
     const now = new Date().toISOString();
 
+    let archivedCount = 0;
     rows.forEach((row) => {
         if (row.keep_until && row.keep_until >= todayKey) return;
         archiveStmt.run(now, row.id);
+        archivedCount += 1;
     });
+    taskEngineRuntime = {
+        ...taskEngineRuntime,
+        lastArchiveSweepAt: now,
+        lastArchiveArchivedCount: archivedCount
+    };
+    return archivedCount;
 };
 
 const listRecurringTemplates = (originType, originId = null) => {
@@ -75,6 +83,12 @@ const listRecurringTemplates = (originType, originId = null) => {
 
 const normalizeListKey = (value) => String(value || '').trim().toLowerCase();
 const UNUSED_isSpecialEventsList = (listKey) => normalizeListKey(listKey) === 'special-events';
+let taskEngineRuntime = {
+    lastSeedAt: null,
+    lastSeedSummary: null,
+    lastArchiveSweepAt: null,
+    lastArchiveArchivedCount: 0
+};
 
 const ensureProgressiveTemplateModes = () => {
     if (!tableExists('recurring_task_templates')) return;
@@ -157,6 +171,46 @@ const addDaysIso = (dateKey, offsetDays) => {
     const base = new Date(`${dateKey}T00:00:00`);
     const next = new Date(base.getTime() + offsetDays * 86400000);
     return next.toISOString().slice(0, 10);
+};
+
+const toDateKey = (dateValue) => {
+    const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+    if (Number.isNaN(date.getTime())) return '';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+};
+
+const toMonthKey = (dateValue) => {
+    const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+    if (Number.isNaN(date.getTime())) return '';
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const toYearKey = (dateValue) => {
+    const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+    if (Number.isNaN(date.getTime())) return '';
+    return String(date.getFullYear());
+};
+
+const getWeekStartMonday = (dateValue = new Date()) => {
+    const date = dateValue instanceof Date ? new Date(dateValue) : new Date(dateValue);
+    if (Number.isNaN(date.getTime())) return new Date();
+    const day = date.getDay();
+    const mondayOffset = (day + 6) % 7;
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - mondayOffset);
+    return date;
+};
+
+const getNextWeekdayDate = (baseDate, weekday) => {
+    const next = new Date(baseDate);
+    const day = next.getDay();
+    const delta = (weekday - day + 7) % 7;
+    next.setDate(next.getDate() + delta);
+    next.setHours(0, 0, 0, 0);
+    return next;
 };
 
 const getLastDayOfMonthKey = (year, monthIndex) => {
@@ -424,17 +478,171 @@ export const seedVestryTasksFromTemplates = () => {
     });
 };
 
-export const seedOperationsTasksFromTemplates = () => {
-    if (!tableExists('recurring_task_templates')) return;
+const findExistingOperationsTaskInstance = ({
+    originId,
+    originEvent,
+    listKey
+} = {}) => {
+    return db.prepare(`
+        SELECT ti.id, ti.task_id, ti.state, ti.due_at, ti.completed_at, ti.archived_at, ti.list_mode, ti.progress_key,
+               t.title
+        FROM task_instances ti
+        JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+        JOIN tasks_new t ON t.id = ti.task_id
+        WHERE src.origin_type = 'operations'
+          AND src.origin_id = ?
+          AND src.origin_event = ?
+          AND COALESCE(ti.list_key, '') = COALESCE(?, '')
+        LIMIT 1
+    `).get(originId, originEvent, listKey);
+};
+
+const buildOperationsSeedPlan = ({ now = new Date(), rehydrate = false } = {}) => {
     const weeklyTemplates = listRecurringTemplates('operations', 'weekly');
     const timesheetTemplates = listRecurringTemplates('operations', 'timesheets');
     const monthlyTemplates = listRecurringTemplates('operations', 'monthly');
     const yearlyTemplates = listRecurringTemplates('operations', 'yearly');
-    const now = new Date();
-    const day = now.getDay();
-    const mondayOffset = (day + 6) % 7;
-    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
-    const weekKey = monday.toISOString().slice(0, 10);
+    const weekStart = getWeekStartMonday(now);
+    const weekKey = toDateKey(weekStart);
+    const weeklyOriginId = `weekly-${weekKey}`;
+    const fridayKey = toDateKey(getNextWeekdayDate(now, 5));
+    const mailWeekdays = [
+        { key: 'mon', day: 1 },
+        { key: 'wed', day: 3 },
+        { key: 'fri', day: 5 }
+    ];
+
+    const dayOfMonth = now.getDate();
+    const half = dayOfMonth <= 15 ? 'a' : 'b';
+    const monthKey = toMonthKey(now);
+    const yearKey = toYearKey(now);
+    const timesheetsOriginId = `timesheets-${monthKey}-${half}`;
+    const monthlyOriginId = `monthly-${monthKey}`;
+    const yearlyOriginId = `yearly-${yearKey}`;
+    const monthStartKey = `${monthKey}-01`;
+    const timesheetDue = half === 'a'
+        ? `${monthKey}-15`
+        : getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
+    const monthEndKey = getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
+    const yearStartKey = `${yearKey}-01-01`;
+    const yearEndKey = `${yearKey}-12-31`;
+
+    const plan = [];
+    const pushPlanEntry = ({
+        title,
+        listKey,
+        listTitle,
+        listMode = 'sequential',
+        originId,
+        originEvent,
+        dueAt,
+        progressSteps = null,
+        periodType = 'operations'
+    }) => {
+        const existing = findExistingOperationsTaskInstance({ originId, originEvent, listKey });
+        if (!existing) {
+            plan.push({
+                action: 'create',
+                title,
+                listKey,
+                listTitle,
+                listMode,
+                originId,
+                originEvent,
+                dueAt,
+                progressSteps,
+                periodType,
+                generationKey: `operations:${originId}:${listKey}:${originEvent}`
+            });
+            return;
+        }
+        const dueChanged = String(existing.due_at || '') !== String(dueAt || '');
+        const titleChanged = String(existing.title || '') !== String(title || '');
+        const isInactive = Boolean(existing.archived_at || existing.completed_at || String(existing.state || '').toLowerCase() === 'done');
+        const shouldReactivate = rehydrate && isInactive;
+        const shouldUpdate = dueChanged || titleChanged;
+        plan.push({
+            action: shouldReactivate ? 'reactivate' : (shouldUpdate ? 'update' : 'noop'),
+            existingId: existing.id,
+            existingTaskId: existing.task_id,
+            title,
+            listKey,
+            listTitle,
+            listMode,
+            originId,
+            originEvent,
+            dueAt,
+            progressSteps,
+            periodType,
+            generationKey: `operations:${originId}:${listKey}:${originEvent}`
+        });
+    };
+
+    const planGroupedTemplates = ({
+        templates,
+        defaultOriginId,
+        fallbackDueAt,
+        periodType = 'operations'
+    }) => {
+        const grouped = templates.reduce((acc, template) => {
+            const listKey = template.list_key || 'list';
+            const listMode = template.list_mode || 'sequential';
+            const groupKey = `${listKey}:${listMode}`;
+            if (!acc[groupKey]) acc[groupKey] = [];
+            acc[groupKey].push(template);
+            return acc;
+        }, {});
+
+        Object.values(grouped).forEach((groupTemplates) => {
+            const listKey = groupTemplates[0]?.list_key || null;
+            const listTitle = groupTemplates[0]?.list_title || null;
+            const listMode = String(groupTemplates[0]?.list_mode || 'sequential').toLowerCase();
+            const originId = defaultOriginId;
+
+            if (groupTemplates.length > 1 && listMode === 'progressive') {
+                const steps = groupTemplates.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                    .map((template) => ({
+                        key: template.step_key,
+                        title: template.title,
+                        sort_order: template.sort_order ?? 0,
+                        due_offset_days: template.due_offset_days ?? null
+                    }));
+                const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
+                const dueAt = maxOffset ? addDaysIso(fallbackDueAt, maxOffset) : fallbackDueAt;
+                pushPlanEntry({
+                    title: listTitle || listKey || 'Task',
+                    listKey,
+                    listTitle: listTitle || listKey || 'Task',
+                    listMode: 'progressive',
+                    originId,
+                    originEvent: listKey || 'progressive',
+                    dueAt,
+                    progressSteps: steps,
+                    periodType
+                });
+                return;
+            }
+
+            groupTemplates.forEach((template) => {
+                const title = template.title;
+                if (!title) return;
+                const dueAt = template.due_offset_days != null
+                    ? addDaysIso(fallbackDueAt, Number(template.due_offset_days))
+                    : fallbackDueAt;
+                pushPlanEntry({
+                    title,
+                    listKey: template.step_key || normalizeListKey(title),
+                    listTitle: listTitle || title,
+                    listMode,
+                    originId,
+                    originEvent: template.step_key || periodType,
+                    dueAt,
+                    periodType
+                });
+            });
+        });
+    };
+
     const groupedWeekly = weeklyTemplates.reduce((acc, template) => {
         const listKey = template.list_key || 'list';
         const listMode = template.list_mode || 'sequential';
@@ -444,91 +652,12 @@ export const seedOperationsTasksFromTemplates = () => {
         return acc;
     }, {});
 
-    const upsertOperationsProgressive = ({ listKey, listTitle, steps, dueAt }) => {
-        if (!listKey) return;
-        const existing = db.prepare(`
-            SELECT ti.id
-            FROM task_instances ti
-            JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
-            WHERE src.origin_type = 'operations'
-              AND src.origin_id = 'operations'
-              AND ti.list_key = ?
-              AND ti.list_mode = 'progressive'
-            LIMIT 1
-        `).get(listKey);
-        if (existing?.id) {
-            db.prepare('UPDATE task_instances SET due_at = ?, list_title = ? WHERE id = ?').run(dueAt, listTitle, existing.id);
-            db.prepare('UPDATE tasks_new SET title = ?, updated_at = ? WHERE id = (SELECT task_id FROM task_instances WHERE id = ?)').run(listTitle, new Date().toISOString(), existing.id);
-            return;
-        }
-        createTaskInstance({
-            title: listTitle || listKey || 'Task',
-            taskType: 'operations',
-            priorityBase: getDefaultPriorityBase('operations'),
-            dueAt,
-            originType: 'operations',
-            originId: 'operations',
-            originEvent: listKey || 'progressive',
-            generationKey: `operations:${weekKey}:${listKey || 'list'}:progressive`,
-            listKey,
-            listTitle,
-            listMode: 'progressive',
-            progressSteps: steps
-        });
-    };
-
-    const upsertOperationsTask = ({ title, listKey, dueAt, originEvent }) => {
-        const existing = db.prepare(`
-            SELECT ti.id
-            FROM task_instances ti
-            JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
-            WHERE src.origin_type = 'operations'
-              AND src.origin_id = 'operations'
-              AND src.origin_event = ?
-              AND ti.list_key = ?
-            LIMIT 1
-        `).get(originEvent || listKey, listKey);
-        if (existing?.id) {
-            db.prepare('UPDATE task_instances SET due_at = ?, list_title = ? WHERE id = ?').run(dueAt, title, existing.id);
-            db.prepare('UPDATE tasks_new SET title = ?, updated_at = ? WHERE id = (SELECT task_id FROM task_instances WHERE id = ?)').run(title, new Date().toISOString(), existing.id);
-            return;
-        }
-        const generationKey = `operations:${listKey}`;
-        createTaskInstance({
-            title,
-            taskType: 'operations',
-            priorityBase: getDefaultPriorityBase('operations'),
-            dueAt,
-            originType: 'operations',
-            originId: 'operations',
-            originEvent: originEvent || listKey,
-            generationKey,
-            listKey,
-            listTitle: title,
-            listMode: 'sequential'
-        });
-    };
-
-    const getNextWeekdayDate = (baseDate, weekday) => {
-        const next = new Date(baseDate);
-        const day = next.getDay();
-        const delta = (weekday - day + 7) % 7;
-        next.setDate(next.getDate() + delta);
-        return next;
-    };
-
-    const fridayDate = getNextWeekdayDate(now, 5);
-    const fridayKey = fridayDate.toISOString().slice(0, 10);
-    const mailWeekdays = [
-        { key: 'mon', day: 1, label: 'Mon' },
-        { key: 'wed', day: 3, label: 'Wed' },
-        { key: 'fri', day: 5, label: 'Fri' }
-    ];
-
     Object.values(groupedWeekly).forEach((groupTemplates) => {
         const listKey = groupTemplates[0]?.list_key || null;
         const listTitle = groupTemplates[0]?.list_title || null;
+        const listMode = String(groupTemplates[0]?.list_mode || 'sequential').toLowerCase();
         const isWeeklyOps = listKey === 'ops-weekly';
+
         if (isWeeklyOps) {
             groupTemplates.forEach((template) => {
                 const title = template.title;
@@ -536,28 +665,35 @@ export const seedOperationsTasksFromTemplates = () => {
                 const lowered = title.toLowerCase();
                 if (lowered.includes('mail')) {
                     mailWeekdays.forEach((entry) => {
-                        const nextDate = getNextWeekdayDate(now, entry.day);
-                        const dueAt = nextDate.toISOString().slice(0, 10);
-                        upsertOperationsTask({
+                        const dueAt = toDateKey(getNextWeekdayDate(now, entry.day));
+                        pushPlanEntry({
                             title,
                             listKey: `mail-${entry.key}`,
+                            listTitle: listTitle || title,
+                            listMode: 'sequential',
+                            originId: weeklyOriginId,
+                            originEvent: `mail-${entry.key}`,
                             dueAt,
-                            originEvent: `mail-${entry.key}`
+                            periodType: 'weekly'
                         });
                     });
                     return;
                 }
-                upsertOperationsTask({
+                pushPlanEntry({
                     title,
                     listKey: template.step_key || normalizeListKey(title),
+                    listTitle: listTitle || title,
+                    listMode: 'sequential',
+                    originId: weeklyOriginId,
+                    originEvent: template.step_key || 'weekly',
                     dueAt: fridayKey,
-                    originEvent: template.step_key || 'weekly'
+                    periodType: 'weekly'
                 });
             });
             return;
         }
 
-        if (groupTemplates.length > 1 && String(groupTemplates[0]?.list_mode || '').toLowerCase() === 'progressive') {
+        if (groupTemplates.length > 1 && listMode === 'progressive') {
             const steps = groupTemplates.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
                 .map((template) => ({
                     key: template.step_key,
@@ -567,122 +703,187 @@ export const seedOperationsTasksFromTemplates = () => {
                 }));
             const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
             const dueAt = addDaysIso(weekKey, maxOffset || 6);
-            upsertOperationsProgressive({ listKey, listTitle, steps, dueAt });
-            return;
-        }
-
-        groupTemplates.forEach((template) => {
-            const title = template.title;
-            if (!title) return;
-            upsertOperationsTask({
-                title,
-                listKey: template.step_key || normalizeListKey(title),
-                dueAt: fridayKey,
-                originEvent: template.step_key || 'weekly'
-            });
-        });
-    });
-
-    // Timesheets logic
-    const dayOfMonth = now.getDate();
-    const half = dayOfMonth <= 15 ? 'a' : 'b';
-    const groupedTimesheets = timesheetTemplates.reduce((acc, template) => {
-        const listKey = template.list_key || 'list';
-        const listMode = template.list_mode || 'sequential';
-        const groupKey = `${listKey}:${listMode}`;
-        if (!acc[groupKey]) acc[groupKey] = [];
-        acc[groupKey].push(template);
-        return acc;
-    }, {});
-
-    Object.values(groupedTimesheets).forEach((groupTemplates) => {
-        const listKey = groupTemplates[0]?.list_key || null;
-        const listTitle = groupTemplates[0]?.list_title || null;
-        const monthStartKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-        const halfDue = half === 'a'
-            ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-15`
-            : getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
-
-        if (groupTemplates.length > 1 && String(groupTemplates[0]?.list_mode || '').toLowerCase() === 'progressive') {
-            const steps = groupTemplates.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-                .map((template) => ({
-                    key: template.step_key,
-                    title: template.title,
-                    sort_order: template.sort_order ?? 0,
-                    due_offset_days: template.due_offset_days ?? null
-                }));
-            const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
-            const dueAt = maxOffset ? addDaysIso(monthStartKey, maxOffset) : halfDue;
-            upsertOperationsProgressive({ listKey, listTitle, steps, dueAt });
-            return;
-        }
-
-        groupTemplates.forEach((template) => {
-            const title = template.title;
-            if (!title) return;
-            const dueAt = template.due_offset_days != null
-                ? addDaysIso(monthStartKey, Number(template.due_offset_days))
-                : halfDue;
-            upsertOperationsTask({
-                title,
-                listKey: template.step_key || normalizeListKey(title),
+            pushPlanEntry({
+                title: listTitle || listKey || 'Task',
+                listKey,
+                listTitle: listTitle || listKey || 'Task',
+                listMode: 'progressive',
+                originId: weeklyOriginId,
+                originEvent: listKey || 'progressive',
                 dueAt,
-                originEvent: template.step_key || 'timesheets'
+                progressSteps: steps,
+                periodType: 'weekly'
+            });
+            return;
+        }
+
+        groupTemplates.forEach((template) => {
+            const title = template.title;
+            if (!title) return;
+            pushPlanEntry({
+                title,
+                listKey: template.step_key || normalizeListKey(title),
+                listTitle: listTitle || title,
+                listMode: 'sequential',
+                originId: weeklyOriginId,
+                originEvent: template.step_key || 'weekly',
+                dueAt: fridayKey,
+                periodType: 'weekly'
             });
         });
     });
 
-    const seedPeriodicTasks = (templates, periodKey, fallbackDue) => {
-        const grouped = templates.reduce((acc, template) => {
-            const listKey = template.list_key || 'list';
-            const listMode = template.list_mode || 'sequential';
-            const groupKey = `${listKey}:${listMode}`;
-            if (!acc[groupKey]) acc[groupKey] = [];
-            acc[groupKey].push(template);
-            return acc;
-        }, {});
-        Object.values(grouped).forEach((groupTemplates) => {
-            const listKey = groupTemplates[0]?.list_key || null;
-            const listTitle = groupTemplates[0]?.list_title || null;
-            if (groupTemplates.length > 1 && String(groupTemplates[0]?.list_mode || '').toLowerCase() === 'progressive') {
-                const steps = groupTemplates.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-                    .map((template) => ({
-                        key: template.step_key,
-                        title: template.title,
-                        sort_order: template.sort_order ?? 0,
-                        due_offset_days: template.due_offset_days ?? null
-                    }));
-                const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
-                const dueAt = maxOffset ? addDaysIso(periodKey, maxOffset) : fallbackDue;
-                upsertOperationsProgressive({ listKey, listTitle, steps, dueAt });
-                return;
-            }
-            groupTemplates.forEach((template) => {
-                const title = template.title;
-                if (!title) return;
-                const dueAt = template.due_offset_days != null
-                    ? addDaysIso(periodKey, Number(template.due_offset_days))
-                    : fallbackDue;
-                upsertOperationsTask({
-                    title,
-                    listKey: template.step_key || normalizeListKey(title),
-                    dueAt,
-                    originEvent: template.step_key || 'recurring'
-                });
-            });
-        });
+    planGroupedTemplates({
+        templates: timesheetTemplates,
+        defaultOriginId: timesheetsOriginId,
+        fallbackDueAt: timesheetDue,
+        periodType: 'timesheets'
+    });
+
+    planGroupedTemplates({
+        templates: monthlyTemplates,
+        defaultOriginId: monthlyOriginId,
+        fallbackDueAt: monthStartKey || monthEndKey,
+        periodType: 'monthly'
+    });
+
+    planGroupedTemplates({
+        templates: yearlyTemplates,
+        defaultOriginId: yearlyOriginId,
+        fallbackDueAt: yearStartKey || yearEndKey,
+        periodType: 'yearly'
+    });
+
+    return {
+        generatedAt: new Date().toISOString(),
+        weeklyOriginId,
+        timesheetsOriginId,
+        monthlyOriginId,
+        yearlyOriginId,
+        summary: {
+            total: plan.length,
+            create: plan.filter((row) => row.action === 'create').length,
+            update: plan.filter((row) => row.action === 'update').length,
+            reactivate: plan.filter((row) => row.action === 'reactivate').length,
+            noop: plan.filter((row) => row.action === 'noop').length
+        },
+        items: plan
+    };
+};
+
+export const previewOperationsSeedPlan = ({ now = new Date(), rehydrate = false } = {}) => {
+    return buildOperationsSeedPlan({ now, rehydrate });
+};
+
+const applyOperationsSeedPlan = (plan = { items: [] }) => {
+    const items = Array.isArray(plan?.items) ? plan.items : [];
+    const counters = {
+        total: items.length,
+        create: 0,
+        update: 0,
+        reactivate: 0,
+        noop: 0,
+        failed: 0
     };
 
-    if (monthlyTemplates.length) {
-        const monthStartKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-        const monthEndKey = getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
-        seedPeriodicTasks(monthlyTemplates, monthStartKey, monthEndKey);
-    }
-    if (yearlyTemplates.length) {
-        const yearStartKey = `${now.getFullYear()}-01-01`;
-        const yearEndKey = `${now.getFullYear()}-12-31`;
-        seedPeriodicTasks(yearlyTemplates, yearStartKey, yearEndKey);
-    }
+    items.forEach((item) => {
+        try {
+            if (item.action === 'create') {
+                const created = createTaskInstance({
+                    title: item.title,
+                    taskType: 'operations',
+                    priorityBase: getDefaultPriorityBase('operations'),
+                    dueAt: item.dueAt,
+                    originType: 'operations',
+                    originId: item.originId,
+                    originEvent: item.originEvent,
+                    generationKey: item.generationKey,
+                    listKey: item.listKey,
+                    listTitle: item.listTitle || item.title,
+                    listMode: item.listMode || 'sequential',
+                    progressSteps: Array.isArray(item.progressSteps) ? item.progressSteps : null,
+                    progressKey: Array.isArray(item.progressSteps) && item.progressSteps[0]?.key
+                        ? item.progressSteps[0].key
+                        : null
+                });
+                if (created) counters.create += 1;
+                else counters.noop += 1;
+                return;
+            }
+
+            if (item.action === 'update' || item.action === 'reactivate') {
+                const firstStepKey = Array.isArray(item.progressSteps) ? (item.progressSteps[0]?.key || null) : null;
+                db.prepare(`
+                    UPDATE task_instances
+                    SET due_at = ?,
+                        list_title = ?,
+                        list_mode = ?,
+                        progress_steps = ?,
+                        progress_key = CASE
+                            WHEN ? = 1 THEN ?
+                            ELSE progress_key
+                        END,
+                        archived_at = CASE
+                            WHEN ? = 1 THEN NULL
+                            ELSE archived_at
+                        END,
+                        completed_at = CASE
+                            WHEN ? = 1 THEN NULL
+                            ELSE completed_at
+                        END,
+                        state = CASE
+                            WHEN ? = 1 THEN 'open'
+                            ELSE state
+                        END,
+                        blocked = CASE
+                            WHEN ? = 1 THEN 0
+                            ELSE blocked
+                        END
+                    WHERE id = ?
+                `).run(
+                    item.dueAt || null,
+                    item.listTitle || item.title || item.listKey || null,
+                    item.listMode || 'sequential',
+                    Array.isArray(item.progressSteps) ? JSON.stringify(item.progressSteps) : null,
+                    item.action === 'reactivate' && String(item.listMode || '').toLowerCase() === 'progressive' && Boolean(firstStepKey) ? 1 : 0,
+                    firstStepKey,
+                    item.action === 'reactivate' ? 1 : 0,
+                    item.action === 'reactivate' ? 1 : 0,
+                    item.action === 'reactivate' ? 1 : 0,
+                    item.action === 'reactivate' ? 1 : 0,
+                    item.action === 'reactivate' ? 1 : 0,
+                    item.existingId
+                );
+                db.prepare('UPDATE tasks_new SET title = ?, updated_at = ? WHERE id = ?').run(
+                    item.title,
+                    new Date().toISOString(),
+                    item.existingTaskId
+                );
+                counters[item.action] += 1;
+                return;
+            }
+
+            counters.noop += 1;
+        } catch {
+            counters.failed += 1;
+        }
+    });
+
+    return counters;
+};
+
+export const seedOperationsTasksFromTemplates = ({ now = new Date(), rehydrate = false, dryRun = false } = {}) => {
+    if (!tableExists('recurring_task_templates')) return;
+    const plan = buildOperationsSeedPlan({ now, rehydrate });
+    if (dryRun) return plan;
+    const summary = applyOperationsSeedPlan(plan);
+    return {
+        ...plan,
+        summary: {
+            ...plan.summary,
+            ...summary
+        }
+    };
 };
 
 export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey }) => {
@@ -947,8 +1148,65 @@ export const seedTaskEngine = () => {
 
     seedSundayTasksFromTemplates();
     seedVestryTasksFromTemplates();
-    seedOperationsTasksFromTemplates();
+    const operationsSeed = seedOperationsTasksFromTemplates();
     seedEventTasksFromTemplates();
+    taskEngineRuntime = {
+        ...taskEngineRuntime,
+        lastSeedAt: new Date().toISOString(),
+        lastSeedSummary: {
+            operations: operationsSeed?.summary || null
+        }
+    };
+};
+
+export const getTaskEngineHealth = () => {
+    const canQueryOrigins = tableExists('task_instances') && tableExists('task_origins');
+    const byOriginType = canQueryOrigins
+        ? db.prepare(`
+            SELECT
+                COALESCE(src.origin_type, 'unknown') AS origin_type,
+                COUNT(*) AS total,
+                SUM(CASE WHEN ti.archived_at IS NULL THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN ti.completed_at IS NULL THEN 1 ELSE 0 END) AS openish
+            FROM task_instances ti
+            LEFT JOIN view_task_source src ON src.task_instance_id = ti.id
+            GROUP BY COALESCE(src.origin_type, 'unknown')
+            ORDER BY origin_type
+        `).all()
+        : [];
+
+    const operationsByOrigin = canQueryOrigins
+        ? db.prepare(`
+            SELECT
+                COALESCE(src.origin_id, '<null>') AS origin_id,
+                COUNT(*) AS total,
+                SUM(CASE WHEN ti.archived_at IS NULL THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN ti.completed_at IS NULL THEN 1 ELSE 0 END) AS openish
+            FROM task_instances ti
+            LEFT JOIN view_task_source src ON src.task_instance_id = ti.id
+            WHERE src.origin_type = 'operations'
+            GROUP BY COALESCE(src.origin_id, '<null>')
+            ORDER BY origin_id
+        `).all()
+        : [];
+
+    const templatesByOrigin = tableExists('recurring_task_templates')
+        ? db.prepare(`
+            SELECT origin_type, COALESCE(origin_id, '<null>') AS origin_id, COUNT(*) AS total
+            FROM recurring_task_templates
+            WHERE active = 1
+            GROUP BY origin_type, COALESCE(origin_id, '<null>')
+            ORDER BY origin_type, origin_id
+        `).all()
+        : [];
+
+    return {
+        now: new Date().toISOString(),
+        runtime: taskEngineRuntime,
+        templatesByOrigin,
+        byOriginType,
+        operationsByOrigin
+    };
 };
 
 const UNUSED_auditAndCleanupOrphanTasks = () => {

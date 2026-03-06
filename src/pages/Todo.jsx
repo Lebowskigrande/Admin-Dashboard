@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
 import Modal from '../components/Modal';
@@ -6,6 +6,7 @@ import TodoAddForm from './todo/TodoAddForm';
 import TodoListCard from './todo/TodoListCard';
 import TodoDetailPanel from './todo/TodoDetailPanel';
 import { useTodoData } from './todo/useTodoData';
+import { getDueInfo } from './todo/todoHelpers';
 import './Todo.css';
 
 const Todo = () => {
@@ -14,7 +15,9 @@ const Todo = () => {
         PRIORITY_OPTIONS,
         tasksLoading,
         error,
+        taskList,
         newTask,
+        newTaskDuePreset,
         projectName,
         showCompleted,
         taskModalOpen,
@@ -35,6 +38,7 @@ const Todo = () => {
         weekBuckets,
         setProjectName,
         setNewTask,
+        setNewTaskDuePreset,
         setShowCompleted,
         setTaskModalOpen,
         setTaskDraft,
@@ -42,6 +46,7 @@ const Todo = () => {
         setSelectedOriginKey,
         setSelectedTaskId,
         addTask,
+        addTaskWithDetails,
         saveTaskDetails,
         saveTaskNotes,
         updateTaskProgress,
@@ -61,6 +66,7 @@ const Todo = () => {
         formatTaskTitle,
         handleToggleNested
     } = useTodoData();
+    const [urgencyFilter, setUrgencyFilter] = useState('all');
 
     const renderCountBadge = useCallback((count, label) => (
         count === 0 ? (
@@ -74,6 +80,42 @@ const Todo = () => {
         )
     ), []);
 
+    const unifiedRows = useMemo(() => {
+        const rowWithBucket = (row, bucket) => ({ ...row, bucket });
+        return [
+            ...weekBuckets.thisWeek.map((row) => rowWithBucket(row, 'this_week')),
+            ...weekBuckets.nextWeek.map((row) => rowWithBucket(row, 'next_week')),
+            ...weekBuckets.later.map((row) => rowWithBucket(row, 'later'))
+        ];
+    }, [weekBuckets]);
+
+    const filteredRows = useMemo(() => {
+        if (urgencyFilter === 'all') return unifiedRows;
+        if (urgencyFilter === 'this_week') return unifiedRows.filter((row) => row.bucket === 'this_week');
+        if (urgencyFilter === 'next_week') return unifiedRows.filter((row) => row.bucket === 'next_week');
+        if (urgencyFilter === 'later') return unifiedRows.filter((row) => row.bucket === 'later');
+        if (urgencyFilter === 'overdue') {
+            return unifiedRows.filter((row) => getDueInfo(row.task)?.rank === 0);
+        }
+        if (urgencyFilter === 'today') {
+            return unifiedRows.filter((row) => getDueInfo(row.task)?.rank === 1);
+        }
+        return unifiedRows;
+    }, [unifiedRows, urgencyFilter]);
+
+    const dashboardCounts = useMemo(() => {
+        const overdue = unifiedRows.filter((row) => getDueInfo(row.task)?.rank === 0).length;
+        const today = unifiedRows.filter((row) => getDueInfo(row.task)?.rank === 1).length;
+        const open = unifiedRows.length;
+        const doneThisWeek = taskList.filter((task) => {
+            if (!task?.completed_at) return false;
+            const completedAt = new Date(task.completed_at);
+            if (Number.isNaN(completedAt.getTime())) return false;
+            return completedAt >= weekBuckets.weekStart && completedAt <= weekBuckets.weekEnd;
+        }).length;
+        return { open, overdue, today, doneThisWeek };
+    }, [taskList, unifiedRows, weekBuckets.weekEnd, weekBuckets.weekStart]);
+
     return (
         <div className="page-todo">
             <header className="page-header-controls page-header-bar">
@@ -85,79 +127,67 @@ const Todo = () => {
                     <TodoAddForm
                         projectName={projectName}
                         newTask={newTask}
+                        newTaskDuePreset={newTaskDuePreset}
                         onProjectChange={(event) => setProjectName(event.target.value)}
                         onTaskChange={(event) => setNewTask(event.target.value)}
+                        onDuePresetChange={(event) => setNewTaskDuePreset(event.target.value)}
                         onSubmit={addTask}
+                        onSubmitWithDetails={addTaskWithDetails}
                         showCompleted={showCompleted}
                         onToggleCompleted={(event) => setShowCompleted(event.target.checked)}
                     />
                 </div>
             </header>
+            <div className="todo-kpi-strip">
+                <div className="todo-kpi-card">
+                    <span className="todo-kpi-label">Open</span>
+                    <strong className="todo-kpi-value">{dashboardCounts.open}</strong>
+                </div>
+                <div className="todo-kpi-card">
+                    <span className="todo-kpi-label">Overdue</span>
+                    <strong className="todo-kpi-value">{dashboardCounts.overdue}</strong>
+                </div>
+                <div className="todo-kpi-card">
+                    <span className="todo-kpi-label">Due Today</span>
+                    <strong className="todo-kpi-value">{dashboardCounts.today}</strong>
+                </div>
+                <div className="todo-kpi-card">
+                    <span className="todo-kpi-label">Done This Week</span>
+                    <strong className="todo-kpi-value">{dashboardCounts.doneThisWeek}</strong>
+                </div>
+            </div>
+            <div className="todo-filter-chips">
+                {[
+                    { key: 'all', label: 'All' },
+                    { key: 'overdue', label: 'Overdue' },
+                    { key: 'today', label: 'Today' },
+                    { key: 'this_week', label: 'This Week' },
+                    { key: 'next_week', label: 'Next Week' },
+                    { key: 'later', label: 'Later' }
+                ].map((filter) => (
+                    <button
+                        key={filter.key}
+                        type="button"
+                        className={`todo-chip ${urgencyFilter === filter.key ? 'active' : ''}`}
+                        onClick={() => setUrgencyFilter(filter.key)}
+                    >
+                        {filter.label}
+                    </button>
+                ))}
+            </div>
 
             <div className="tasks-layout">
                 <div className="tasks-stack">
                     <TodoListCard
-                        title="This Week"
-                        subtitle={`Due ${format(weekBuckets.weekStart, 'MMM d')} - ${format(weekBuckets.weekEnd, 'MMM d')}`}
-                        rows={weekBuckets.thisWeek}
+                        title="Task Queue"
+                        subtitle={`Week of ${format(weekBuckets.weekStart, 'MMM d')} - ${format(weekBuckets.weekEnd, 'MMM d')}`}
+                        rows={filteredRows}
                         tasksLoading={tasksLoading}
                         error={error}
-                        emptyLabel="This week's tasks complete."
-                        countLabel={`${weekBuckets.thisWeek.length} tasks`}
+                        emptyLabel="No tasks in this filter."
+                        countLabel={`${filteredRows.length} tasks`}
                         renderCountBadge={renderCountBadge}
                         useWrapper
-                        selectedOriginKey={selectedOriginKey}
-                        selectedTaskId={selectedTaskId}
-                        onSelectRow={(originKey, taskId) => {
-                            setSelectedOriginKey(originKey);
-                            setSelectedTaskId(taskId);
-                        }}
-                        formatOriginLabel={formatOriginLabel}
-                        formatOriginSubtitle={formatOriginSubtitle}
-                        getTopLevelTaskTitle={getTopLevelTaskTitle}
-                        getTaskProgressMeta={getTaskProgressMeta}
-                        getTaskNextStepLabel={getTaskNextStepLabel}
-                        getOriginColorClass={getOriginColorClass}
-                        getDisplayClass={getDisplayClass}
-                        getDisplayLabel={getDisplayLabel}
-                        toggleTask={toggleTask}
-                    />
-
-                    <TodoListCard
-                        title="Next Week"
-                        subtitle={`${format(weekBuckets.nextWeekStart, 'MMM d')} - ${format(weekBuckets.nextWeekEnd, 'MMM d')}`}
-                        rows={weekBuckets.nextWeek}
-                        tasksLoading={tasksLoading}
-                        error={error}
-                        emptyLabel="Next week's tasks complete."
-                        countLabel={`${weekBuckets.nextWeek.length} tasks`}
-                        renderCountBadge={renderCountBadge}
-                        selectedOriginKey={selectedOriginKey}
-                        selectedTaskId={selectedTaskId}
-                        onSelectRow={(originKey, taskId) => {
-                            setSelectedOriginKey(originKey);
-                            setSelectedTaskId(taskId);
-                        }}
-                        formatOriginLabel={formatOriginLabel}
-                        formatOriginSubtitle={formatOriginSubtitle}
-                        getTopLevelTaskTitle={getTopLevelTaskTitle}
-                        getTaskProgressMeta={getTaskProgressMeta}
-                        getTaskNextStepLabel={getTaskNextStepLabel}
-                        getOriginColorClass={getOriginColorClass}
-                        getDisplayClass={getDisplayClass}
-                        getDisplayLabel={getDisplayLabel}
-                        toggleTask={toggleTask}
-                    />
-
-                    <TodoListCard
-                        title="Later"
-                        subtitle="Beyond next week"
-                        rows={weekBuckets.later}
-                        tasksLoading={tasksLoading}
-                        error={error}
-                        emptyLabel="Later tasks complete."
-                        countLabel={`${weekBuckets.later.length} tasks`}
-                        renderCountBadge={renderCountBadge}
                         selectedOriginKey={selectedOriginKey}
                         selectedTaskId={selectedTaskId}
                         onSelectRow={(originKey, taskId) => {

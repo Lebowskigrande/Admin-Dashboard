@@ -104,6 +104,32 @@
     padding: 0.25rem;
 }
 
+.dashboard-kpi-strip {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.7rem;
+    margin-bottom: 0.9rem;
+}
+
+.dashboard-kpi-card {
+    min-height: 74px;
+}
+
+.dashboard-kpi-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--color-text-secondary);
+    font-weight: 700;
+}
+
+.dashboard-kpi-value {
+    margin-top: 0.2rem;
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: var(--color-primary-dark);
+}
+
 .dashboard-header {
     display: grid;
     grid-template-columns: minmax(240px, 1fr) minmax(320px, 1.2fr) auto;
@@ -407,6 +433,30 @@
     flex-direction: column;
 }
 
+.dashboard-filter-chips {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.55rem;
+}
+
+.dashboard-filter-chip {
+    border: 1px solid rgba(15, 23, 42, 0.14);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--color-text-secondary);
+    padding: 0.2rem 0.62rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.dashboard-filter-chip.active {
+    background: #e6f0f8;
+    border-color: #8eafc7;
+    color: #16364f;
+    font-weight: 600;
+}
+
 .ticket-row {
     width: 100%;
     text-align: left;
@@ -534,6 +584,31 @@
     color: #4338ca;
 }
 
+.due-pill-overdue {
+    background: #fee2e2;
+    color: #b91c1c;
+}
+
+.due-pill-today {
+    background: #ffedd5;
+    color: #c2410c;
+}
+
+.due-pill-tomorrow {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.due-pill-future {
+    background: #e2e8f0;
+    color: #1f2937;
+}
+
+.due-pill-neutral {
+    background: #f1f5f9;
+    color: #475569;
+}
+
 .task-detail-card {
     min-height: 250px;
 }
@@ -647,6 +722,10 @@
 }
 
 @media (max-width: 960px) {
+    .dashboard-kpi-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .dashboard-header {
         grid-template-columns: 1fr;
         justify-items: start;
