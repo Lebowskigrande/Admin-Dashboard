@@ -241,6 +241,62 @@ const tests = [
         }
     },
     {
+        name: 'Contribution lookup links solid fuzzy People match and uses person envelope',
+        run: async () => {
+            db.prepare(`
+                INSERT INTO people (id, display_name, envelope_number, tags)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    envelope_number = excluded.envelope_number,
+                    tags = excluded.tags
+            `).run(
+                'test-envelope-fuzzy-person',
+                'Elizabeth A Woodall',
+                '',
+                '["env-374","Choir"]'
+            );
+
+            const result = __TEST__.parseContributionFields({
+                metadata: {},
+                bodyText: 'Name: Elizabeth Woodall\nSub Total $125.00\nI would like my donation to be allocated to: 2026 Pledge Payment',
+                envelopeFallback: ''
+            });
+
+            assert.equal(result.envelopeNumber, '374');
+            assert.equal(Boolean(String(result.personId || '').trim()), true);
+            assert.equal(/woodall/i.test(String(result.personName || '')), true);
+            assert.equal(result.personMatchConfidence >= 0.8, true);
+        }
+    },
+    {
+        name: 'Contribution lookup avoids weak same-last-name People match',
+        run: async () => {
+            db.prepare(`
+                INSERT INTO people (id, display_name, envelope_number, tags)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    envelope_number = excluded.envelope_number,
+                    tags = excluded.tags
+            `).run(
+                'test-envelope-weak-last-name',
+                'Jane Quillstone',
+                '',
+                '["env-777"]'
+            );
+
+            const result = __TEST__.parseContributionFields({
+                metadata: {},
+                bodyText: 'Name: Carter Quillstone\nSub Total $100.00\nI would like my donation to be allocated to: 2026 Pledge Payment',
+                envelopeFallback: ''
+            });
+
+            assert.notEqual(result.personId, 'test-envelope-weak-last-name');
+            assert.notEqual(result.envelopeNumber, '777');
+        }
+    },
+    {
         name: 'Forwarded contribution uses original metadata/body for donor and date',
         run: async () => {
             const forwarded = [

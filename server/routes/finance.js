@@ -249,6 +249,15 @@ const extractDesignationFromOutput = (output) => {
 };
 
 const extractVendorFromOutput = (output) => compactWhitespace(output?.routing?.vendor || output?.vendor || '');
+const extractPersonFromOutput = (output) => {
+    const personId = compactWhitespace(output?.routing?.personId || output?.personId || '');
+    const personName = compactWhitespace(output?.routing?.personName || output?.personName || '');
+    const rawConfidence = Number(output?.routing?.personMatchConfidence ?? output?.personMatchConfidence ?? 0);
+    const personMatchConfidence = Number.isFinite(rawConfidence)
+        ? Math.max(0, Math.min(1, rawConfidence))
+        : 0;
+    return { personId, personName, personMatchConfidence };
+};
 
 const extractDesignationFromPdf = async (pdfPath) => {
     const normalizedPath = normalizeWindowsPath(pdfPath);
@@ -337,6 +346,117 @@ const applyContributionDesignationPolicyToOutput = ({ output, codeType = '', cod
             }
         }
     };
+};
+
+const buildRoutingGroupKey = (row = {}) => {
+    const jobId = String(row.job_id || '').trim();
+    const messageId = String(row.message_id || '').trim();
+    const codeType = String(row.code_type || '').trim();
+    const codeValue = String(row.code_value || '').trim();
+    const id = String(row.id || '').trim();
+    return jobId || `${codeType}|${codeValue}|${messageId || id}`;
+};
+
+const buildRoutingLogEntryFromGroup = async ({
+    group,
+    latest,
+    dirCache,
+    includeSource = false,
+    includeTiming = false
+} = {}) => {
+    const jobId = String(group?.jobId || '').trim();
+    const latestRow = latest || {};
+    const jobRow = jobId
+        ? sqlite.prepare(`
+            SELECT id, code_type, code_value, output_json, created_at
+            FROM sharefile_jobs
+            WHERE id = ?
+            LIMIT 1
+        `).get(jobId)
+        : null;
+
+    const effectiveCodeType = String(jobRow?.code_type || latestRow.code_type || '').trim();
+    const effectiveCodeValue = String(jobRow?.code_value || latestRow.code_value || '').trim();
+    let output = safeParseJson(jobRow?.output_json || latestRow.output_json);
+    const contributionPolicy = applyContributionDesignationPolicyToOutput({
+        output,
+        codeType: effectiveCodeType,
+        codeValue: effectiveCodeValue
+    });
+    if (contributionPolicy.changed && jobId) {
+        output = contributionPolicy.output;
+        await persistContributionOutputBackfill({
+            jobId,
+            output
+        });
+    } else if (contributionPolicy.changed) {
+        output = contributionPolicy.output;
+    }
+
+    const files = await normalizeJobFilesWithCurrentPaths(
+        output,
+        String(jobRow?.created_at || latestRow.created_at || ''),
+        dirCache
+    );
+    const fileRows = await Promise.all(files.map(async (file) => {
+        const normalizedPath = normalizeWindowsPath(file.path || '');
+        const exists = normalizedPath ? await pathExists(normalizedPath) : false;
+        return {
+            ...file,
+            path: normalizedPath,
+            exists
+        };
+    }));
+    const existingFiles = fileRows.filter((file) => file.exists);
+    const missingFiles = Math.max(0, fileRows.length - existingFiles.length);
+
+    const vendor = extractVendorFromOutput(output);
+    const person = extractPersonFromOutput(output);
+    const isAp = effectiveCodeType === 'budget';
+    const envelopeNumber = resolveContributionEnvelopeNumber({ output, codeValue: effectiveCodeValue });
+    const latestStatus = String(latestRow.status || 'success').trim().toLowerCase() === 'failure' ? 'failure' : 'success';
+    const status = latestStatus === 'success' && missingFiles > 0 && existingFiles.length === 0
+        ? 'failure'
+        : latestStatus;
+    const errorText = status === 'failure' && latestStatus === 'success' && existingFiles.length === 0
+        ? 'Routed file is missing from disk.'
+        : String(latestRow.error_text || '').trim();
+
+    const entry = {
+        id: latestRow.id,
+        jobId: jobId || null,
+        codeType: effectiveCodeType,
+        codeValue: effectiveCodeValue,
+        envelopeNumber,
+        isPledger: effectiveCodeType === 'envelope' ? isPledgerEnvelope(envelopeNumber) : false,
+        designation: await resolveDesignationForOutput(output),
+        personId: person.personId,
+        personName: person.personName,
+        personMatchConfidence: person.personMatchConfidence,
+        vendor,
+        vendorMissing: isAp && !vendor,
+        status,
+        errorText,
+        createdAt: String(latestRow.created_at || jobRow?.created_at || ''),
+        targetDir: String(output?.targetDir || ''),
+        files: existingFiles,
+        missingFiles,
+        attempts: group?.attempts || 0,
+        successCount: group?.successCount || 0,
+        failureCount: group?.failureCount || 0,
+        lastSuccessAt: group?.lastSuccessAt || null,
+        lastFailureAt: group?.lastFailureAt || null
+    };
+
+    if (includeTiming) {
+        entry.startedAt = group?.startedAt || null;
+        entry.completedAt = group?.completedAt || null;
+    }
+    if (includeSource) {
+        entry.source = String(latestRow.source || '').trim() || null;
+    }
+
+    return entry;
 };
 
 const persistContributionOutputBackfill = async ({ jobId = '', output = null } = {}) => {
@@ -748,8 +868,7 @@ router.get('/routing-log', async (req, res) => {
             const groupedAttempts = new Map();
             attemptRows.forEach((row) => {
                 const jobId = String(row.job_id || '').trim();
-                const messageId = String(row.message_id || '').trim();
-                const key = jobId || `${String(row.code_type || '').trim()}|${String(row.code_value || '').trim()}|${messageId || String(row.id || '').trim()}`;
+                const key = buildRoutingGroupKey(row);
                 if (!key) return;
                 if (!groupedAttempts.has(key)) {
                     groupedAttempts.set(key, {
@@ -785,88 +904,13 @@ router.get('/routing-log', async (req, res) => {
             });
 
             const entries = await Promise.all(Array.from(groupedAttempts.values()).map(async (group) => {
-                const latest = group.latest || {};
-                const jobId = String(group.jobId || '').trim();
-                const jobRow = jobId
-                    ? sqlite.prepare(`
-                        SELECT id, code_type, code_value, output_json, created_at
-                        FROM sharefile_jobs
-                        WHERE id = ?
-                        LIMIT 1
-                    `).get(jobId)
-                    : null;
-
-                const effectiveCodeType = String(jobRow?.code_type || latest.code_type || '').trim();
-                const effectiveCodeValue = String(jobRow?.code_value || latest.code_value || '').trim();
-                let output = safeParseJson(jobRow?.output_json || latest.output_json);
-                const contributionPolicy = applyContributionDesignationPolicyToOutput({
-                    output,
-                    codeType: effectiveCodeType,
-                    codeValue: effectiveCodeValue
+                return buildRoutingLogEntryFromGroup({
+                    group,
+                    latest: group.latest || {},
+                    dirCache,
+                    includeSource: true,
+                    includeTiming: true
                 });
-                if (contributionPolicy.changed && jobId) {
-                    output = contributionPolicy.output;
-                    await persistContributionOutputBackfill({
-                        jobId,
-                        output
-                    });
-                } else if (contributionPolicy.changed) {
-                    output = contributionPolicy.output;
-                }
-
-                const files = await normalizeJobFilesWithCurrentPaths(
-                    output,
-                    String(jobRow?.created_at || latest.created_at || ''),
-                    dirCache
-                );
-                const fileRows = await Promise.all(files.map(async (file) => {
-                    const normalizedPath = normalizeWindowsPath(file.path || '');
-                    const exists = normalizedPath ? await pathExists(normalizedPath) : false;
-                    return {
-                        ...file,
-                        path: normalizedPath,
-                        exists
-                    };
-                }));
-                const existingFiles = fileRows.filter((file) => file.exists);
-                const missingFiles = Math.max(0, fileRows.length - existingFiles.length);
-
-                const vendor = extractVendorFromOutput(output);
-                const isAp = effectiveCodeType === 'budget';
-                const envelopeNumber = resolveContributionEnvelopeNumber({ output, codeValue: effectiveCodeValue });
-                const latestStatus = String(latest.status || 'success').trim().toLowerCase() === 'failure' ? 'failure' : 'success';
-                const status = latestStatus === 'success' && missingFiles > 0 && existingFiles.length === 0
-                    ? 'failure'
-                    : latestStatus;
-                const errorText = status === 'failure' && latestStatus === 'success' && existingFiles.length === 0
-                    ? 'Routed file is missing from disk.'
-                    : String(latest.error_text || '').trim();
-
-                return {
-                    id: latest.id,
-                    jobId: jobId || null,
-                    codeType: effectiveCodeType,
-                    codeValue: effectiveCodeValue,
-                    envelopeNumber,
-                    isPledger: effectiveCodeType === 'envelope' ? isPledgerEnvelope(envelopeNumber) : false,
-                    designation: await resolveDesignationForOutput(output),
-                    vendor,
-                    vendorMissing: isAp && !vendor,
-                    status,
-                    errorText,
-                    createdAt: String(latest.created_at || jobRow?.created_at || ''),
-                    targetDir: String(output?.targetDir || ''),
-                    files: existingFiles,
-                    missingFiles,
-                    attempts: group.attempts,
-                    successCount: group.successCount,
-                    failureCount: group.failureCount,
-                    startedAt: group.startedAt || null,
-                    completedAt: group.completedAt || null,
-                    lastSuccessAt: group.lastSuccessAt || null,
-                    lastFailureAt: group.lastFailureAt || null,
-                    source: String(latest.source || '').trim() || null
-                };
             }));
 
             const sortedEntries = entries
@@ -894,8 +938,7 @@ router.get('/routing-log', async (req, res) => {
         const grouped = new Map();
         eventRows.forEach((row) => {
             const jobId = String(row.job_id || '').trim();
-            const messageId = String(row.message_id || '').trim();
-            const key = jobId || `${String(row.code_type || '').trim()}|${String(row.code_value || '').trim()}|${messageId || String(row.id || '').trim()}`;
+            const key = buildRoutingGroupKey(row);
             if (!key) return;
             if (!grouped.has(key)) {
                 grouped.set(key, {
@@ -963,85 +1006,11 @@ router.get('/routing-log', async (req, res) => {
         });
 
         const entries = await Promise.all(Array.from(grouped.values()).map(async (group) => {
-            const latest = group.latestEvent || {};
-            const jobId = String(group.jobId || '').trim();
-            const jobRow = jobId
-                ? sqlite.prepare(`
-                    SELECT id, code_type, code_value, output_json, created_at
-                    FROM sharefile_jobs
-                    WHERE id = ?
-                    LIMIT 1
-                `).get(jobId)
-                : null;
-
-            const effectiveCodeType = String(jobRow?.code_type || latest.code_type || '').trim();
-            const effectiveCodeValue = String(jobRow?.code_value || latest.code_value || '').trim();
-            let output = safeParseJson(jobRow?.output_json || latest.output_json);
-            const contributionPolicy = applyContributionDesignationPolicyToOutput({
-                output,
-                codeType: effectiveCodeType,
-                codeValue: effectiveCodeValue
-            });
-            if (contributionPolicy.changed) {
-                output = contributionPolicy.output;
-                if (jobId) {
-                    await persistContributionOutputBackfill({
-                        jobId,
-                        output
-                    });
-                }
-            }
-
-            const files = await normalizeJobFilesWithCurrentPaths(
-                output,
-                String(jobRow?.created_at || latest.created_at || ''),
+            return buildRoutingLogEntryFromGroup({
+                group,
+                latest: group.latestEvent || {},
                 dirCache
-            );
-            const fileRows = await Promise.all(files.map(async (file) => {
-                const normalizedPath = normalizeWindowsPath(file.path || '');
-                const exists = normalizedPath ? await pathExists(normalizedPath) : false;
-                return {
-                    ...file,
-                    path: normalizedPath,
-                    exists
-                };
-            }));
-            const existingFiles = fileRows.filter((file) => file.exists);
-            const missingFiles = Math.max(0, fileRows.length - existingFiles.length);
-
-            const vendor = extractVendorFromOutput(output);
-            const isAp = effectiveCodeType === 'budget';
-            const envelopeNumber = resolveContributionEnvelopeNumber({ output, codeValue: effectiveCodeValue });
-            const latestStatus = String(latest.status || 'success').trim().toLowerCase() === 'failure' ? 'failure' : 'success';
-            const status = latestStatus === 'success' && missingFiles > 0 && existingFiles.length === 0
-                ? 'failure'
-                : latestStatus;
-            const errorText = status === 'failure' && latestStatus === 'success' && existingFiles.length === 0
-                ? 'Routed file is missing from disk.'
-                : String(latest.error_text || '').trim();
-
-            return {
-                id: latest.id,
-                jobId: jobId || null,
-                codeType: effectiveCodeType,
-                codeValue: effectiveCodeValue,
-                envelopeNumber,
-                isPledger: effectiveCodeType === 'envelope' ? isPledgerEnvelope(envelopeNumber) : false,
-                designation: await resolveDesignationForOutput(output),
-                vendor,
-                vendorMissing: isAp && !vendor,
-                status,
-                errorText,
-                createdAt: String(latest.created_at || jobRow?.created_at || ''),
-                targetDir: String(output?.targetDir || ''),
-                files: existingFiles,
-                missingFiles,
-                attempts: group.attempts,
-                successCount: group.successCount,
-                failureCount: group.failureCount,
-                lastSuccessAt: group.lastSuccessAt || null,
-                lastFailureAt: group.lastFailureAt || null
-            };
+            });
         }));
 
         const sortedEntries = entries

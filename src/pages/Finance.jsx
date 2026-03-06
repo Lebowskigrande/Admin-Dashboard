@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FaEdit, FaEye, FaPrint, FaSave, FaTrash } from 'react-icons/fa';
 import Card from '../components/Card';
+import DataPill from '../components/DataPill';
 import Modal from '../components/Modal';
 import { API_URL } from '../services/apiConfig';
 import { formatCurrency } from '../utils/formatters';
@@ -1056,6 +1057,15 @@ const Finance = () => {
                                                 </span>
                                             ) : (
                                                 <span className="text-muted">No envelope</span>
+                                            )}
+                                            {String(entry.personName || '').trim() && (
+                                                <DataPill
+                                                    type="person"
+                                                    showType={false}
+                                                    value={String(entry.personId || '').trim()}
+                                                    label={String(entry.personName || '').trim()}
+                                                    tooltip={`Matched person${entry.personMatchConfidence ? ` (${Math.round(Number(entry.personMatchConfidence) * 100)}%)` : ''}`}
+                                                />
                                             )}
                                             <button
                                                 type="button"

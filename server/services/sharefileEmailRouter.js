@@ -531,6 +531,54 @@ const buildInvoiceFilename = async ({
     return ensureUniquePath(targetDir, baseName);
 };
 
+const saveRoutedPdfOutput = async ({
+    pdfBytes,
+    sourcePdfPath = '',
+    routeKind = 'BILL',
+    filenameTimestamp,
+    targetDir,
+    donor = '',
+    amount = '',
+    sourceToken = '',
+    noteText = '',
+    tempDir = '',
+    contextVendorFallback = '',
+    apVendor = '',
+    syncOutputToCanonical = null
+} = {}) => {
+    const isContributionRoute = String(routeKind || '').toUpperCase() === 'CONTRIBUTION';
+    const vendorMeta = isContributionRoute
+        ? { vendor: '' }
+        : await resolveApVendor(pdfBytes, { sourcePdfPath });
+    let nextApVendor = apVendor;
+    if (!nextApVendor && vendorMeta.vendor) nextApVendor = vendorMeta.vendor;
+    const { filename, targetPath } = await buildInvoiceFilename({
+        kind: routeKind,
+        timestamp: filenameTimestamp,
+        targetDir,
+        donor,
+        amount,
+        sourceToken,
+        vendor: nextApVendor || vendorMeta.vendor || contextVendorFallback || ''
+    });
+    const notedBytes = await addNoteToPdf(pdfBytes, noteText);
+    const tempPath = join(tempDir, filename);
+    await writeFile(tempPath, notedBytes);
+    await moveFileSafe(tempPath, targetPath);
+    if (typeof syncOutputToCanonical === 'function') {
+        await syncOutputToCanonical(targetPath);
+    }
+    return {
+        apVendor: nextApVendor,
+        file: {
+            name: filename,
+            path: targetPath,
+            bytes: notedBytes.length
+        },
+        targetPath
+    };
+};
+
 const normalizePersonName = (value) => String(value || '')
     .toLowerCase()
     .replace(/['".,]/g, '')
@@ -556,6 +604,7 @@ const ENVELOPE_NAME_CONNECTORS = new Set([
     'ms',
     'dr'
 ]);
+const PERSON_NAME_SUFFIXES = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'v']);
 
 const getDonorFirstLast = (nameValue) => {
     const tokens = splitNameTokens(nameValue).filter((token) => !ENVELOPE_NAME_CONNECTORS.has(token));
@@ -564,6 +613,97 @@ const getDonorFirstLast = (nameValue) => {
         first: tokens[0] || '',
         last: tokens[tokens.length - 1] || ''
     };
+};
+
+const getComparableNameTokens = (value) => splitNameTokens(value)
+    .filter((token) => !ENVELOPE_NAME_CONNECTORS.has(token))
+    .filter((token) => !PERSON_NAME_SUFFIXES.has(token))
+    .filter(Boolean);
+
+const levenshteinDistance = (a, b) => {
+    const left = String(a || '');
+    const right = String(b || '');
+    if (!left) return right.length;
+    if (!right) return left.length;
+    const dp = Array.from({ length: right.length + 1 }, (_, idx) => idx);
+    for (let i = 1; i <= left.length; i += 1) {
+        let prev = dp[0];
+        dp[0] = i;
+        for (let j = 1; j <= right.length; j += 1) {
+            const nextPrev = dp[j];
+            const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+            dp[j] = Math.min(
+                dp[j] + 1,
+                dp[j - 1] + 1,
+                prev + cost
+            );
+            prev = nextPrev;
+        }
+    }
+    return dp[right.length];
+};
+
+const computeNameSimilarity = (leftValue, rightValue) => {
+    const left = normalizePersonToken(leftValue);
+    const right = normalizePersonToken(rightValue);
+    if (!left || !right) return 0;
+    if (left === right) return 1;
+
+    const leftTokens = getComparableNameTokens(left);
+    const rightTokens = getComparableNameTokens(right);
+    const leftLast = leftTokens.at(-1) || '';
+    const rightLast = rightTokens.at(-1) || '';
+    const leftFirst = leftTokens[0] || '';
+    const rightFirst = rightTokens[0] || '';
+    const lastMatches = Boolean(leftLast && rightLast && leftLast === rightLast);
+    const firstMatches = Boolean(leftFirst && rightFirst && leftFirst === rightFirst);
+    const firstInitialMatches = Boolean(
+        leftFirst && rightFirst && leftFirst[0] === rightFirst[0]
+    );
+
+    const leftSet = new Set(leftTokens);
+    const rightSet = new Set(rightTokens);
+    let intersection = 0;
+    leftSet.forEach((token) => {
+        if (rightSet.has(token)) intersection += 1;
+    });
+    const unionSize = Math.max(1, leftSet.size + rightSet.size - intersection);
+    const tokenJaccard = intersection / unionSize;
+    const contained = left.includes(right) || right.includes(left);
+    const levDistance = levenshteinDistance(left, right);
+    const maxLen = Math.max(left.length, right.length, 1);
+    const levSimilarity = 1 - (levDistance / maxLen);
+
+    let score = 0;
+    if (lastMatches) score += 0.4;
+    if (firstMatches) score += 0.28;
+    else if (firstInitialMatches) score += 0.15;
+    score += tokenJaccard * 0.2;
+    score += Math.max(0, levSimilarity) * 0.12;
+    if (contained) score += 0.08;
+    return Math.max(0, Math.min(1, score));
+};
+
+const isSolidPersonMatch = ({ similarity = 0, donorName = '', displayName = '' } = {}) => {
+    const donorTokens = getComparableNameTokens(donorName);
+    const displayTokens = getComparableNameTokens(displayName);
+    const donorLast = donorTokens.at(-1) || '';
+    const displayLast = displayTokens.at(-1) || '';
+    const donorFirst = donorTokens[0] || '';
+    const displayFirst = displayTokens[0] || '';
+    const lastMatches = Boolean(donorLast && displayLast && donorLast === displayLast);
+    const firstMatches = Boolean(donorFirst && displayFirst && donorFirst === displayFirst);
+    const firstInitialMatches = Boolean(donorFirst && displayFirst && donorFirst[0] === displayFirst[0]);
+    if (similarity >= 0.97) return true;
+    if (lastMatches && firstMatches && similarity >= 0.82) return true;
+    if (
+        lastMatches
+        && firstInitialMatches
+        && (donorFirst.length === 1 || displayFirst.length === 1)
+        && similarity >= 0.66
+    ) return true;
+    if (lastMatches && firstInitialMatches && similarity >= 0.89) return true;
+    return similarity >= 0.92;
 };
 
 const normalizeEnvelopeDirectoryName = (value) => String(value || '')
@@ -622,72 +762,127 @@ const extractEnvelopeFromPersonRow = (row) => {
     return compactWhitespace(row?.envelope_number || '');
 };
 
-const lookupEnvelopeNumberByDonorName = (donorName) => {
+const lookupContributionDonorIdentity = (donorName, { requireEnvelope = false } = {}) => {
     const normalizedDonor = normalizePersonName(donorName);
-    if (!normalizedDonor) return '';
+    if (!normalizedDonor) return null;
 
     const rows = db.prepare(`
-        SELECT display_name, envelope_number, tags
+        SELECT id, display_name, envelope_number, tags
         FROM people
-        WHERE (tags IS NOT NULL AND tags <> '')
-           OR (envelope_number IS NOT NULL AND TRIM(envelope_number) <> '')
+        WHERE display_name IS NOT NULL
+          AND TRIM(display_name) <> ''
     `).all();
 
+    let bestMatch = null;
+
     for (const row of rows) {
         const normalizedDisplay = normalizePersonName(row.display_name || '');
         if (!normalizedDisplay) continue;
+        const envelope = extractEnvelopeFromPersonRow(row);
+        if (requireEnvelope && !envelope) continue;
         if (normalizedDisplay === normalizedDonor) {
-            const envelope = extractEnvelopeFromPersonRow(row);
-            if (envelope) return envelope;
+            return {
+                personId: String(row.id || '').trim(),
+                personName: compactWhitespace(row.display_name || ''),
+                envelopeNumber: envelope || '',
+                matchConfidence: 1
+            };
+        }
+        const similarity = computeNameSimilarity(normalizedDonor, normalizedDisplay);
+        if (!bestMatch || similarity > bestMatch.similarity) {
+            bestMatch = {
+                row,
+                similarity
+            };
         }
     }
 
-    for (const row of rows) {
-        const normalizedDisplay = normalizePersonName(row.display_name || '');
-        if (!normalizedDisplay) continue;
-        if (normalizedDisplay.includes(normalizedDonor) || normalizedDonor.includes(normalizedDisplay)) {
-            const envelope = extractEnvelopeFromPersonRow(row);
-            if (envelope) return envelope;
-        }
+    if (bestMatch && isSolidPersonMatch({
+        similarity: bestMatch.similarity,
+        donorName,
+        displayName: bestMatch.row?.display_name || ''
+    })) {
+        return {
+            personId: String(bestMatch.row?.id || '').trim(),
+            personName: compactWhitespace(bestMatch.row?.display_name || ''),
+            envelopeNumber: extractEnvelopeFromPersonRow(bestMatch.row) || '',
+            matchConfidence: Number(bestMatch.similarity.toFixed(3))
+        };
     }
 
-    const donorLast = normalizedDonor.split(' ').filter(Boolean).at(-1) || '';
-    if (!donorLast) return '';
-    for (const row of rows) {
-        const normalizedDisplay = normalizePersonName(row.display_name || '');
-        if (!normalizedDisplay) continue;
-        const displayLast = normalizedDisplay.split(' ').filter(Boolean).at(-1) || '';
-        if (displayLast && displayLast === donorLast) {
-            const envelope = extractEnvelopeFromPersonRow(row);
-            if (envelope) return envelope;
-        }
+    return null;
+};
+
+const lookupEnvelopeNumberByDonorName = (donorName) => {
+    const linkedPersonMatch = lookupContributionDonorIdentity(donorName, { requireEnvelope: false });
+    const envelopePersonMatch = linkedPersonMatch?.envelopeNumber
+        ? linkedPersonMatch
+        : lookupContributionDonorIdentity(donorName, { requireEnvelope: true });
+    if (envelopePersonMatch?.envelopeNumber) {
+        return {
+            envelopeNumber: envelopePersonMatch.envelopeNumber,
+            personMatch: envelopePersonMatch
+        };
     }
 
     const envelopeRows = loadEnvelopeDirectoryRows();
-    if (envelopeRows.length === 0) return '';
+    if (envelopeRows.length === 0) {
+        return {
+            envelopeNumber: '',
+            personMatch: linkedPersonMatch || null
+        };
+    }
 
     const donor = getDonorFirstLast(donorName);
     const donorNormalized = normalizePersonToken(donorName);
-    if (!donorNormalized) return '';
+    if (!donorNormalized) {
+        return {
+            envelopeNumber: '',
+            personMatch: linkedPersonMatch || null
+        };
+    }
 
     const exact = envelopeRows.find((row) => row.normalized === donorNormalized);
-    if (exact) return exact.number;
+    if (exact) {
+        return {
+            envelopeNumber: exact.number,
+            personMatch: linkedPersonMatch || null
+        };
+    }
 
     const contained = envelopeRows.find((row) => (
         row.normalized.includes(donorNormalized) || donorNormalized.includes(row.normalized)
     ));
-    if (contained) return contained.number;
+    if (contained) {
+        return {
+            envelopeNumber: contained.number,
+            personMatch: linkedPersonMatch || null
+        };
+    }
 
     if (donor.last) {
         const sameLast = envelopeRows.filter((row) => row.lastName === donor.last);
         if (donor.first) {
             const sameLastFirst = sameLast.find((row) => row.firstCandidates.includes(donor.first));
-            if (sameLastFirst) return sameLastFirst.number;
+            if (sameLastFirst) {
+                return {
+                    envelopeNumber: sameLastFirst.number,
+                    personMatch: linkedPersonMatch || null
+                };
+            }
         }
-        if (sameLast.length === 1) return sameLast[0].number;
+        if (sameLast.length === 1) {
+            return {
+                envelopeNumber: sameLast[0].number,
+                personMatch: linkedPersonMatch || null
+            };
+        }
     }
 
-    return '';
+    return {
+        envelopeNumber: '',
+        personMatch: linkedPersonMatch || null
+    };
 };
 
 const parseNameFromContributionPatterns = (text) => {
@@ -832,13 +1027,14 @@ const parseContributionFields = ({ bodyText, envelopeFallback, designationFallba
         bofa ? 'NPO' : 'Unknown designation'
     );
 
+    const lookup = lookupEnvelopeNumberByDonorName(donor);
     const envelopeFromEmailOrLookup =
         findLabeledValue([
             /^envelope(?:\s*number|\s*#)?\s*[:-]\s*([A-Za-z0-9-]+)$/i,
             /^env(?:elope)?(?:\s*#|\s*number)?\s*[:-]\s*([A-Za-z0-9-]+)$/i
         ]) ||
         String(envelopeFallback || '').trim() ||
-        lookupEnvelopeNumberByDonorName(donor);
+        lookup.envelopeNumber;
 
     const isRentDesignation = /\brent\b/i.test(String(candidateDesignation || ''));
     const envelopeNumber = envelopeFromEmailOrLookup || (isRentDesignation ? '' : 'Unknown envelope');
@@ -849,7 +1045,15 @@ const parseContributionFields = ({ bodyText, envelopeFallback, designationFallba
 
     const amount = bofa?.amount || extractWebsiteAmount() || '';
 
-    return { donor, designation, envelopeNumber, amount };
+    return {
+        donor,
+        designation,
+        envelopeNumber,
+        amount,
+        personId: lookup.personMatch?.personId || '',
+        personName: lookup.personMatch?.personName || '',
+        personMatchConfidence: lookup.personMatch?.matchConfidence || 0
+    };
 };
 
 export const __TEST__ = {
@@ -1734,23 +1938,23 @@ export const routeShareFileEmails = async ({
                     await writeFile(sourcePath, rawBytes);
                     const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
                     const pdfBytes = await readFile(pdfPath);
-                    const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: pdfPath });
-                    if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
-                    const { filename, targetPath } = await buildInvoiceFilename({
-                        kind: routeKind,
-                        timestamp: filenameTimestamp,
+                    const routed = await saveRoutedPdfOutput({
+                        pdfBytes,
+                        sourcePdfPath: pdfPath,
+                        routeKind,
+                        filenameTimestamp,
                         targetDir: resolvedRoot,
                         donor: contributionMeta?.donor || '',
                         amount: contributionMeta?.amount || '',
                         sourceToken,
-                        vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
+                        noteText,
+                        tempDir,
+                        contextVendorFallback,
+                        apVendor,
+                        syncOutputToCanonical
                     });
-                    const notedBytes = await addNoteToPdf(pdfBytes, noteText);
-                    const tempPath = join(tempDir, filename);
-                    await writeFile(tempPath, notedBytes);
-                    await moveFileSafe(tempPath, targetPath);
-                    await syncOutputToCanonical(targetPath);
-                    outputs.push(targetPath);
+                    apVendor = routed.apVendor;
+                    outputs.push(routed.targetPath);
                     index += 1;
                 }
             } else if (attachments.length === 0) {
@@ -1769,24 +1973,24 @@ export const routeShareFileEmails = async ({
                         pdfBytes = await renderEmailToPdf({ subject: 'Email conversation' }, conversationText || bodyText);
                     }
                 }
-                const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: '' });
-                if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
                 if (!apVendor && contextVendorFallback) apVendor = contextVendorFallback;
-                const { filename, targetPath } = await buildInvoiceFilename({
-                    kind: routeKind,
-                    timestamp: filenameTimestamp,
+                const routed = await saveRoutedPdfOutput({
+                    pdfBytes,
+                    sourcePdfPath: '',
+                    routeKind,
+                    filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
                     sourceToken,
-                    vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
+                    noteText,
+                    tempDir,
+                    contextVendorFallback,
+                    apVendor,
+                    syncOutputToCanonical
                 });
-                const notedBytes = await addNoteToPdf(pdfBytes, noteText);
-                const tempPath = join(tempDir, filename);
-                await writeFile(tempPath, notedBytes);
-                await moveFileSafe(tempPath, targetPath);
-                await syncOutputToCanonical(targetPath);
-                outputs.push(targetPath);
+                apVendor = routed.apVendor || apVendor;
+                outputs.push(routed.targetPath);
             } else {
                 let index = 0;
                 for (const attachment of attachments) {
@@ -1802,23 +2006,23 @@ export const routeShareFileEmails = async ({
                     await writeFile(sourcePath, rawBytes);
                     const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
                     const pdfBytes = await readFile(pdfPath);
-                    const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: pdfPath });
-                    if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
-                    const { filename, targetPath } = await buildInvoiceFilename({
-                        kind: routeKind,
-                        timestamp: filenameTimestamp,
+                    const routed = await saveRoutedPdfOutput({
+                        pdfBytes,
+                        sourcePdfPath: pdfPath,
+                        routeKind,
+                        filenameTimestamp,
                         targetDir: resolvedRoot,
                         donor: contributionMeta?.donor || '',
                         amount: contributionMeta?.amount || '',
                         sourceToken,
-                        vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
+                        noteText,
+                        tempDir,
+                        contextVendorFallback,
+                        apVendor,
+                        syncOutputToCanonical
                     });
-                    const notedBytes = await addNoteToPdf(pdfBytes, noteText);
-                    const tempPath = join(tempDir, filename);
-                    await writeFile(tempPath, notedBytes);
-                    await moveFileSafe(tempPath, targetPath);
-                    await syncOutputToCanonical(targetPath);
-                    outputs.push(targetPath);
+                    apVendor = routed.apVendor;
+                    outputs.push(routed.targetPath);
                     index += 1;
                 }
             }
@@ -1831,6 +2035,11 @@ export const routeShareFileEmails = async ({
                     envelopeNumber: contributionMeta?.envelopeNumber || codeValue || '',
                     designation: contributionMeta?.designation || '',
                     noteText: routeKind === 'CONTRIBUTION' ? noteText : '',
+                    personId: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personId || '').trim() : '',
+                    personName: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personName || '').trim() : '',
+                    personMatchConfidence: routeKind === 'CONTRIBUTION'
+                        ? Number(contributionMeta?.personMatchConfidence || 0)
+                        : 0,
                     vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
                     vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor || contextVendorFallback),
                     canonicalPublishedCount: canonicalSync.published,
@@ -2171,23 +2380,23 @@ export const routeSharefileMessage = async ({
                 await writeFile(sourcePath, rawBytes);
                 const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
                 const pdfBytes = await readFile(pdfPath);
-                const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: pdfPath });
-                if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
-                const { filename, targetPath } = await buildInvoiceFilename({
-                    kind: routeKind,
-                    timestamp: filenameTimestamp,
+                const routed = await saveRoutedPdfOutput({
+                    pdfBytes,
+                    sourcePdfPath: pdfPath,
+                    routeKind,
+                    filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
                     sourceToken,
-                    vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
+                    noteText,
+                    tempDir,
+                    contextVendorFallback,
+                    apVendor,
+                    syncOutputToCanonical
                 });
-                const notedBytes = await addNoteToPdf(pdfBytes, noteText);
-                const tempPath = join(tempDir, filename);
-                await writeFile(tempPath, notedBytes);
-                await moveFileSafe(tempPath, targetPath);
-                await syncOutputToCanonical(targetPath);
-                outputFiles.push({ name: filename, path: targetPath, bytes: notedBytes.length });
+                apVendor = routed.apVendor;
+                outputFiles.push(routed.file);
                 index += 1;
             }
         } else if (attachments.length === 0) {
@@ -2206,24 +2415,24 @@ export const routeSharefileMessage = async ({
                     pdfBytes = await renderEmailToPdf({ subject: 'Email conversation' }, conversationText || bodyText);
                 }
             }
-            const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: '' });
-            if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
             if (!apVendor && contextVendorFallback) apVendor = contextVendorFallback;
-            const { filename, targetPath } = await buildInvoiceFilename({
-                kind: routeKind,
-                timestamp: filenameTimestamp,
+            const routed = await saveRoutedPdfOutput({
+                pdfBytes,
+                sourcePdfPath: '',
+                routeKind,
+                filenameTimestamp,
                 targetDir: resolvedRoot,
                 donor: contributionMeta?.donor || '',
                 amount: contributionMeta?.amount || '',
                 sourceToken,
-                vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
+                noteText,
+                tempDir,
+                contextVendorFallback,
+                apVendor,
+                syncOutputToCanonical
             });
-            const notedBytes = await addNoteToPdf(pdfBytes, noteText);
-            const tempPath = join(tempDir, filename);
-            await writeFile(tempPath, notedBytes);
-            await moveFileSafe(tempPath, targetPath);
-            await syncOutputToCanonical(targetPath);
-            outputFiles.push({ name: filename, path: targetPath, bytes: notedBytes.length });
+            apVendor = routed.apVendor || apVendor;
+            outputFiles.push(routed.file);
         } else {
             let index = 0;
             for (const attachment of attachments) {
@@ -2239,23 +2448,23 @@ export const routeSharefileMessage = async ({
                 await writeFile(sourcePath, rawBytes);
                 const pdfPath = await convertToPdfIfNeeded(sourcePath, tempDir);
                 const pdfBytes = await readFile(pdfPath);
-                const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: pdfPath });
-                if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
-                const { filename, targetPath } = await buildInvoiceFilename({
-                    kind: routeKind,
-                    timestamp: filenameTimestamp,
+                const routed = await saveRoutedPdfOutput({
+                    pdfBytes,
+                    sourcePdfPath: pdfPath,
+                    routeKind,
+                    filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
                     sourceToken,
-                    vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
+                    noteText,
+                    tempDir,
+                    contextVendorFallback,
+                    apVendor,
+                    syncOutputToCanonical
                 });
-                const notedBytes = await addNoteToPdf(pdfBytes, noteText);
-                const tempPath = join(tempDir, filename);
-                await writeFile(tempPath, notedBytes);
-                await moveFileSafe(tempPath, targetPath);
-                await syncOutputToCanonical(targetPath);
-                outputFiles.push({ name: filename, path: targetPath, bytes: notedBytes.length });
+                apVendor = routed.apVendor;
+                outputFiles.push(routed.file);
                 index += 1;
             }
         }
@@ -2288,6 +2497,11 @@ export const routeSharefileMessage = async ({
                 envelopeNumber: contributionMeta?.envelopeNumber || extraMeta.codeValue || '',
                 designation: contributionMeta?.designation || '',
                 noteText: routeKind === 'CONTRIBUTION' ? noteText : '',
+                personId: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personId || '').trim() : '',
+                personName: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personName || '').trim() : '',
+                personMatchConfidence: routeKind === 'CONTRIBUTION'
+                    ? Number(contributionMeta?.personMatchConfidence || 0)
+                    : 0,
                 vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
                 vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor || contextVendorFallback),
                 canonicalPublishedCount: canonicalSync.published,
