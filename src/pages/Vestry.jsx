@@ -39,6 +39,7 @@ const Vestry = () => {
         mailtoBody,
         requiredDocs,
         requiredUploaded,
+        excludedRequiredCount,
         optionalUploaded,
         completedCount,
         hasQuarterlyInterest,
@@ -157,6 +158,7 @@ const Vestry = () => {
                     coveredMonth={coveredMonth}
                     requiredDocs={requiredDocs}
                     requiredUploaded={requiredUploaded}
+                    excludedRequiredCount={excludedRequiredCount}
                     optionalUploaded={optionalUploaded}
                     packetItems={packetItems}
                     packetBusy={packetBusy}

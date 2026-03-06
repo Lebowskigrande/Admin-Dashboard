@@ -1,4 +1,5 @@
-import { FaPrint, FaSave } from 'react-icons/fa';
+import { useState } from 'react';
+import { FaEdit, FaPrint, FaSave } from 'react-icons/fa';
 
 import Card from '../../components/Card';
 import Modal from '../../components/Modal';
@@ -19,8 +20,11 @@ const VestryCertificatePanel = ({
     closePreviewModal,
     saveCertificate,
     printCertificate
-}) => (
-    <>
+}) => {
+    const [isEditingFundAText, setIsEditingFundAText] = useState(false);
+
+    return (
+        <>
         <Card className="vestry-panel vestry-row-card">
             <div className="panel-header compact">
                 <h2>Certificates</h2>
@@ -35,53 +39,35 @@ const VestryCertificatePanel = ({
                             <div className="certificate-title">Fund A</div>
                             <div className="certificate-fields">
                                 <label className="certificate-field">
-                                    <span>Monthly transfer</span>
-                                    <input
-                                        type="text"
-                                        inputMode="decimal"
-                                        placeholder="$0.00"
-                                        value={certificateAmounts.fundA.monthlyAmount}
-                                        onChange={(event) => updateCertificateAmount('fundA', 'monthlyAmount', event.target.value)}
-                                        onBlur={(event) => updateCertificateAmount('fundA', 'monthlyAmount', formatCurrency(event.target.value))}
-                                    />
-                                    <input
-                                        type="text"
-                                        placeholder="Reason"
-                                        value={certificateAmounts.fundA.monthlyReason}
-                                        onChange={(event) => updateCertificateAmount('fundA', 'monthlyReason', event.target.value)}
-                                    />
+                                    <span>Certificate text</span>
+                                    {!isEditingFundAText ? (
+                                        <div className="text-muted" style={{ whiteSpace: 'pre-wrap' }}>
+                                            {String(certificateAmounts.fundA.bodyText || '').trim() || 'No text set.'}
+                                        </div>
+                                    ) : (
+                                        <textarea
+                                            rows={6}
+                                            value={certificateAmounts.fundA.bodyText}
+                                            onChange={(event) => updateCertificateAmount('fundA', 'bodyText', event.target.value)}
+                                        />
+                                    )}
+                                    <button
+                                        className="btn-secondary certificate-action"
+                                        type="button"
+                                        onClick={() => setIsEditingFundAText((prev) => !prev)}
+                                    >
+                                        <FaEdit /> {isEditingFundAText ? 'Done' : 'Edit'}
+                                    </button>
                                 </label>
-                                {hasQuarterlyInterest && (
-                                    <label className="certificate-field">
-                                        <span>Quarterly interest transfer</span>
-                                        <input
-                                            type="text"
-                                            inputMode="decimal"
-                                            placeholder="$0.00"
-                                            value={certificateAmounts.fundA.interestAmount}
-                                            onChange={(event) => updateCertificateAmount('fundA', 'interestAmount', event.target.value)}
-                                            onBlur={(event) => updateCertificateAmount('fundA', 'interestAmount', formatCurrency(event.target.value))}
-                                        />
-                                        <input
-                                            type="text"
-                                            placeholder="Reason"
-                                            value={certificateAmounts.fundA.interestReason}
-                                            onChange={(event) => updateCertificateAmount('fundA', 'interestReason', event.target.value)}
-                                        />
-                                    </label>
-                                )}
                             </div>
                             <button
                                 className="btn-secondary certificate-action"
                                 type="button"
-                                disabled={!hasQuarterlyInterest || certificateBusy.fundA}
+                                disabled={certificateBusy.fundA}
                                 onClick={() => generateCertificatePreview('fundA')}
                             >
                                 {certificateBusy.fundA ? 'Generating...' : 'Generate Preview'}
                             </button>
-                            {!hasQuarterlyInterest && (
-                                <span className="text-muted">Quarterly templates not configured yet.</span>
-                            )}
                         </div>
                         <div className="certificate-group">
                             <div className="certificate-title">Fund B</div>
@@ -126,14 +112,11 @@ const VestryCertificatePanel = ({
                             <button
                                 className="btn-secondary certificate-action"
                                 type="button"
-                                disabled={!hasQuarterlyInterest || certificateBusy.fundB}
+                                disabled={certificateBusy.fundB}
                                 onClick={() => generateCertificatePreview('fundB')}
                             >
                                 {certificateBusy.fundB ? 'Generating...' : 'Generate Preview'}
                             </button>
-                            {!hasQuarterlyInterest && (
-                                <span className="text-muted">Quarterly templates not configured yet.</span>
-                            )}
                         </div>
                         {hasQuarterlyInterest && (
                             <div className="certificate-group">
@@ -218,6 +201,7 @@ const VestryCertificatePanel = ({
             </div>
         </Modal>
     </>
-);
+    );
+};
 
 export default VestryCertificatePanel;

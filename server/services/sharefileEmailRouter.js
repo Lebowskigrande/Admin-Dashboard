@@ -347,7 +347,7 @@ const selectThreadMessageForRouting = (messages, { requireContribution = false }
         .slice()
         .sort((a, b) => Number(a?.internalDate || 0) - Number(b?.internalDate || 0));
     if (ordered.length === 0) return null;
-    if (!requireContribution) return ordered[0];
+    if (!requireContribution) return ordered[ordered.length - 1];
 
     const firstContribution = ordered.find((msg) => {
         const metadata = parseEmailMetadata(msg);
@@ -1717,7 +1717,8 @@ export const routeShareFileEmails = async ({
                 canonicalSync.failed += 1;
                 canonicalSync.lastError = String(result?.reason || '').trim();
             };
-            let apVendor = contextVendorMeta.vendor || '';
+            const contextVendorFallback = contextVendorMeta.vendor || '';
+            let apVendor = '';
             if (useThreadPdfAttachments) {
                 let index = 0;
                 for (const source of threadPdfAttachments) {
@@ -1742,7 +1743,7 @@ export const routeShareFileEmails = async ({
                         donor: contributionMeta?.donor || '',
                         amount: contributionMeta?.amount || '',
                         sourceToken,
-                        vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
+                        vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
                     });
                     const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                     const tempPath = join(tempDir, filename);
@@ -1770,6 +1771,7 @@ export const routeShareFileEmails = async ({
                 }
                 const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: '' });
                 if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
+                if (!apVendor && contextVendorFallback) apVendor = contextVendorFallback;
                 const { filename, targetPath } = await buildInvoiceFilename({
                     kind: routeKind,
                     timestamp: filenameTimestamp,
@@ -1777,7 +1779,7 @@ export const routeShareFileEmails = async ({
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
                     sourceToken,
-                    vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
+                    vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);
@@ -1809,7 +1811,7 @@ export const routeShareFileEmails = async ({
                         donor: contributionMeta?.donor || '',
                         amount: contributionMeta?.amount || '',
                         sourceToken,
-                        vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
+                        vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
                     });
                     const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                     const tempPath = join(tempDir, filename);
@@ -1829,8 +1831,8 @@ export const routeShareFileEmails = async ({
                     envelopeNumber: contributionMeta?.envelopeNumber || codeValue || '',
                     designation: contributionMeta?.designation || '',
                     noteText: routeKind === 'CONTRIBUTION' ? noteText : '',
-                    vendor: routeKind === 'CONTRIBUTION' ? '' : apVendor,
-                    vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor),
+                    vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
+                    vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor || contextVendorFallback),
                     canonicalPublishedCount: canonicalSync.published,
                     canonicalFailedCount: canonicalSync.failed,
                     canonicalLastError: canonicalSync.lastError || ''
@@ -2019,7 +2021,22 @@ export const routeSharefileMessage = async ({
     message = messageResponse.data;
     messageId = effectiveMessageId;
     const effectiveThreadId = String(threadId || message?.threadId || '').trim();
-    const threadMessages = [message];
+    let threadMessages = [message];
+    if (effectiveThreadId) {
+        try {
+            const threadResponse = await gmail.users.threads.get({
+                userId: 'me',
+                id: effectiveThreadId,
+                format: 'full'
+            });
+            const threadList = Array.isArray(threadResponse.data?.messages) ? threadResponse.data.messages : [];
+            if (threadList.length > 0) {
+                threadMessages = threadList;
+            }
+        } catch {
+            // Keep single-message fallback for manual routes if thread lookup is unavailable.
+        }
+    }
     const metadata = parseEmailMetadata(message);
     const bodyText = extractGmailMessageText(message) || message.snippet || '';
     const contributionContext = resolveContributionContext(metadata, bodyText);
@@ -2046,11 +2063,11 @@ export const routeSharefileMessage = async ({
     });
     const attachments = collectAttachments(message.payload);
     const isContributionRoute = routeKind === 'CONTRIBUTION';
-    const allowThreadContext = !messageOnly;
-    const threadPdfAttachments = !isContributionRoute && allowThreadContext
+    const threadPdfAttachments = !isContributionRoute
         ? collectThreadPdfAttachments(threadMessages)
         : [];
-    const useThreadPdfAttachments = !isContributionRoute && threadPdfAttachments.length > 0;
+    const useThreadPdfAttachments = !isContributionRoute && attachments.length === 0 && threadPdfAttachments.length > 0;
+    const allowThreadContext = !messageOnly || useThreadPdfAttachments;
     const conversationText = !isContributionRoute && allowThreadContext && !useThreadPdfAttachments
         ? buildConversationText(threadMessages)
         : '';
@@ -2137,7 +2154,8 @@ export const routeSharefileMessage = async ({
             canonicalSync.failed += 1;
             canonicalSync.lastError = String(result?.reason || '').trim();
         };
-        let apVendor = contextVendorMeta.vendor || '';
+        const contextVendorFallback = contextVendorMeta.vendor || '';
+        let apVendor = '';
         if (useThreadPdfAttachments) {
             let index = 0;
             for (const source of threadPdfAttachments) {
@@ -2162,7 +2180,7 @@ export const routeSharefileMessage = async ({
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
                     sourceToken,
-                    vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
+                    vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);
@@ -2190,6 +2208,7 @@ export const routeSharefileMessage = async ({
             }
             const vendorMeta = isContributionRoute ? { vendor: '' } : await resolveApVendor(pdfBytes, { sourcePdfPath: '' });
             if (!apVendor && vendorMeta.vendor) apVendor = vendorMeta.vendor;
+            if (!apVendor && contextVendorFallback) apVendor = contextVendorFallback;
             const { filename, targetPath } = await buildInvoiceFilename({
                 kind: routeKind,
                 timestamp: filenameTimestamp,
@@ -2197,7 +2216,7 @@ export const routeSharefileMessage = async ({
                 donor: contributionMeta?.donor || '',
                 amount: contributionMeta?.amount || '',
                 sourceToken,
-                vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
+                vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
             });
             const notedBytes = await addNoteToPdf(pdfBytes, noteText);
             const tempPath = join(tempDir, filename);
@@ -2229,7 +2248,7 @@ export const routeSharefileMessage = async ({
                     donor: contributionMeta?.donor || '',
                     amount: contributionMeta?.amount || '',
                     sourceToken,
-                    vendor: apVendor || vendorMeta.vendor || contextVendorMeta.vendor || ''
+                    vendor: apVendor || vendorMeta.vendor || contextVendorFallback || ''
                 });
                 const notedBytes = await addNoteToPdf(pdfBytes, noteText);
                 const tempPath = join(tempDir, filename);
@@ -2269,8 +2288,8 @@ export const routeSharefileMessage = async ({
                 envelopeNumber: contributionMeta?.envelopeNumber || extraMeta.codeValue || '',
                 designation: contributionMeta?.designation || '',
                 noteText: routeKind === 'CONTRIBUTION' ? noteText : '',
-                vendor: routeKind === 'CONTRIBUTION' ? '' : apVendor,
-                vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor),
+                vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
+                vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor || contextVendorFallback),
                 canonicalPublishedCount: canonicalSync.published,
                 canonicalFailedCount: canonicalSync.failed,
                 canonicalLastError: canonicalSync.lastError || ''

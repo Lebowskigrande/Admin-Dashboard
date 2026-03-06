@@ -71,7 +71,7 @@ router.post('/packet', vestryUpload.any(), async (req, res) => {
                 }
             }
             if (!fileDescriptor) {
-                if (item.required) {
+                if (item.required && !item.excluded) {
                     return res.status(400).json({ error: `Missing required document: ${item.label || item.id}` });
                 }
                 continue;
@@ -97,8 +97,18 @@ router.post('/packet', vestryUpload.any(), async (req, res) => {
             const fontSize = 9;
             const { width } = page.getSize();
             const textWidth = font.widthOfTextAtSize(label, fontSize);
+            const textHeight = font.heightAtSize(fontSize);
             const x = (width - textWidth) / 2;
             const y = 18;
+            const paddingX = 6;
+            const paddingY = 3;
+            page.drawRectangle({
+                x: x - paddingX,
+                y: y - paddingY,
+                width: textWidth + (paddingX * 2),
+                height: textHeight + (paddingY * 2),
+                color: rgb(1, 1, 1)
+            });
             page.drawText(label, { x, y, size: fontSize, font, color: rgb(0.35, 0.35, 0.35) });
         });
 
@@ -204,9 +214,9 @@ router.delete('/packet/cache', async (req, res) => {
 
 router.post('/certificate', async (req, res) => {
     try {
-        const { data, templatePath, outputName, outputDir } = await prepareVestryCertificate(req.body);
+        const { data, templateInput, outputName, outputDir } = await prepareVestryCertificate(req.body);
         await mkdir(outputDir, { recursive: true });
-        const docBuffer = await renderDocxTemplate(templatePath, data);
+        const docBuffer = await renderDocxTemplate(templateInput, data);
         await writeFile(join(outputDir, outputName), docBuffer);
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
@@ -221,8 +231,8 @@ router.post('/certificate', async (req, res) => {
 
 router.post('/certificate/preview', async (req, res) => {
     try {
-        const { data, templatePath, outputName } = await prepareVestryCertificate(req.body);
-        const docBuffer = await renderDocxTemplate(templatePath, data);
+        const { data, templateInput, outputName } = await prepareVestryCertificate(req.body);
+        const docBuffer = await renderDocxTemplate(templateInput, data);
         const pngBase64 = await convertDocxBufferToPreviewBase64(docBuffer, outputName);
         res.json({
             filename: outputName,
@@ -237,9 +247,9 @@ router.post('/certificate/preview', async (req, res) => {
 
 router.post('/certificate/save', async (req, res) => {
     try {
-        const { data, templatePath, outputName, outputDir } = await prepareVestryCertificate(req.body);
+        const { data, templateInput, outputName, outputDir } = await prepareVestryCertificate(req.body);
         await mkdir(outputDir, { recursive: true });
-        const docBuffer = await renderDocxTemplate(templatePath, data);
+        const docBuffer = await renderDocxTemplate(templateInput, data);
         await writeFile(join(outputDir, outputName), docBuffer);
         res.json({ filename: outputName });
     } catch (error) {
@@ -251,8 +261,8 @@ router.post('/certificate/save', async (req, res) => {
 
 router.post('/certificate/print', async (req, res) => {
     try {
-        const { data, templatePath } = await prepareVestryCertificate(req.body);
-        const docBuffer = await renderDocxTemplate(templatePath, data);
+        const { data, templateInput } = await prepareVestryCertificate(req.body);
+        const docBuffer = await renderDocxTemplate(templateInput, data);
         await printDocxBuffer(docBuffer);
         res.json({ success: true });
     } catch (error) {

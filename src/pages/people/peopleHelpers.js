@@ -80,6 +80,7 @@ export const defaultPersonForm = () => ({
     state: '',
     postalCode: '',
     category: 'parishioner',
+    isPledger: false,
     roles: [],
     tagsText: '',
     teams: {}

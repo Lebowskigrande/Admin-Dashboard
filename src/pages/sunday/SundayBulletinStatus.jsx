@@ -7,10 +7,6 @@ const SundayBulletinStatus = ({
     bulletinDoc,
     bulletin8Doc,
     insertDoc,
-    statusDrafts,
-    bulletin10Status,
-    bulletin8Status,
-    insertStatus,
     renderMilestoneInline,
     isMilestoneComplete,
     refreshDocPreviews,
@@ -31,10 +27,10 @@ const SundayBulletinStatus = ({
     <>
         <Card
             id="bulletin-10am"
-            className={`sunday-panel bulletin-card ${(statusDrafts.bulletin10 || bulletin10Status) === 'printed' ? 'panel-complete' : ''}`}
+            className={`sunday-panel bulletin-card ${isMilestoneComplete(bulletinMilestone, 'bulletins') ? 'panel-complete' : ''}`}
         >
-            {renderMilestoneInline('10am Bulletin', bulletinMilestone, 'bulletins-10am')}
-            {isMilestoneComplete(bulletinMilestone, 'bulletins-10am') && (
+            {renderMilestoneInline('10am Bulletin', bulletinMilestone, 'bulletins')}
+            {isMilestoneComplete(bulletinMilestone, 'bulletins') && (
                 <span className="check-badge panel-check" aria-hidden="true">&#10003;</span>
             )}
 
@@ -100,10 +96,10 @@ const SundayBulletinStatus = ({
         </Card>
         <Card
             id="bulletin-8am"
-            className={`sunday-panel bulletin-card ${(statusDrafts.bulletin8 || bulletin8Status) === 'printed' ? 'panel-complete' : ''}`}
+            className={`sunday-panel bulletin-card ${isMilestoneComplete(bulletinMilestone, 'bulletins') ? 'panel-complete' : ''}`}
         >
-            {renderMilestoneInline('8am Bulletin', bulletinMilestone, 'bulletins-8am')}
-            {isMilestoneComplete(bulletinMilestone, 'bulletins-8am') && (
+            {renderMilestoneInline('8am Bulletin', bulletinMilestone, 'bulletins')}
+            {isMilestoneComplete(bulletinMilestone, 'bulletins') && (
                 <span className="check-badge panel-check" aria-hidden="true">&#10003;</span>
             )}
 
@@ -157,7 +153,7 @@ const SundayBulletinStatus = ({
             </div>
         </Card>
         <Card
-            className={`sunday-panel insert-card ${(statusDrafts.insert || insertStatus) === 'stuffed' ? 'panel-complete' : ''}`}
+            className={`sunday-panel insert-card ${isMilestoneComplete(insertMilestone, insertMilestone?.key || 'insert') ? 'panel-complete' : ''}`}
         >
             {renderMilestoneInline('Insert', insertMilestone)}
             {isMilestoneComplete(insertMilestone, insertMilestone?.key || 'insert') && (

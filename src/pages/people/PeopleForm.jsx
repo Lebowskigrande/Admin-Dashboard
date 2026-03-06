@@ -117,6 +117,20 @@ const PeopleForm = ({
                     onChange={(event) => setFormData((prev) => ({ ...prev, tagsText: event.target.value }))}
                 />
             </div>
+            {idPrefix === 'edit' && (
+                <div className="form-group">
+                    <label htmlFor={`${idPrefix}-pledger`}>Pledger</label>
+                    <label className="role-option" htmlFor={`${idPrefix}-pledger`}>
+                        <input
+                            id={`${idPrefix}-pledger`}
+                            type="checkbox"
+                            checked={Boolean(formData.isPledger)}
+                            onChange={(event) => setFormData((prev) => ({ ...prev, isPledger: event.target.checked }))}
+                        />
+                        Is pledger
+                    </label>
+                </div>
+            )}
         </div>
         <div className="form-group">
             <label>Roles</label>

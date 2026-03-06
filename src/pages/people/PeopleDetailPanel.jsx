@@ -1,3 +1,4 @@
+import { FaCopy } from 'react-icons/fa';
 import { formatPhone, normalizePhoneDigits } from '../../utils/formatters';
 import { buildTeamRoleKeys, CATEGORY_LABELS, roleLabel } from './peopleHelpers';
 import PeopleForm from './PeopleForm';
@@ -67,7 +68,8 @@ const PeopleDetailPanel = ({
     onSaveEdit,
     onDelete,
     handleRoleToggle,
-    handleTeamChange
+    handleTeamChange,
+    onCopyValue
 }) => {
     if (panelMode === 'create') {
         const teamRoleKeys = buildTeamRoleKeys(createForm.roles, createForm.teams);
@@ -131,10 +133,9 @@ const PeopleDetailPanel = ({
                 <div className="panel-title-row">
                     <h2 className="panel-title">{selectedPerson.displayName}</h2>
                     {(() => {
-                        const envelopeTag = (selectedPerson.tags || []).find((tag) => /^env-\d+/i.test(tag));
-                        if (!envelopeTag) return null;
-                        const label = envelopeTag.replace(/^env-/i, '');
-                        return <span className="env-chip">{label}</span>;
+                        const label = String(selectedPerson.envelopeNumber || '').trim();
+                        if (!label) return null;
+                        return <span className={`env-chip${selectedPerson.isPledger ? ' env-chip--pledger' : ''}`}>{label}</span>;
                     })()}
                 </div>
                 <div className="panel-actions">
@@ -151,9 +152,19 @@ const PeopleDetailPanel = ({
                         </span>
                     ) : null}
                     {selectedPerson.email ? (
-                        <a className="panel-meta panel-link" href={`mailto:${selectedPerson.email}`}>
-                            {selectedPerson.email}
-                        </a>
+                        <span className="panel-meta people-copy-inline">
+                            <a className="panel-link" href={`mailto:${selectedPerson.email}`}>
+                                {selectedPerson.email}
+                            </a>
+                            <button
+                                type="button"
+                                className="people-copy-button"
+                                aria-label="Copy email"
+                                onClick={() => onCopyValue?.(selectedPerson.email, 'Email copied')}
+                            >
+                                <FaCopy />
+                            </button>
+                        </span>
                     ) : null}
                     {(() => {
                         const phoneParts = [selectedPerson.phonePrimary, selectedPerson.phoneAlternate].filter(Boolean);
@@ -164,10 +175,18 @@ const PeopleDetailPanel = ({
                                     const digits = normalizePhoneDigits(phone);
                                     const display = formatPhone(phone);
                                     return (
-                                        <span key={`${phone}-${index}`}>
+                                        <span className="people-copy-inline" key={`${phone}-${index}`}>
                                             <a className="panel-link" href={`tel:${digits || phone}`}>
                                                 {display}
                                             </a>
+                                            <button
+                                                type="button"
+                                                className="people-copy-button"
+                                                aria-label="Copy phone"
+                                                onClick={() => onCopyValue?.(display, 'Phone copied')}
+                                            >
+                                                <FaCopy />
+                                            </button>
                                             {index < phoneParts.length - 1 ? ' | ' : ''}
                                         </span>
                                     );
@@ -187,16 +206,26 @@ const PeopleDetailPanel = ({
                 const mapQuery = encodeURIComponent(addressLines.join(', '));
                 return (
                     <div className="detail-section">
-                        <a
-                            className="panel-meta panel-link address-link"
-                            href={`https://www.google.com/maps/search/?api=1&query=${mapQuery}`}
-                            target="_blank"
-                            rel="noreferrer"
-                        >
-                            {addressLines.map((line) => (
-                                <span className="address-line" key={line}>{line}</span>
-                            ))}
-                        </a>
+                        <span className="panel-meta people-copy-inline">
+                            <a
+                                className="panel-link address-link"
+                                href={`https://www.google.com/maps/search/?api=1&query=${mapQuery}`}
+                                target="_blank"
+                                rel="noreferrer"
+                            >
+                                {addressLines.map((line) => (
+                                    <span className="address-line" key={line}>{line}</span>
+                                ))}
+                            </a>
+                            <button
+                                type="button"
+                                className="people-copy-button"
+                                aria-label="Copy address"
+                                onClick={() => onCopyValue?.(addressLines.join(', '), 'Address copied')}
+                            >
+                                <FaCopy />
+                            </button>
+                        </span>
                     </div>
                 );
             })()}

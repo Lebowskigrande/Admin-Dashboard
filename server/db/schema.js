@@ -61,7 +61,9 @@ export const people = sqliteTable('people', {
     category: text('category'),
     roles: text('roles'),
     tags: text('tags'),
-    teams: text('teams')
+    teams: text('teams'),
+    envelopeNumber: text('envelope_number'),
+    isPledger: text('is_pledger')
 });
 
 export const buildings = sqliteTable('buildings', {

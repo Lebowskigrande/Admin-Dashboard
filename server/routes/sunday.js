@@ -1,13 +1,10 @@
 import express from 'express';
-import { access } from 'fs/promises';
 import { sqlite as db } from '../db.js';
 import { parseNotes, tableExists, tableHasColumn } from '../helpers/db-utils.js';
 import { findBulletinFile, findInsertFile } from '../helpers/file-utils.js';
 import {
     getBulletinStatus,
-    readDocxStatus,
     upsertBulletinStatus,
-    clearBulletinStatus,
     buildDocumentStatus
 } from '../services/bulletinService.js';
 import {
@@ -72,58 +69,52 @@ router.get('/sunday/documents', async (req, res) => {
         const bulletin8Path = await findBulletinFile(date, '8am');
         const insertPath = await findInsertFile(date);
 
-        let insertExists = false;
-        try {
-            await access(insertPath);
-            insertExists = true;
-        } catch {
-            insertExists = false;
-        }
-
         const bulletin10Stored = getBulletinStatus(date, 'bulletin10');
         const bulletin8Stored = getBulletinStatus(date, 'bulletin8');
         const insertStored = getBulletinStatus(date, 'insert');
 
-        const bulletin10Meta = bulletin10Path ? await readDocxStatus(bulletin10Path) : '';
-        const bulletin8Meta = bulletin8Path ? await readDocxStatus(bulletin8Path) : '';
+        const wantsBulletin10 = !doc || doc === 'bulletin10';
+        const wantsBulletin8 = !doc || doc === 'bulletin8';
+        const wantsInsert = !doc || doc === 'insert';
 
-        const bulletin10Status = bulletin10Meta || bulletin10Stored;
-        const bulletin8Status = bulletin8Meta || bulletin8Stored;
-
-        if (bulletin10Path && bulletin10Meta) {
-            upsertBulletinStatus(date, 'bulletin10', bulletin10Meta, 'metadata');
-        }
-        if (bulletin8Path && bulletin8Meta) {
-            upsertBulletinStatus(date, 'bulletin8', bulletin8Meta, 'metadata');
-        }
-        if (!bulletin10Path && bulletin10Stored) {
-            clearBulletinStatus(date, 'bulletin10');
-        }
-        if (!bulletin8Path && bulletin8Stored) {
-            clearBulletinStatus(date, 'bulletin8');
-        }
+        const bulletin10Status = bulletin10Stored;
+        const bulletin8Status = bulletin8Stored;
 
         let bulletin10 = null;
         let bulletin8 = null;
         let insert = null;
 
-        if (!doc || doc === 'bulletin10') {
-            bulletin10 = await buildDocumentStatus(bulletin10Path, { includePreview, statusOverride: bulletin10Status, forcePreview });
-        }
-        if (!doc || doc === 'bulletin8') {
-            bulletin8 = await buildDocumentStatus(bulletin8Path, { includePreview, statusOverride: bulletin8Status, forcePreview });
-        }
-        if (!doc || doc === 'insert') {
-            insert = await buildDocumentStatus(insertPath, { includePreview, statusOverride: insertStored, forcePreview });
-        }
+        const [bulletin10Result, bulletin8Result, insertResult] = await Promise.all([
+            wantsBulletin10
+                ? buildDocumentStatus(bulletin10Path, {
+                    includePreview,
+                    statusOverride: bulletin10Status,
+                    forcePreview
+                })
+                : Promise.resolve(null),
+            wantsBulletin8
+                ? buildDocumentStatus(bulletin8Path, {
+                    includePreview,
+                    statusOverride: bulletin8Status,
+                    forcePreview
+                })
+                : Promise.resolve(null),
+            wantsInsert
+                ? buildDocumentStatus(insertPath, {
+                    includePreview,
+                    statusOverride: insertStored,
+                    forcePreview
+                })
+                : Promise.resolve(null)
+        ]);
+
+        bulletin10 = bulletin10Result;
+        bulletin8 = bulletin8Result;
+        insert = insertResult;
 
         if (bulletin10?.exists && bulletin10Status) bulletin10.status = bulletin10Status;
         if (bulletin8?.exists && bulletin8Status) bulletin8.status = bulletin8Status;
         if (insert?.exists && insertStored) insert.status = insertStored;
-
-        if (!insertExists && insertStored) {
-            clearBulletinStatus(date, 'insert');
-        }
 
         res.json({ bulletin10, bulletin8, insert });
     } catch (error) {

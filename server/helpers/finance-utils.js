@@ -139,11 +139,18 @@ export const addChecksGridFromPdf = async (pdfDoc, checksDoc, options = {}) => {
         columns = 2,
         rows = 3,
         colGap = 12,
-        rowGap = 12
+        rowGap = 12,
+        envelopePageIndexes = [],
+        envelopeRotateClockwiseDegrees = 90
     } = options;
     if (!checksDoc) return;
     const pages = checksDoc.getPages();
     if (!pages.length) return;
+    const envelopePageSet = envelopePageIndexes instanceof Set
+        ? envelopePageIndexes
+        : new Set(Array.isArray(envelopePageIndexes) ? envelopePageIndexes : []);
+    const normalizedEnvelopeRotation = ((Number(envelopeRotateClockwiseDegrees) || 0) % 360 + 360) % 360;
+    const clockwiseToPdfRotation = (360 - normalizedEnvelopeRotation) % 360;
     const perPage = columns * rows;
     const cellWidth = (pageWidth - margin * 2 - colGap * (columns - 1)) / columns;
     const cellHeight = (pageHeight - margin * 2 - rowGap * (rows - 1)) / rows;
@@ -162,7 +169,12 @@ export const addChecksGridFromPdf = async (pdfDoc, checksDoc, options = {}) => {
             const baseDisplayWidth = baseIsRotated ? embedded.height : embedded.width;
             const baseDisplayHeight = baseIsRotated ? embedded.width : embedded.height;
             const isPortrait = baseDisplayHeight > baseDisplayWidth;
-            const rotation = (baseRotation + (isPortrait ? 180 : 0)) % 360;
+            const applyEnvelopeRotation = envelopePageSet.has(pageIndex);
+            const rotation = (
+                baseRotation
+                + (isPortrait ? 180 : 0)
+                + (applyEnvelopeRotation ? clockwiseToPdfRotation : 0)
+            ) % 360;
             const isRotated = rotation === 90 || rotation === 270;
             const displayWidth = isRotated ? embedded.height : embedded.width;
             const displayHeight = isRotated ? embedded.width : embedded.height;

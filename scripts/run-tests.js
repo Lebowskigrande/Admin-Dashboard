@@ -298,6 +298,28 @@ const tests = [
         }
     },
     {
+        name: 'Thread routing picks latest non-contribution message',
+        run: async () => {
+            const threadMessages = [
+                {
+                    id: 'm-old',
+                    internalDate: String(new Date('2026-02-13T09:00:00Z').getTime()),
+                    snippet: 'older',
+                    payload: { headers: [{ name: 'From', value: 'Vendor <billing@vendor.com>' }] }
+                },
+                {
+                    id: 'm-new',
+                    internalDate: String(new Date('2026-02-13T10:00:00Z').getTime()),
+                    snippet: 'newer',
+                    payload: { headers: [{ name: 'From', value: 'Vendor <billing@vendor.com>' }] }
+                }
+            ];
+
+            const selected = __TEST__.selectThreadMessageForRouting(threadMessages, { requireContribution: false });
+            assert.equal(selected?.id, 'm-new');
+        }
+    },
+    {
         name: 'Email header date preserves header calendar day for filename',
         run: async () => {
             const ts = __TEST__.parseEmailHeaderTimestamp('Fri, 14 Feb 2026 00:30:00 +0000');
@@ -410,6 +432,14 @@ const tests = [
         name: 'AP vendor extractor returns no match for unrelated text',
         run: async () => {
             const sample = 'This PDF has no invoice or sender identifiers';
+            const result = AP_VENDOR_TEST.extractVendorFromPdfText(sample);
+            assert.equal(result.vendor, '');
+        }
+    },
+    {
+        name: 'AP vendor extractor avoids Vertafore from generic subject-only token',
+        run: async () => {
+            const sample = 'Subject: Document delivery confirmation';
             const result = AP_VENDOR_TEST.extractVendorFromPdfText(sample);
             assert.equal(result.vendor, '');
         }

@@ -7,6 +7,7 @@ const VestryPacketBuilder = ({
     coveredMonth,
     requiredDocs,
     requiredUploaded,
+    excludedRequiredCount,
     optionalUploaded,
     packetItems,
     packetBusy,
@@ -35,7 +36,9 @@ const VestryPacketBuilder = ({
                     <h2>{`Next Vestry Packet${coveredMonth ? `: ${coveredMonth} Financials` : ''}`}</h2>
                     <p className="text-muted">Upload each document, reorder if needed, then build a single PDF packet.</p>
                     <div className="packet-summary">
-                        Required uploaded: {requiredUploaded}/{requiredDocs.length}. Optional uploaded: {optionalUploaded}.
+                        Required uploaded: {requiredUploaded}/{requiredDocs.length}.
+                        {excludedRequiredCount > 0 ? ` Excluded required docs: ${excludedRequiredCount}.` : ''}
+                        {' '}Optional uploaded: {optionalUploaded}.
                     </div>
                 </div>
                 <div className="packet-actions">
@@ -104,7 +107,8 @@ const VestryPacketBuilder = ({
                                 <span className="packet-label">{item.label}</span>
                             )}
                             <div className="packet-status">
-                                {item.required && <span className="packet-required">Required</span>}
+                                {item.required && !item.excluded && <span className="packet-required">Required</span>}
+                                {item.required && item.excluded && <span className="packet-excluded">Required (Excluded)</span>}
                                 <span className={hasPacketFile(item) ? 'status-pill ready' : 'status-pill missing'}>
                                     {item.uploading
                                         ? 'Uploading...'
@@ -127,6 +131,15 @@ const VestryPacketBuilder = ({
                                 event.target.value = '';
                             }}
                         />
+                        {item.required && (
+                            <button
+                                type="button"
+                                className="packet-toggle-btn"
+                                onClick={() => updatePacketItem(item.id, { excluded: !item.excluded })}
+                            >
+                                {item.excluded ? 'Include as Required' : 'Exclude This Build'}
+                            </button>
+                        )}
                         {item.custom && (
                             <button className="btn-link" onClick={() => removeCustomDoc(item.id)}>
                                 <FaTrash />

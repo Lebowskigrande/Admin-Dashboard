@@ -31,10 +31,9 @@ const PeopleListPanel = ({
                         <div className="people-list-row">
                             <div className="people-list-cell people-list-env">
                                 {(() => {
-                                    const envelopeTag = (person.tags || []).find((tag) => /^env-\d+/i.test(tag));
-                                    if (!envelopeTag) return null;
-                                    const label = envelopeTag.replace(/^env-/i, '');
-                                    return <span className="env-chip env-chip--list">{label}</span>;
+                                    const label = String(person.envelopeNumber || '').trim();
+                                    if (!label) return null;
+                                    return <span className={`env-chip env-chip--list${person.isPledger ? ' env-chip--pledger' : ''}`}>{label}</span>;
                                 })()}
                             </div>
                             <div className="people-list-cell people-list-name">

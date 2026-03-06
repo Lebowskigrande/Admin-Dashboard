@@ -23,7 +23,8 @@ export const usePeopleData = () => {
         category: '',
         role: '',
         tag: '',
-        team: ''
+        team: '',
+        pledger: ''
     });
     const [editForm, setEditForm] = useState(defaultPersonForm());
     const [createForm, setCreateForm] = useState(defaultPersonForm());
@@ -135,6 +136,8 @@ export const usePeopleData = () => {
                 const haystack = [
                     person.displayName,
                     person.email,
+                    person.envelopeNumber,
+                    person.isPledger ? 'pledger pledged pledge' : 'non-pledger npo',
                     ...(person.tags || [])
                 ].join(' ').toLowerCase();
                 if (!haystack.includes(normalizedSearch)) return false;
@@ -142,6 +145,8 @@ export const usePeopleData = () => {
             if (filters.category && person.category !== filters.category) return false;
             if (filters.role && !(person.roles || []).includes(filters.role)) return false;
             if (filters.tag && !(person.tags || []).includes(filters.tag)) return false;
+            if (filters.pledger === 'yes' && !person.isPledger) return false;
+            if (filters.pledger === 'no' && person.isPledger) return false;
             if (filters.team && !hasTeamFilter) return false;
             if (filters.team && hasTeamFilter) {
                 const teamMatch = Object.values(person.teams || {}).some((teamList) => {
@@ -159,7 +164,7 @@ export const usePeopleData = () => {
     };
 
     const resetFilters = () => {
-        setFilters({ search: '', category: '', role: '', tag: '', team: '' });
+        setFilters({ search: '', category: '', role: '', tag: '', team: '', pledger: '' });
     };
 
     const beginCreate = () => {
@@ -180,6 +185,7 @@ export const usePeopleData = () => {
             state: person.state || '',
             postalCode: person.postalCode || '',
             category: person.category || 'parishioner',
+            isPledger: Boolean(person.isPledger),
             roles: Array.isArray(person.roles) ? [...person.roles] : [],
             tagsText: (person.tags || []).join(', '),
             teams: { ...(person.teams || {}) }
@@ -226,6 +232,7 @@ export const usePeopleData = () => {
             state: editForm.state,
             postalCode: editForm.postalCode,
             category: editForm.category,
+            isPledger: Boolean(editForm.isPledger),
             roles: editForm.roles || [],
             tags: parseCommaList(editForm.tagsText),
             teams: editForm.teams || {}

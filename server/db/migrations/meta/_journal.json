@@ -114,6 +114,12 @@
       "when": 1769055611000,
       "tag": "0018_sharefile_jobs",
       "breakpoints": false
+    },
+    {
+      "idx": 19,
+      "when": 1771588800000,
+      "tag": "0019_cleanup_legacy_sunday_bulletin_lists",
+      "breakpoints": false
     }
   ]
 }

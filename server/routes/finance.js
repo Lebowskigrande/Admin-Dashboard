@@ -1965,14 +1965,33 @@ router.post('/routing-log/reveal', async (req, res) => {
 
         const output = safeParseJson(row?.output_json || eventRow?.output_json || '{}');
         const createdAt = String(row?.created_at || eventRow?.created_at || '').trim();
-        const files = await normalizeJobFilesWithCurrentPaths(output, createdAt, new Map());
+        const dirCache = new Map();
+        const files = await normalizeJobFilesWithCurrentPaths(output, createdAt, dirCache);
         const target = files.find((file) => file.fileIndex === fileIndex);
-
-        if (!target?.path) {
+        const targetDir = String(output?.targetDir || '').trim();
+        let resolvedPath = normalizeWindowsPath(target?.path || '');
+        if (!resolvedPath && target?.name && targetDir) {
+            const byName = join(targetDir, target.name);
+            if (await pathExists(byName)) {
+                resolvedPath = normalizeWindowsPath(byName);
+            }
+        }
+        if (!resolvedPath && target?.name && targetDir) {
+            const renamedPath = await resolveRenamedFilePath({
+                targetDir,
+                originalName: target.name,
+                createdAt,
+                dirCache
+            });
+            if (renamedPath) {
+                resolvedPath = normalizeWindowsPath(renamedPath);
+            }
+        }
+        if (!resolvedPath) {
             return res.status(404).json({ ok: false, error: 'File path unavailable for this entry' });
         }
 
-        const normalizedPath = normalizeWindowsPath(target.path);
+        const normalizedPath = resolvedPath;
         try {
             const result = await revealInExplorer(normalizedPath);
             return res.json({ ok: true, warning: result.warning || '' });

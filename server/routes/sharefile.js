@@ -264,6 +264,18 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
 
     try {
         const tokenCandidates = getExtensionGmailTokenCandidates();
+        if (!normalizedMessageId) {
+            const message = 'Unable to resolve a specific Gmail messageId for routing';
+            recordSharefileRoutingEvent({
+                messageId: null,
+                threadId: effectiveThreadId,
+                codeType: extraMeta.codeType,
+                codeValue: extraMeta.codeValue,
+                status: 'failure',
+                errorText: message
+            });
+            return res.status(400).json({ error: message });
+        }
         sharefileDebugLog('route-email request', {
             providedMessageId: gmail.messageId || null,
             normalizedMessageId,
@@ -301,6 +313,8 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
                     threadId: effectiveThreadId,
                     extraMeta,
                     archive: false,
+                    messageOnly: true,
+                    allowIdempotent: false,
                     tokensOverride: candidate.tokens
                 });
                 sharefileDebugLog('route-email candidate success', {

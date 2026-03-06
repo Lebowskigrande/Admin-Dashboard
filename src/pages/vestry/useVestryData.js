@@ -12,12 +12,20 @@ import {
     normalizeChecklistPhase
 } from './vestryHelpers';
 
+const buildFundADefaultText = () => (
+    'This certificate confirms that on the above date the St. Edmund’s Vestry approved the transfer of $1,144.00 from SENS’ Fund A to St. Edmund’s Church Operating Fund. This amount represents 20% of the Associate Rector’s salary for the month of [[MONTH YEAR]] as detailed in the attached copy of the St. Edmund’s—SENS Joint Ledger.'
+);
+
 export const useVestryData = () => {
     const { events } = useEvents();
     const [vestryMembers, setVestryMembers] = useState([]);
     const [checklistItems, setChecklistItems] = useState([]);
     const [checklistProgress, setChecklistProgress] = useState(getVestryDetails().checklistProgress || {});
-    const [packetItems, setPacketItems] = useState(BASE_PACKET_DOCS.map((doc) => ({ ...doc, file: null })));
+    const [packetItems, setPacketItems] = useState(BASE_PACKET_DOCS.map((doc) => ({
+        ...doc,
+        excluded: false,
+        file: null
+    })));
     const [packetBusy, setPacketBusy] = useState(false);
     const [packetError, setPacketError] = useState('');
     const [packetUrl, setPacketUrl] = useState('');
@@ -43,6 +51,7 @@ export const useVestryData = () => {
             fundA: {
                 monthlyAmount: '$1,144.00',
                 interestAmount: '',
+                bodyText: buildFundADefaultText(),
                 ...defaults.fundA
             },
             fundB: {
@@ -63,9 +72,11 @@ export const useVestryData = () => {
                 const response = await fetch(`${API_URL}/people`);
                 if (!response.ok) throw new Error('Failed to load people');
                 const data = await response.json();
+                const hasVestryMemberTag = (person) =>
+                    (Array.isArray(person?.tags) ? person.tags : [])
+                        .some((tag) => String(tag || '').trim().toLowerCase() === 'vestry member');
                 const members = (Array.isArray(data) ? data : [])
-                    .filter((person) => person.category === 'volunteer')
-                    .filter((person) => (person.tags || []).some((tag) => tag.toLowerCase() === 'vestry member'));
+                    .filter((person) => hasVestryMemberTag(person));
                 setVestryMembers(members);
             } catch (error) {
                 console.error(error);
@@ -248,12 +259,14 @@ export const useVestryData = () => {
             const customItems = prev.filter((item) => item.custom);
             const baseItems = BASE_PACKET_DOCS.map((doc) => ({
                 ...doc,
+                excluded: prevById.get(doc.id)?.excluded || false,
                 file: prevById.get(doc.id)?.file || null,
                 cachedFile: prevById.get(doc.id)?.cachedFile || packetCache[doc.id] || null,
                 uploading: prevById.get(doc.id)?.uploading || false
             }));
             const checklistItemsMapped = packetChecklistDocs.map((doc) => ({
                 ...doc,
+                excluded: prevById.get(doc.id)?.excluded || false,
                 file: prevById.get(doc.id)?.file || null,
                 cachedFile: prevById.get(doc.id)?.cachedFile || packetCache[doc.id] || null,
                 uploading: prevById.get(doc.id)?.uploading || false
@@ -269,6 +282,7 @@ export const useVestryData = () => {
                     id,
                     label: packetCache[id]?.originalName || 'Additional Document',
                     required: false,
+                    excluded: false,
                     file: null,
                     cachedFile: packetCache[id] || null,
                     custom: true
@@ -338,7 +352,8 @@ export const useVestryData = () => {
         amounts: {
             monthly: fundKey !== 'fidelity' ? certificateAmounts[fundKey].monthlyAmount || '' : '',
             interest: certificateAmounts[fundKey].interestAmount || ''
-        }
+        },
+        fundAText: fundKey === 'fundA' ? String(certificateAmounts.fundA.bodyText || '').trim() : ''
     });
 
     const closePreviewModal = () => {
@@ -478,7 +493,15 @@ export const useVestryData = () => {
     const addCustomDoc = () => {
         setPacketItems((prev) => ([
             ...prev,
-            { id: `custom-${Date.now()}`, label: 'Additional Document', required: false, file: null, cachedFile: null, custom: true }
+            {
+                id: `custom-${Date.now()}`,
+                label: 'Additional Document',
+                required: false,
+                excluded: false,
+                file: null,
+                cachedFile: null,
+                custom: true
+            }
         ]));
     };
 
@@ -549,7 +572,7 @@ export const useVestryData = () => {
         setPacketError('');
         setPacketBusy(true);
         try {
-            const missing = packetItems.filter((item) => item.required && !hasPacketFile(item));
+            const missing = packetItems.filter((item) => item.required && !item.excluded && !hasPacketFile(item));
             if (missing.length > 0) {
                 setPacketError('Upload all required documents before building the packet.');
                 setPacketBusy(false);
@@ -562,7 +585,15 @@ export const useVestryData = () => {
                     formData.append(item.id, item.file);
                 }
             });
-            formData.append('order', JSON.stringify(packetItems.map(({ id, label, required }) => ({ id, label, required }))));
+            formData.append(
+                'order',
+                JSON.stringify(packetItems.map(({ id, label, required, excluded }) => ({
+                    id,
+                    label,
+                    required,
+                    excluded: Boolean(excluded)
+                })))
+            );
             formData.append(
                 'cached',
                 JSON.stringify(
@@ -594,8 +625,9 @@ export const useVestryData = () => {
     };
 
     const completedCount = checklistItems.filter((item) => checklistProgress[item.id]).length;
-    const requiredDocs = packetItems.filter((item) => item.required);
+    const requiredDocs = packetItems.filter((item) => item.required && !item.excluded);
     const requiredUploaded = requiredDocs.filter((item) => hasPacketFile(item)).length;
+    const excludedRequiredCount = packetItems.filter((item) => item.required && item.excluded).length;
     const optionalUploaded = packetItems.filter((item) => !item.required && hasPacketFile(item)).length;
     const hasQuarterlyInterest = certificateGroups.quarterly.length > 0;
 
@@ -628,6 +660,7 @@ export const useVestryData = () => {
         mailtoBody,
         requiredDocs,
         requiredUploaded,
+        excludedRequiredCount,
         optionalUploaded,
         completedCount,
         hasQuarterlyInterest,

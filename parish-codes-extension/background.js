@@ -315,7 +315,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   };
   let result = await postRouteEmail(payload);
 
-  if (!result?.ok && /Missing messageId/i.test(String(result?.error || ""))) {
+  if (!result?.ok && /Missing messageId|Unable to resolve a specific Gmail messageId/i.test(String(result?.error || ""))) {
     const refreshedContext = await getGmailContext(tab.id, info.frameId);
     if (!refreshedContext?.href && fallbackHref) {
       refreshedContext.href = fallbackHref;
@@ -330,7 +330,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
   const toastText = result?.ok
     ? "Email routed successfully."
-    : "Email routing failed. Check console.";
+    : formatRouteFailureMessage(result);
 
   try {
     await showToastInTab(tab.id, toastText, Boolean(result?.ok));
@@ -438,6 +438,45 @@ async function postRouteEmail(payload) {
     console.error("[Parish Codes] route-email POST error:", err);
     return { ok: false, error: String(err?.message || err) };
   }
+}
+
+function formatRouteFailureMessage(result) {
+  const status = Number(result?.status || 0) || 0;
+  const error = String(result?.error || "");
+
+  if (error === "missing_token") {
+    return "Email routing failed: extension token is missing. Set Bearer token in extension options.";
+  }
+
+  if (status === 401 || /Invalid or missing token/i.test(error)) {
+    return "Email routing failed: invalid Bearer token (401).";
+  }
+
+  if (/Unable to resolve a specific Gmail messageId/i.test(error)) {
+    return "Email routing failed: could not read Gmail message id. Open the message and try again.";
+  }
+
+  if (/No Gmail tokens configured for ShareFile extension/i.test(error)) {
+    return "Email routing failed: no ShareFile Gmail account is connected in Settings.";
+  }
+
+  if (/No matching Gmail account found/i.test(error)) {
+    return "Email routing failed: connected Gmail account does not match this message.";
+  }
+
+  if (status >= 500) {
+    return "Email routing failed: server error. Check API logs.";
+  }
+
+  if (status >= 400) {
+    return `Email routing failed (${status}).`;
+  }
+
+  if (error) {
+    return `Email routing failed: ${error}`;
+  }
+
+  return "Email routing failed. Check extension console.";
 }
 
 async function resolveMessageId(threadId, token) {

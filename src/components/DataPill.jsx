@@ -17,10 +17,14 @@ const DataPill = ({
     label,
     showType = true,
     onClick,
-    actions = []
+    actions = [],
+    className = ''
 }) => {
     const [menu, setMenu] = useState(null);
-    const pillClass = useMemo(() => `data-pill data-pill--${type}`, [type]);
+    const pillClass = useMemo(
+        () => `data-pill data-pill--${type}${className ? ` ${className}` : ''}`,
+        [type, className]
+    );
     const fallbackLabel = showType ? buildLabel(type, value, role) : String(value || '');
     const displayLabel = label || fallbackLabel;
     const resolvedTooltip = tooltip || displayLabel || fallbackLabel;

@@ -122,7 +122,7 @@ const SundayRosterPanel = ({
                                                         className="person-menu-item"
                                                         onClick={() => togglePersonSelection(service.time, role.key, person.id, isMulti)}
                                                     >
-                                                        <span className={`person-chip person-chip-${category} ${isSelected ? 'chip-selected' : ''}`}>
+                                                        <span className={`person-chip person-chip-${category} ${person.isPledger ? 'person-chip-pledger' : ''} ${isSelected ? 'chip-selected' : ''}`}>
                                                             {person.displayName}
                                                         </span>
                                                     </button>
@@ -140,7 +140,7 @@ const SundayRosterPanel = ({
                                             className={`person-chip-wrapper ${openTooltipKey === `${service.time}-${role.key}-${person.id}` ? 'tooltip-open' : ''}`}
                                             onClick={(event) => onTooltipToggle(event, `${service.time}-${role.key}-${person.id}`)}
                                         >
-                                            <span className={`person-chip person-chip-${person.category || 'volunteer'}`}>{person.displayName}</span>
+                                            <span className={`person-chip person-chip-${person.category || 'volunteer'} ${person.isPledger ? 'person-chip-pledger' : ''}`}>{person.displayName}</span>
                                             <span className={`person-tooltip ${openTooltipKey === `${service.time}-${role.key}-${person.id}` ? 'open' : ''}`}>
                                                 {renderTooltipCard(person)}
                                             </span>

@@ -530,6 +530,16 @@
     padding: 0.05rem 0.4rem;
 }
 
+.packet-excluded {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #4b5563;
+    background: #f3f4f6;
+    border: 1px solid #d1d5db;
+    border-radius: 999px;
+    padding: 0.05rem 0.4rem;
+}
+
 .packet-status {
     display: flex;
     gap: 0.3rem;
@@ -585,6 +595,16 @@
     background: none;
     color: #dc2626;
     font-size: 0.95rem;
+    cursor: pointer;
+}
+
+.packet-toggle-btn {
+    border: 1px solid #d1d5db;
+    background: #fff;
+    color: #374151;
+    font-size: 0.72rem;
+    border-radius: 8px;
+    padding: 0.24rem 0.5rem;
     cursor: pointer;
 }
 

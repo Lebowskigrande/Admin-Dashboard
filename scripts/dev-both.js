@@ -59,6 +59,30 @@ else { ($conns | Select-Object -ExpandProperty OwningProcess) | ConvertTo-Json -
             .map((value) => Number(value))
             .filter((value) => Number.isFinite(value) && value > 0);
     } catch {
+        // Fall through to netstat fallback when CIM-based query is blocked.
+    }
+
+    try {
+        const { stdout } = await execFileAsync('cmd.exe', ['/c', 'netstat', '-ano', '-p', 'tcp'], {
+            windowsHide: true
+        });
+        const lines = String(stdout || '').split(/\r?\n/);
+        const needle = `:${port}`;
+        const pids = new Set();
+        lines.forEach((line) => {
+            const text = line.trim();
+            if (!text) return;
+            if (!text.toUpperCase().includes('LISTENING')) return;
+            if (!text.includes(needle)) return;
+            const parts = text.split(/\s+/);
+            const pidRaw = parts[parts.length - 1];
+            const pid = Number(pidRaw);
+            if (Number.isFinite(pid) && pid > 0) {
+                pids.add(pid);
+            }
+        });
+        return Array.from(pids);
+    } catch {
         return [];
     }
 };
