@@ -3,6 +3,17 @@
   "name": "Parish Codes (Budget + Envelope)",
   "version": "3.0.0",
   "description": "Gmail context menus for budget codes and envelope numbers. Inserts into compose and posts {messageId/threadId, code} to dashboard server.",
+  "action": {
+    "default_title": "Open AP/AR Router"
+  },
+  "commands": {
+    "open-routing-modal": {
+      "suggested_key": {
+        "default": "Alt+Shift+R"
+      },
+      "description": "Open AP/AR routing modal"
+    }
+  },
   "permissions": ["contextMenus", "activeTab", "scripting", "storage"],
   "host_permissions": [
     "https://mail.google.com/*",

@@ -259,8 +259,31 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
         codeValue: payload.codeValue,
         routeKind: payload.routeKind,
         designation: payload.designation,
+        vendor: payload.vendor,
         clientTs: payload.client?.ts || ''
     };
+    const normalizedRouteKind = String(extraMeta.routeKind || '').trim().toUpperCase();
+    const normalizedCodeValue = String(extraMeta.codeValue || '').trim();
+    const normalizedDesignation = String(extraMeta.designation || '').trim();
+    const normalizedVendor = String(extraMeta.vendor || '').trim();
+
+    if (!['BILL', 'DB', 'CONTRIBUTION'].includes(normalizedRouteKind)) {
+        return res.status(400).json({ error: 'Unsupported routeKind' });
+    }
+    if (normalizedRouteKind === 'CONTRIBUTION') {
+        if (!normalizedCodeValue && !normalizedDesignation) {
+            return res.status(400).json({ error: 'Contribution routing requires envelope number or designation' });
+        }
+        extraMeta.codeType = 'envelope';
+    } else {
+        if (!normalizedCodeValue) {
+            return res.status(400).json({ error: 'AP routing requires a budget code' });
+        }
+        extraMeta.codeType = 'budget';
+    }
+    extraMeta.codeValue = normalizedCodeValue;
+    extraMeta.designation = normalizedDesignation;
+    extraMeta.vendor = normalizedVendor;
 
     try {
         const tokenCandidates = getExtensionGmailTokenCandidates();
@@ -469,7 +492,7 @@ const loadEnvelopeNumbers = () => {
     return entries;
 };
 
-router.get('/api/sharefile/budget-codes', requireSharefileAuth, (_req, res) => {
+router.get('/api/sharefile/budget-codes', (_req, res) => {
     try {
         const entries = loadBudgetCodes();
         res.json({ ok: true, entries });
@@ -479,7 +502,7 @@ router.get('/api/sharefile/budget-codes', requireSharefileAuth, (_req, res) => {
     }
 });
 
-router.get('/api/sharefile/envelope-numbers', requireSharefileAuth, (_req, res) => {
+router.get('/api/sharefile/envelope-numbers', (_req, res) => {
     try {
         const entries = loadEnvelopeNumbers();
         res.json({ ok: true, entries });

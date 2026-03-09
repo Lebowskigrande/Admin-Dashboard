@@ -26,6 +26,7 @@ const RESOLVE_MESSAGE_URL = "http://localhost:3001/api/sharefile/resolve-message
 // Context menu visibility
 const MENU_CONTEXTS = ["editable", "selection", "page"];
 const GMAIL_URL_PATTERNS = ["https://mail.google.com/*"];
+const CONTEXT_MENU_OPEN_MODAL_ID = "open-routing-modal";
 
 // storage keys
 const STORAGE_KEYS = {
@@ -35,36 +36,37 @@ const STORAGE_KEYS = {
 /************* LIFECYCLE *************/
 chrome.runtime.onInstalled.addListener(() => rebuildMenus());
 chrome.runtime.onStartup.addListener(() => rebuildMenus());
+chrome.action.onClicked.addListener(async (tab) => {
+  const tabId = Number(tab?.id || 0);
+  if (!tabId) return;
+  if (!isGmailUrl(tab?.url || "")) {
+    await showToastInTab(tabId, "Open a Gmail message, then click the extension icon.", false);
+    return;
+  }
+  await openRoutingModalForTab(tabId);
+});
+chrome.commands?.onCommand?.addListener(async (command) => {
+  if (command !== "open-routing-modal") return;
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const active = tabs?.[0];
+  const tabId = Number(active?.id || 0);
+  if (!tabId) return;
+  if (!isGmailUrl(active?.url || "")) {
+    await showToastInTab(tabId, "Open a Gmail message, then run the routing shortcut.", false);
+    return;
+  }
+  await openRoutingModalForTab(tabId);
+});
 
 /************* MENUS *************/
 async function rebuildMenus() {
   chrome.contextMenus.removeAll(async () => {
     chrome.contextMenus.create({
-      id: "invoice-root",
-      title: "Invoice",
+      id: CONTEXT_MENU_OPEN_MODAL_ID,
+      title: "Open AP/AR Router",
       contexts: MENU_CONTEXTS,
       documentUrlPatterns: GMAIL_URL_PATTERNS
     });
-
-    chrome.contextMenus.create({
-      id: "direct-root",
-      title: "Direct Debit",
-      contexts: MENU_CONTEXTS,
-      documentUrlPatterns: GMAIL_URL_PATTERNS
-    });
-
-    chrome.contextMenus.create({
-      id: "contrib-root",
-      title: "Contribution",
-      contexts: MENU_CONTEXTS,
-      documentUrlPatterns: GMAIL_URL_PATTERNS
-    });
-
-    await Promise.allSettled([
-      buildBudgetMenu("invoice-root", "invoice"),
-      buildBudgetMenu("direct-root", "direct"),
-      buildEnvelopeMenu("contrib-root", "contrib")
-    ]);
   });
 }
 
@@ -277,66 +279,68 @@ async function buildEnvelopeMenu(rootId, prefix) {
 /************* CLICK HANDLER *************/
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
+  if (String(info.menuItemId || "") !== CONTEXT_MENU_OPEN_MODAL_ID) return;
+  await openRoutingModalForTab(tab.id);
+});
 
-  // Refresh / retry
-  if (String(info.menuItemId).endsWith("budget-refresh") || String(info.menuItemId).endsWith("budget-error")) {
-    await rebuildMenus();
-    return;
-  }
-  if (String(info.menuItemId).endsWith("env-refresh") || String(info.menuItemId).endsWith("env-error")) {
-    await rebuildMenus();
-    return;
-  }
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "submitRoutingModal") return;
 
-  const click = parseClickedCode(info.menuItemId);
-  if (!click) return;
+  (async () => {
+    try {
+      const tabId = Number(sender?.tab?.id || 0);
+      if (!tabId) {
+        sendResponse({ ok: false, error: "Could not resolve active Gmail tab." });
+        return;
+      }
 
-  // (A) Insert into Gmail compose if a field is active
-  const insertMsg = { type: "insertText", text: click.insertText ?? click.codeValue };
-  await sendMessageSafe(tab.id, insertMsg, info.frameId, { expectResponse: false });
+      const modalPayload = normalizeModalPayload(msg.payload || {});
+      if (!modalPayload.ok) {
+        await showToastInTab(tabId, modalPayload.error, false);
+        sendResponse({ ok: false, error: modalPayload.error });
+        return;
+      }
 
-  // (B) Get Gmail context (threadId/messageId/href)
-  const gmailContext = await getGmailContext(tab.id, info.frameId);
-  const fallbackHref = tab.url || info.pageUrl || "";
-  if (!gmailContext?.href && fallbackHref) {
-    gmailContext.href = fallbackHref;
-  }
+      const gmailContext = await getGmailContext(tabId, sender?.frameId);
+      const payload = {
+        action: "modal_submit",
+        codeType: modalPayload.codeType,
+        codeValue: modalPayload.codeValue,
+        routeKind: modalPayload.routeKind,
+        designation: modalPayload.designation,
+        vendor: modalPayload.vendor,
+        gmail: gmailContext,
+        page: { url: sender?.tab?.url || null },
+        client: { ts: new Date().toISOString() }
+      };
 
-  // (C) POST to server with bearer
-  const payload = {
-    action: "code_selected",
-    codeType: click.codeType,
-    codeValue: click.codeValue,
-    routeKind: click.routeKind,
-    designation: click.designation || "",
-    gmail: gmailContext,
-    page: { url: tab.url || info.pageUrl || null },
-    client: { ts: new Date().toISOString() }
-  };
-  let result = await postRouteEmail(payload);
+      let result = await postRouteEmail(payload);
+      if (!result?.ok && /Missing messageId|Unable to resolve a specific Gmail messageId/i.test(String(result?.error || ""))) {
+        const refreshedContext = await getGmailContext(tabId, sender?.frameId);
+        if (refreshedContext?.messageId || refreshedContext?.threadId) {
+          result = await postRouteEmail({
+            ...payload,
+            gmail: refreshedContext
+          });
+        }
+      }
 
-  if (!result?.ok && /Missing messageId|Unable to resolve a specific Gmail messageId/i.test(String(result?.error || ""))) {
-    const refreshedContext = await getGmailContext(tab.id, info.frameId);
-    if (!refreshedContext?.href && fallbackHref) {
-      refreshedContext.href = fallbackHref;
+      const toastText = result?.ok
+        ? "Email routed successfully."
+        : formatRouteFailureMessage(result);
+      await showToastInTab(tabId, toastText, Boolean(result?.ok));
+      sendResponse(result?.ok ? { ok: true } : { ok: false, error: toastText });
+    } catch (error) {
+      const text = String(error?.message || error || "Routing failed");
+      const tabId = Number(sender?.tab?.id || 0);
+      if (tabId) {
+        await showToastInTab(tabId, text, false);
+      }
+      sendResponse({ ok: false, error: text });
     }
-    if (refreshedContext?.messageId || refreshedContext?.threadId) {
-      result = await postRouteEmail({
-        ...payload,
-        gmail: refreshedContext
-      });
-    }
-  }
+  })();
 
-  const toastText = result?.ok
-    ? "Email routed successfully."
-    : formatRouteFailureMessage(result);
-
-  try {
-    await showToastInTab(tab.id, toastText, Boolean(result?.ok));
-  } catch {
-    // ignore toast failures
-  }
+  return true;
 });
 
 function parseClickedCode(menuItemId) {
@@ -374,6 +378,75 @@ async function getGmailContext(tabId, frameId) {
   await ensureContentScriptInjected(tabId);
   result = await sendMessageSafe(tabId, { type: "getGmailContext" }, frameId, { expectResponse: true });
   return result || { ok: false };
+}
+
+function isGmailUrl(value) {
+  return /^https:\/\/mail\.google\.com\//i.test(String(value || ""));
+}
+
+async function openRoutingModalForTab(tabId) {
+  await ensureContentScriptInjected(tabId);
+
+  let budgetEntries = [];
+  let envelopeEntries = [];
+  try {
+    [budgetEntries, envelopeEntries] = await Promise.all([
+      loadBudgetMenuEntries(),
+      loadEnvelopeData()
+    ]);
+  } catch (error) {
+    await showToastInTab(tabId, `Unable to load routing lists: ${String(error?.message || error)}`, false);
+    return;
+  }
+
+  const opened = await sendMessageSafe(
+    tabId,
+    {
+      type: "openRoutingModal",
+      payload: {
+        budgetEntries,
+        envelopeEntries
+      }
+    },
+    undefined,
+    { expectResponse: true }
+  );
+
+  if (!opened?.ok) {
+    await showToastInTab(tabId, "Could not open routing modal in this Gmail tab.", false);
+  }
+}
+
+function normalizeModalPayload(payload) {
+  const routeKind = String(payload?.routeKind || "").trim().toUpperCase();
+  const codeValue = String(payload?.codeValue || "").trim();
+  const designation = String(payload?.designation || "").trim();
+  const vendor = String(payload?.vendor || "").trim();
+  const normalizedRouteKind = routeKind === "DB"
+    ? "DB"
+    : routeKind === "CONTRIBUTION"
+      ? "CONTRIBUTION"
+      : "BILL";
+  const codeType = normalizedRouteKind === "CONTRIBUTION" ? "envelope" : "budget";
+
+  if (!codeValue) {
+    return { ok: false, error: normalizedRouteKind === "CONTRIBUTION" ? "Envelope is required." : "Budget code is required." };
+  }
+  if (normalizedRouteKind === "CONTRIBUTION" && !designation) {
+    return { ok: false, error: "Designation is required for AR." };
+  }
+  if (normalizedRouteKind !== "CONTRIBUTION" && !vendor) {
+    return { ok: false, error: "Vendor is required for AP." };
+  }
+
+  return {
+    ok: true,
+    routeKind: normalizedRouteKind,
+    codeType,
+    codeValue,
+    designation: normalizedRouteKind === "CONTRIBUTION" ? designation : "",
+    vendor: normalizedRouteKind === "CONTRIBUTION" ? "" : vendor
+  };
 }
 
 /************* SERVER CALLS *************/

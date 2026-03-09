@@ -4,6 +4,7 @@ export const ROUTE_MANIFEST = [
     { key: 'calendar', path: '/calendar', routePath: 'calendar', label: 'Events Calendar', icon: 'calendar', showInNav: true },
     { key: 'liturgical', path: '/liturgical-schedule', routePath: 'liturgical-schedule', label: 'Liturgical Schedule', icon: 'clipboard', showInNav: true },
     { key: 'finance', path: '/finance', routePath: 'finance', label: 'Finance', icon: 'money', showInNav: true },
+    { key: 'codeLookup', path: '/codes', routePath: 'codes', label: 'Code Lookup', icon: 'list', showInNav: true },
     { key: 'vestry', path: '/vestry', routePath: 'vestry', label: 'Vestry', icon: 'church', showInNav: true },
     { key: 'buildings', path: '/buildings', routePath: 'buildings', label: 'Buildings & Grounds', icon: 'building', showInNav: true },
     { key: 'people', path: '/people', routePath: 'people', label: 'People', icon: 'users', showInNav: true },

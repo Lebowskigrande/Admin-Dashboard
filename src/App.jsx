@@ -10,6 +10,7 @@ const PAGE_COMPONENTS = {
   calendar: lazy(() => import('./pages/Calendar.jsx')),
   liturgical: lazy(() => import('./pages/LiturgicalSchedule.jsx')),
   finance: lazy(() => import('./pages/Finance.jsx')),
+  codeLookup: lazy(() => import('./pages/CodeLookup.jsx')),
   vestry: lazy(() => import('./pages/Vestry.jsx')),
   buildings: lazy(() => import('./pages/Buildings.jsx')),
   people: lazy(() => import('./pages/People.jsx')),

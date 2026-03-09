@@ -2364,7 +2364,10 @@ export const routeSharefileMessage = async ({
             canonicalSync.lastError = String(result?.reason || '').trim();
         };
         const contextVendorFallback = contextVendorMeta.vendor || '';
-        let apVendor = '';
+        const preferredVendor = isContributionRoute
+            ? ''
+            : sanitizeApVendorToken(extraMeta?.vendor || '');
+        let apVendor = preferredVendor;
         if (useThreadPdfAttachments) {
             let index = 0;
             for (const source of threadPdfAttachments) {
