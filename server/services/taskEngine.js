@@ -101,6 +101,12 @@ const ensureProgressiveTemplateModes = () => {
     if (!tableHasColumn('recurring_task_templates', 'step_key')) {
         db.exec("ALTER TABLE recurring_task_templates ADD COLUMN step_key TEXT DEFAULT NULL");
     }
+    if (!tableHasColumn('recurring_task_templates', 'anchor_monthdays')) {
+        db.exec("ALTER TABLE recurring_task_templates ADD COLUMN anchor_monthdays TEXT DEFAULT NULL");
+    }
+    if (!tableHasColumn('recurring_task_templates', 'schedule_rule')) {
+        db.exec("ALTER TABLE recurring_task_templates ADD COLUMN schedule_rule TEXT DEFAULT NULL");
+    }
 };
 
 const migrateTaskListsToProgressive = () => {
@@ -216,6 +222,67 @@ const getNextWeekdayDate = (baseDate, weekday) => {
 const getLastDayOfMonthKey = (year, monthIndex) => {
     const lastDay = new Date(year, monthIndex + 1, 0);
     return lastDay.toISOString().slice(0, 10);
+};
+
+const parseMonthdays = (value, fallback = []) => {
+    if (!value) return fallback;
+    const monthdays = String(value)
+        .split(',')
+        .map((part) => Number.parseInt(part.trim(), 10))
+        .filter((part) => Number.isInteger(part) && part >= 1 && part <= 31);
+    return monthdays.length ? monthdays : fallback;
+};
+
+const getStrictPreviousMonday = (dateValue) => {
+    const date = dateValue instanceof Date ? new Date(dateValue) : new Date(dateValue);
+    if (Number.isNaN(date.getTime())) return null;
+    date.setHours(0, 0, 0, 0);
+    const weekday = date.getDay();
+    const delta = weekday === 1 ? 7 : (weekday + 6) % 7;
+    date.setDate(date.getDate() - delta);
+    return date;
+};
+
+const getTimesheetTargetPeriod = (templates, now = new Date()) => {
+    const configTemplate = Array.isArray(templates) ? templates.find((template) => template) : null;
+    const anchorMonthdays = parseMonthdays(configTemplate?.anchor_monthdays, [10, 25]);
+    const scheduleRule = String(configTemplate?.schedule_rule || 'friday_before_monday_before_anchor').trim().toLowerCase();
+    const today = now instanceof Date ? new Date(now) : new Date(now);
+    if (Number.isNaN(today.getTime())) return null;
+    today.setHours(0, 0, 0, 0);
+
+    const candidates = [];
+    for (let monthOffset = 0; monthOffset <= 2; monthOffset += 1) {
+        const cursor = new Date(today.getFullYear(), today.getMonth() + monthOffset, 1);
+        anchorMonthdays.forEach((monthday) => {
+            const anchorDate = new Date(cursor.getFullYear(), cursor.getMonth(), monthday);
+            if (anchorDate.getMonth() !== cursor.getMonth()) return;
+            anchorDate.setHours(0, 0, 0, 0);
+            candidates.push(anchorDate);
+        });
+    }
+
+    const periodEnd = candidates
+        .sort((a, b) => a.getTime() - b.getTime())
+        .find((candidate) => candidate.getTime() >= today.getTime());
+
+    if (!periodEnd) return null;
+
+    let dueDate = new Date(periodEnd);
+    if (scheduleRule === 'friday_before_monday_before_anchor') {
+        const mondayBeforeAnchor = getStrictPreviousMonday(periodEnd);
+        dueDate = mondayBeforeAnchor ? new Date(mondayBeforeAnchor) : dueDate;
+        dueDate.setDate(dueDate.getDate() - 3);
+    }
+
+    const periodMonthKey = toMonthKey(periodEnd);
+    const periodHalf = periodEnd.getDate() <= 15 ? 'a' : 'b';
+
+    return {
+        originId: `timesheets-${periodMonthKey}-${periodHalf}`,
+        periodEndKey: toDateKey(periodEnd),
+        dueAt: toDateKey(dueDate)
+    };
 };
 
 export const createTaskInstance = (payload) => {
@@ -512,20 +579,17 @@ const buildOperationsSeedPlan = ({ now = new Date(), rehydrate = false } = {}) =
         { key: 'fri', day: 5 }
     ];
 
-    const dayOfMonth = now.getDate();
-    const half = dayOfMonth <= 15 ? 'a' : 'b';
     const monthKey = toMonthKey(now);
     const yearKey = toYearKey(now);
-    const timesheetsOriginId = `timesheets-${monthKey}-${half}`;
     const monthlyOriginId = `monthly-${monthKey}`;
     const yearlyOriginId = `yearly-${yearKey}`;
     const monthStartKey = `${monthKey}-01`;
-    const timesheetDue = half === 'a'
-        ? `${monthKey}-15`
-        : getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
     const monthEndKey = getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
     const yearStartKey = `${yearKey}-01-01`;
     const yearEndKey = `${yearKey}-12-31`;
+    const timesheetPeriod = getTimesheetTargetPeriod(timesheetTemplates, now);
+    const timesheetsOriginId = timesheetPeriod?.originId || `timesheets-${monthKey}-a`;
+    const timesheetDue = timesheetPeriod?.dueAt || `${monthKey}-10`;
 
     const plan = [];
     const pushPlanEntry = ({

@@ -120,6 +120,12 @@
       "when": 1771588800000,
       "tag": "0019_cleanup_legacy_sunday_bulletin_lists",
       "breakpoints": false
+    },
+    {
+      "idx": 20,
+      "when": 1773226800000,
+      "tag": "0020_timesheet_schedule_rules",
+      "breakpoints": false
     }
   ]
 }

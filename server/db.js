@@ -127,6 +127,24 @@ const ensureSharefileJobEventsColumns = () => {
 
 ensureSharefileJobEventsColumns();
 
+const ensureRecurringTaskTemplateColumns = () => {
+    const table = sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'recurring_task_templates'
+    `).get();
+    if (!table) return;
+
+    const columns = sqlite.prepare('PRAGMA table_info(recurring_task_templates)').all().map((col) => col.name);
+    const columnSet = new Set(columns);
+    if (!columnSet.has('anchor_monthdays')) {
+        sqlite.exec('ALTER TABLE recurring_task_templates ADD COLUMN anchor_monthdays TEXT');
+    }
+    if (!columnSet.has('schedule_rule')) {
+        sqlite.exec('ALTER TABLE recurring_task_templates ADD COLUMN schedule_rule TEXT');
+    }
+};
+
+ensureRecurringTaskTemplateColumns();
+
 const seedVestryChecklist = () => {
     const count = sqlite.prepare('SELECT count(*) as count FROM vestry_checklist').get().count;
     if (count === vestryChecklistItems.length) return;

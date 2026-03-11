@@ -246,6 +246,8 @@ export const recurringTaskTemplates = sqliteTable('recurring_task_templates', {
     title: text('title').notNull(),
     sortOrder: integer('sort_order').notNull().default(0),
     dueOffsetDays: integer('due_offset_days'),
+    anchorMonthdays: text('anchor_monthdays'),
+    scheduleRule: text('schedule_rule'),
     priorityBase: integer('priority_base').notNull().default(50),
     active: integer('active').notNull().default(1),
     createdAt: text('created_at').notNull(),
