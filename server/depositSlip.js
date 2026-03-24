@@ -863,9 +863,6 @@ const drawFundsReport = async (pdfDoc, entries = [], totalAmount) => {
 
 export const buildDepositSlipPdf = async ({ templatePath, outputPath, checks, fieldMap, totals = {}, fundsReport = {} }) => {
     const templateBytes = await readFile(templatePath);
-    const pdfDoc = await PDFDocument.load(templateBytes);
-    const form = pdfDoc.getForm();
-
     const cashValue = Number.isFinite(totals.cash) ? totals.cash : 0;
     const sumOfChecks = checks.reduce((sum, check) => sum + (Number.isFinite(check.amount) ? check.amount : 0), 0);
     const totalValue = Number.isFinite(totals.total)
@@ -876,30 +873,61 @@ export const buildDepositSlipPdf = async ({ templatePath, outputPath, checks, fi
     const subtotalValue = Number.isFinite(totals.subtotal) ? totals.subtotal : totalValue;
 
     const checkFields = fieldMap?.checks || [];
-    checkFields.forEach((mapping, index) => {
-        const check = checks[index];
-        if (!check) return;
-        fillField(form, mapping.number, check.checkNumber || '');
-        fillField(form, mapping.amount, check.amount != null ? formatCurrency(check.amount) : '');
-    });
+    const checksPerPage = Math.max(checkFields.length, 1);
+    const pageCount = Math.max(1, Math.ceil((checks?.length || 0) / checksPerPage));
 
-    if (fieldMap?.cash) {
-        fillFields(form, fieldMap.cash, formatCurrency(cashValue));
-    }
-    if (fieldMap?.subtotal) {
-        fillFields(form, fieldMap.subtotal, formatCurrency(subtotalValue));
-    }
-    if (fieldMap?.total) {
-        fillFields(form, fieldMap.total, formatCurrency(totalValue));
+    const buildSlipPageDoc = async (pageIndex) => {
+        const pageDoc = await PDFDocument.load(templateBytes);
+        const form = pageDoc.getForm();
+        const pageChecks = checks.slice(pageIndex * checksPerPage, (pageIndex + 1) * checksPerPage);
+
+        checkFields.forEach((mapping, index) => {
+            const check = pageChecks[index];
+            if (!check) return;
+            fillField(form, mapping.number, check.checkNumber || '');
+            fillField(form, mapping.amount, check.amount != null ? formatCurrency(check.amount) : '');
+        });
+
+        if (fieldMap?.date) {
+            fillField(form, fieldMap.date, new Date().toLocaleDateString('en-US'));
+        }
+
+        if (pageIndex === 0) {
+            if (fieldMap?.cash) {
+                fillFields(form, fieldMap.cash, formatCurrency(cashValue));
+            }
+            if (fieldMap?.subtotal) {
+                fillFields(form, fieldMap.subtotal, formatCurrency(subtotalValue));
+            }
+            if (fieldMap?.total) {
+                fillFields(form, fieldMap.total, formatCurrency(totalValue));
+            }
+
+            await drawFundsReport(pageDoc, fundsReport.entries, fundsReport.total ?? totalValue);
+        }
+
+        return pageDoc;
+    };
+
+    if (pageCount === 1) {
+        const singlePageDoc = await buildSlipPageDoc(0);
+        const pdfBytes = await singlePageDoc.save();
+        await mkdir(dirname(outputPath), { recursive: true });
+        await writeFile(outputPath, pdfBytes);
+        return;
     }
 
-    if (fieldMap?.date) {
-        fillField(form, fieldMap.date, new Date().toLocaleDateString('en-US'));
+    const finalDoc = await PDFDocument.create();
+
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+        const pageDoc = await buildSlipPageDoc(pageIndex);
+        const pageBytes = await pageDoc.save();
+        const serializedPageDoc = await PDFDocument.load(pageBytes);
+        const copiedPages = await finalDoc.copyPages(serializedPageDoc, serializedPageDoc.getPageIndices());
+        copiedPages.forEach((page) => finalDoc.addPage(page));
     }
 
-    await drawFundsReport(pdfDoc, fundsReport.entries, fundsReport.total ?? totalValue);
-
-    const pdfBytes = await pdfDoc.save();
+    const pdfBytes = await finalDoc.save();
     await mkdir(dirname(outputPath), { recursive: true });
     await writeFile(outputPath, pdfBytes);
 };

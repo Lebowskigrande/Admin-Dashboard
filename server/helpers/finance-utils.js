@@ -53,7 +53,7 @@ export const sumCurrencyValues = (...values) => {
     return formatCurrencyValue(total);
 };
 
-export const buildManualChecks = (payload, maxChecks) => {
+export const buildManualChecks = (payload) => {
     const manualChecks = [];
     let cashTotal = 0;
     (Array.isArray(payload) ? payload : []).forEach((entry) => {
@@ -62,7 +62,7 @@ export const buildManualChecks = (payload, maxChecks) => {
         const rawAmount = String(entry.amount || '').trim().replace(/[^0-9.-]/g, '');
         const amount = Number.parseFloat(rawAmount);
         if (!Number.isFinite(amount) || amount <= 0) return;
-        if (checkNumber && manualChecks.length < maxChecks) {
+        if (checkNumber) {
             manualChecks.push({ checkNumber, amount });
         } else {
             cashTotal += amount;

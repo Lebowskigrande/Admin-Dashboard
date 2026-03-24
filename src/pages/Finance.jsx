@@ -7,13 +7,16 @@ import { API_URL } from '../services/apiConfig';
 import { formatCurrency } from '../utils/formatters';
 import './Finance.css';
 
-const createChecks = () =>
-    Array.from({ length: 18 }, (_, index) => ({
-        id: `manual-${index + 1}`,
-        checkNumber: '',
-        amount: '',
-        budget: ''
-    }));
+const MIN_DEPOSIT_ROWS = 18;
+
+const createCheckRow = () => ({
+    id: globalThis.crypto?.randomUUID?.() || `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    checkNumber: '',
+    amount: '',
+    budget: ''
+});
+
+const createChecks = (count = MIN_DEPOSIT_ROWS) => Array.from({ length: count }, () => createCheckRow());
 
 const DEPOSIT_STORAGE_KEY = 'deposit-slip-checks';
 const ROUTING_LOG_REFRESH_MS = 30 * 1000;
@@ -69,6 +72,26 @@ const loadSavedChecks = () => {
     }
 };
 
+const normalizeSavedCheck = (savedEntry) => ({
+    ...createCheckRow(),
+    checkNumber: savedEntry?.checkNumber != null ? String(savedEntry.checkNumber) : '',
+    amount: normalizeStorageAmount(savedEntry?.amount) || '',
+    budget: savedEntry?.budget != null ? String(savedEntry.budget) : ''
+});
+
+const buildInitialChecks = () => {
+    const saved = loadSavedChecks();
+    if (!Array.isArray(saved) || saved.length === 0) {
+        return createChecks();
+    }
+    const normalized = saved.map((entry) => normalizeSavedCheck(entry));
+    const targetLength = Math.max(MIN_DEPOSIT_ROWS, normalized.length);
+    return [
+        ...normalized,
+        ...createChecks(Math.max(0, targetLength - normalized.length))
+    ];
+};
+
 const formatDateKey = (date = new Date()) => {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -110,21 +133,7 @@ const formatLogTime = (isoValue) => {
 };
 
 const Finance = () => {
-    const [checks, setChecks] = useState(() => {
-        const saved = loadSavedChecks();
-        const template = createChecks();
-        if (!saved || !saved.length) return template;
-        return template.map((entry, index) => {
-            const savedEntry = saved[index];
-            if (!savedEntry) return entry;
-            return {
-                ...entry,
-                checkNumber: savedEntry.checkNumber != null ? String(savedEntry.checkNumber) : entry.checkNumber,
-                amount: normalizeStorageAmount(savedEntry.amount) || entry.amount,
-                budget: savedEntry.budget != null ? String(savedEntry.budget) : entry.budget
-            };
-        });
-    });
+    const [checks, setChecks] = useState(() => buildInitialChecks());
     const [slipBusy, setSlipBusy] = useState(false);
     const [slipError, setSlipError] = useState('');
     const [saveMessage, setSaveMessage] = useState('');
@@ -171,6 +180,23 @@ const Finance = () => {
             const next = [...prev];
             next[index] = { ...next[index], [field]: value };
             return next;
+        });
+        if (depositSlipFileId) {
+            setDepositSlipFileId('');
+        }
+    };
+
+    const addCheckRow = () => {
+        setChecks((prev) => [...prev, createCheckRow()]);
+        if (depositSlipFileId) {
+            setDepositSlipFileId('');
+        }
+    };
+
+    const removeCheckRow = (index) => {
+        setChecks((prev) => {
+            if (prev.length <= MIN_DEPOSIT_ROWS || index < MIN_DEPOSIT_ROWS) return prev;
+            return prev.filter((_, rowIndex) => rowIndex !== index);
         });
         if (depositSlipFileId) {
             setDepositSlipFileId('');
@@ -1189,7 +1215,7 @@ const Finance = () => {
                 <div className="deposit-header">
                     <div>
                         <h2>Deposit Slip Builder</h2>
-                        <p>Enter up to 18 checks with check number, amount, and budget code information.</p>
+                        <p>Enter as many check or cash rows as needed. Deposit slips use 18 checks per page.</p>
                     </div>
                     <div className="deposit-header-actions">
                         <button
@@ -1218,13 +1244,21 @@ const Finance = () => {
                     </div>
                 </div>
                 <div className="deposit-builder-body">
-                    <div className="deposit-checks-table-wrapper">
+                    <div className="deposit-checks-panel">
+                        <div className="deposit-table-toolbar">
+                            <p>{checks.length} row{checks.length === 1 ? '' : 's'} entered</p>
+                            <button type="button" className="deposit-add-row-button" onClick={addCheckRow}>
+                                Add row
+                            </button>
+                        </div>
+                        <div className="deposit-checks-table-wrapper">
                         <table className="deposit-checks-table">
                             <thead>
                                 <tr>
                                     <th>Check #</th>
                                     <th>Amount</th>
                                     <th>Budget Code</th>
+                                    <th aria-label="Row actions" />
                                 </tr>
                             </thead>
                             <tbody>
@@ -1266,10 +1300,23 @@ const Finance = () => {
                                                 placeholder="Budget code"
                                             />
                                         </td>
+                                        <td className="deposit-row-actions">
+                                            {index >= MIN_DEPOSIT_ROWS ? (
+                                                <button
+                                                    type="button"
+                                                    className="deposit-row-remove-button"
+                                                    onClick={() => removeCheckRow(index)}
+                                                    aria-label={`Remove row ${index + 1}`}
+                                                >
+                                                    Remove
+                                                </button>
+                                            ) : null}
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
+                    </div>
                     </div>
                     <div className="deposit-side-panel">
                         <div className="deposit-total-panel">

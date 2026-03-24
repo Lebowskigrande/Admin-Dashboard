@@ -473,6 +473,37 @@
     gap: var(--space-md);
 }
 
+.deposit-checks-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+}
+
+.deposit-table-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.deposit-table-toolbar p {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+}
+
+.deposit-add-row-button {
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-radius: 999px;
+    padding: 0.35rem 0.8rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
 .deposit-checks-table-wrapper {
     max-height: 520px;
     overflow: auto;
@@ -512,6 +543,23 @@
     padding: 0.35rem 0.5rem;
     font-family: inherit;
     font-size: 0.9rem;
+}
+
+.deposit-row-actions {
+    width: 1%;
+    white-space: nowrap;
+    text-align: right;
+}
+
+.deposit-row-remove-button {
+    border: 1px solid #fecaca;
+    background: #fef2f2;
+    color: #b91c1c;
+    border-radius: 999px;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
 }
 
 .amount-input {

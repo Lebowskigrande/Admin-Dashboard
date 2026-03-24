@@ -98,10 +98,12 @@ router.post('/packet', vestryUpload.any(), async (req, res) => {
             const { width } = page.getSize();
             const textWidth = font.widthOfTextAtSize(label, fontSize);
             const textHeight = font.heightAtSize(fontSize);
-            const x = (width - textWidth) / 2;
-            const y = 18;
             const paddingX = 6;
             const paddingY = 3;
+            const rightMargin = 18;
+            const bottomMargin = 18;
+            const x = width - rightMargin - paddingX - textWidth;
+            const y = bottomMargin + paddingY;
             page.drawRectangle({
                 x: x - paddingX,
                 y: y - paddingY,

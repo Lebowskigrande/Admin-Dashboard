@@ -2057,10 +2057,7 @@ router.post('/manual', async (req, res) => {
         const config = JSON.parse(await readFile(configPath, 'utf8'));
         const templatePath = resolve(__dirname, '..', '..', config.templatePath || 'deposit slip template.pdf');
 
-        const maxChecks = Array.isArray(config.fieldMap?.checks)
-            ? config.fieldMap.checks.length
-            : 18;
-        const { manualChecks, cashTotal } = buildManualChecks(req.body?.checks || [], maxChecks);
+        const { manualChecks, cashTotal } = buildManualChecks(req.body?.checks || []);
 
         const clientTotals = parseJsonValue(req.body?.totals, {}) || {};
         const subtotalOverride = parseCurrencyOverride(clientTotals.subtotal);
@@ -2264,8 +2261,10 @@ router.post('/pdf', depositBundleUpload.fields([
         const depositForm = depositDoc.getForm();
         depositForm.flatten();
         const finalDoc = await PDFDocument.create();
-        const [depositPage] = await finalDoc.copyPages(depositDoc, [0]);
-        finalDoc.addPage(depositPage);
+        const depositPageIndices = depositDoc.getPageIndices();
+        const depositPages = await finalDoc.copyPages(depositDoc, depositPageIndices);
+        depositPages.forEach((page) => finalDoc.addPage(page));
+        const depositSize = depositDoc.getPage(0)?.getSize?.() || { width: 612, height: 792 };
 
         if (cashPath) {
             const cashBytes = await readFile(cashPath);
@@ -2296,8 +2295,8 @@ router.post('/pdf', depositBundleUpload.fields([
             envelopePageIndexes = await classifyEnvelopePagesFromChecksPdf(checksPath);
         }
         await addChecksGridFromPdf(finalDoc, checksDoc, {
-            pageWidth: depositPage.getWidth(),
-            pageHeight: depositPage.getHeight(),
+            pageWidth: depositSize.width,
+            pageHeight: depositSize.height,
             envelopePageIndexes,
             envelopeRotateClockwiseDegrees: 90
         });
