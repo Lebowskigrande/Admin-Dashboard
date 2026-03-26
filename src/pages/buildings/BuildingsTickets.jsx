@@ -1,10 +1,14 @@
 import { FaPlus, FaClipboardCheck, FaTrash } from 'react-icons/fa';
 import Card from '../../components/Card';
+import { API_URL } from '../../services/apiConfig';
 
 const BuildingsTickets = ({
     tickets,
     ticketsLoading,
     ticketsError,
+    ticketRecommendations,
+    ticketRecommendationsLoading,
+    ticketRecommendationsError,
     selectedTicketId,
     selectedTicket,
     archiveExpanded,
@@ -81,6 +85,30 @@ const BuildingsTickets = ({
         );
     };
 
+    const openRecommendation = (record) => {
+        const url = record.downloadUrl
+            ? `${API_URL}${record.downloadUrl}`
+            : record.openPath
+                ? `${API_URL}/files/download?path=${encodeURIComponent(record.openPath)}`
+                : '';
+        if (!url) return;
+        window.open(url, '_blank', 'noopener,noreferrer');
+    };
+
+    const revealRecommendation = async (record) => {
+        const targetPath = record.openPath || record.absolutePath || record.filePath;
+        if (!targetPath) return;
+        try {
+            await fetch(`${API_URL}/files/open`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: targetPath })
+            });
+        } catch (error) {
+            console.error('Failed to open recommendation location:', error);
+        }
+    };
+
     return (
         <div className="tickets-view" ref={ticketsViewRef}>
             <div className="tickets-header">
@@ -148,6 +176,63 @@ const BuildingsTickets = ({
                                             {areaById[areaId]?.name || areaId}
                                         </span>
                                     ))}
+                                </div>
+                            </div>
+
+                            <div className="ticket-section">
+                                <div className="architectural-section-header">
+                                    <div>
+                                        <h4>Suggested Sheets</h4>
+                                        <p>
+                                            {ticketRecommendationsLoading
+                                                ? 'Scoring architectural records for this issue...'
+                                                : ticketRecommendations.length
+                                                    ? 'Recommended plans and details based on the ticket area and issue description.'
+                                                    : 'No architectural recommendations yet for this ticket.'}
+                                        </p>
+                                    </div>
+                                </div>
+                                {ticketRecommendationsError ? <div className="map-note">{ticketRecommendationsError}</div> : null}
+                                <div className="architectural-record-list">
+                                    {ticketRecommendationsLoading ? (
+                                        <p className="empty-state">Loading recommendations...</p>
+                                    ) : ticketRecommendations.length > 0 ? ticketRecommendations.map((record) => (
+                                        <article key={record.id} className="architectural-record-item compact">
+                                            <div className="architectural-record-topline">
+                                                <div>
+                                                    <h4>{record.title}</h4>
+                                                    <p>{record.summary || record.fileName || 'No summary available.'}</p>
+                                                </div>
+                                                <div className="architectural-record-actions">
+                                                    <button type="button" className="architectural-record-link secondary" onClick={() => openRecommendation(record)}>
+                                                        Open
+                                                    </button>
+                                                    <button type="button" className="architectural-record-link secondary" onClick={() => revealRecommendation(record)}>
+                                                        Reveal
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div className="architectural-record-badges">
+                                                <span className="pill">{record.layerLabel || record.layer || 'General'}</span>
+                                                {(record.utilitySystems || []).slice(0, 2).map((system) => (
+                                                    <span key={system} className="pill map-category map-category-all-purpose">{system}</span>
+                                                ))}
+                                                {record.year ? <span className="pill">{record.year}</span> : null}
+                                            </div>
+                                            {Array.isArray(record.recommendationReasons) && record.recommendationReasons.length > 0 ? (
+                                                <div className="architectural-record-associations">
+                                                    <span>Why this matches</span>
+                                                    <div className="architectural-record-tags">
+                                                        {record.recommendationReasons.map((reason) => (
+                                                            <span key={reason} className="architectural-record-tag">{reason}</span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            ) : null}
+                                        </article>
+                                    )) : (
+                                        <p className="empty-state">Add a clearer area or issue description to improve recommendations.</p>
+                                    )}
                                 </div>
                             </div>
 

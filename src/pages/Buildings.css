@@ -407,6 +407,96 @@
     gap: 0.5rem;
 }
 
+.architectural-detail-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid #e5e7eb;
+}
+
+.architectural-layer-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.architectural-layer-chip,
+.architectural-record-tag {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 0.25rem 0.6rem;
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+.architectural-utility-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 0.5rem;
+}
+
+.architectural-utility-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    text-align: left;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    border-radius: 12px;
+    padding: 0.6rem 0.7rem;
+    cursor: pointer;
+}
+
+.architectural-utility-card strong {
+    color: #111827;
+    font-size: 0.86rem;
+}
+
+.architectural-utility-card span {
+    color: #64748b;
+    font-size: 0.78rem;
+}
+
+.architectural-record-snippets {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.architectural-record-snippet {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 0.6rem 0.7rem;
+    background: #fff;
+}
+
+.architectural-record-snippet strong {
+    display: block;
+    color: #111827;
+}
+
+.architectural-record-snippet span {
+    color: #64748b;
+    font-size: 0.78rem;
+}
+
+.architectural-record-snippet-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.2rem;
+    color: #475569;
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
 .map-empty h3 {
     margin: 0 0 0.4rem 0;
 }
@@ -434,6 +524,25 @@
     color: #1f2937;
     font-weight: 600;
     transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.map-list-label {
+    flex: 1;
+    min-width: 0;
+}
+
+.map-record-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.6rem;
+    height: 1.6rem;
+    padding: 0 0.35rem;
+    border-radius: 999px;
+    background: #e2e8f0;
+    color: #334155;
+    font-size: 0.72rem;
+    font-weight: 700;
 }
 
 .map-list-item:hover,
@@ -508,6 +617,212 @@
     display: flex;
     gap: 1rem;
     margin-bottom: 1rem;
+}
+
+.architectural-records-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.architectural-records-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.8fr);
+    gap: 1rem;
+}
+
+.architectural-records-card,
+.architectural-records-list-card,
+.architectural-records-sidebar {
+    min-height: 0;
+}
+
+.architectural-records-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.architectural-records-header h2 {
+    margin: 0 0 0.35rem 0;
+}
+
+.architectural-records-header p {
+    margin: 0;
+    color: #64748b;
+}
+
+.architectural-summary-grid {
+    margin-top: 1rem;
+}
+
+.architectural-filter-bar {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 1rem;
+}
+
+.architectural-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid #e5e7eb;
+    background: #fff;
+    color: #334155;
+    font-size: 0.86rem;
+    font-weight: 600;
+}
+
+.architectural-chip-row {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    margin-top: 0.85rem;
+}
+
+.architectural-chip-row button {
+    border: 1px solid #e5e7eb;
+    background: #fff;
+    color: #334155;
+    border-radius: 999px;
+    padding: 0.35rem 0.65rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.architectural-chip-row button.is-active {
+    background: #dbeafe;
+    border-color: #93c5fd;
+    color: #1d4ed8;
+}
+
+.architectural-chip-row.secondary button {
+    background: #f8fafc;
+}
+
+.architectural-section-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.architectural-section-header h3,
+.architectural-section-header h4 {
+    margin: 0;
+}
+
+.architectural-section-header p {
+    margin: 0.3rem 0 0 0;
+    color: #64748b;
+}
+
+.architectural-record-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-top: 0.9rem;
+}
+
+.architectural-record-item {
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    padding: 0.85rem;
+    background: linear-gradient(180deg, #ffffff, #f8fafc);
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+}
+
+.architectural-record-topline {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.architectural-record-topline h4 {
+    margin: 0 0 0.35rem 0;
+}
+
+.architectural-record-topline p {
+    margin: 0;
+    color: #64748b;
+}
+
+.architectural-record-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    align-items: flex-end;
+}
+
+.architectural-record-link {
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-radius: 999px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.architectural-record-link.secondary {
+    background: #fff;
+    border-color: #e5e7eb;
+    color: #334155;
+}
+
+.architectural-record-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.architectural-record-associations {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    color: #64748b;
+    font-size: 0.8rem;
+}
+
+.architectural-record-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.architectural-focus-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
+}
+
+.architectural-focus-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    border: 1px solid #dbeafe;
+    background: #eff6ff;
+    color: #1e3a8a;
+    border-radius: 14px;
+    padding: 0.7rem 0.8rem;
+    text-align: left;
+}
+
+.architectural-focus-item.secondary {
+    background: #fff;
+    color: #334155;
+    border-color: #e5e7eb;
 }
 
 .repairs-grid {
@@ -1034,6 +1349,10 @@
 
 @media (max-width: 960px) {
     .campus-map-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .architectural-records-grid {
         grid-template-columns: 1fr;
     }
 

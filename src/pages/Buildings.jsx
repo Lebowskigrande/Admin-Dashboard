@@ -1,9 +1,10 @@
-import { FaTools, FaClipboardList, FaAddressBook } from 'react-icons/fa';
+import { FaTools, FaClipboardList, FaAddressBook, FaFileAlt } from 'react-icons/fa';
 import BuildingsNeeds from './buildings/BuildingsNeeds';
 import BuildingsVendors from './buildings/BuildingsVendors';
 import BuildingsTickets from './buildings/BuildingsTickets';
 import BuildingsMap from './buildings/BuildingsMap';
 import BuildingsTicketModal from './buildings/BuildingsTicketModal';
+import BuildingsRecords from './buildings/BuildingsRecords';
 import { useBuildingsData } from './buildings/useBuildingsData';
 import './Buildings.css';
 
@@ -16,6 +17,9 @@ const Buildings = () => {
         tickets,
         ticketsLoading,
         ticketsError,
+        ticketRecommendations,
+        ticketRecommendationsLoading,
+        ticketRecommendationsError,
         showTicketModal,
         selectedTicketId,
         archiveExpanded,
@@ -34,6 +38,14 @@ const Buildings = () => {
         vendors,
         vendorsLoading,
         vendorsError,
+        architecturalOverview,
+        architecturalOverviewLoading,
+        architecturalOverviewError,
+        activeArchitecturalRecords,
+        activeArchitecturalLayers,
+        activeArchitecturalUtilities,
+        activeArchitecturalSystems,
+        activeArchitecturalSummary,
         mapAreas,
         orderedAreas,
         areaById,
@@ -95,6 +107,9 @@ const Buildings = () => {
                 <button className={`tab-btn ${activeTab === 'vendors' ? 'active' : ''}`} onClick={() => setActiveTab('vendors')}>
                     <FaAddressBook /> Preferred Vendors
                 </button>
+                <button className={`tab-btn ${activeTab === 'records' ? 'active' : ''}`} onClick={() => setActiveTab('records')}>
+                    <FaFileAlt /> Architectural Records
+                </button>
                 <button className={`tab-btn ${activeTab === 'needs' ? 'active' : ''}`} onClick={() => setActiveTab('needs')}>
                     <FaClipboardList /> Long Term Needs
                 </button>
@@ -105,6 +120,9 @@ const Buildings = () => {
                     tickets={tickets}
                     ticketsLoading={ticketsLoading}
                     ticketsError={ticketsError}
+                    ticketRecommendations={ticketRecommendations}
+                    ticketRecommendationsLoading={ticketRecommendationsLoading}
+                    ticketRecommendationsError={ticketRecommendationsError}
                     selectedTicketId={selectedTicketId}
                     selectedTicket={selectedTicket}
                     archiveExpanded={archiveExpanded}
@@ -144,6 +162,13 @@ const Buildings = () => {
                     formatSqft={formatSqft}
                     activeAreaTickets={activeAreaTickets}
                     focusTicket={focusTicket}
+                    setActiveTab={setActiveTab}
+                    activeArchitecturalRecords={activeArchitecturalRecords}
+                    activeArchitecturalLayers={activeArchitecturalLayers}
+                    activeArchitecturalUtilities={activeArchitecturalUtilities}
+                    activeArchitecturalSystems={activeArchitecturalSystems}
+                    activeArchitecturalSummary={activeArchitecturalSummary}
+                    architecturalAreaLoading={architecturalOverviewLoading}
                 />
             )}
             {activeTab === 'vendors' && (
@@ -151,6 +176,17 @@ const Buildings = () => {
                     vendors={vendors}
                     vendorsLoading={vendorsLoading}
                     vendorsError={vendorsError}
+                />
+            )}
+            {activeTab === 'records' && (
+                <BuildingsRecords
+                    recordsOverview={architecturalOverview}
+                    recordsLoading={architecturalOverviewLoading}
+                    recordsError={architecturalOverviewError}
+                    mapAreas={mapAreas}
+                    areaById={areaById}
+                    setActiveTab={setActiveTab}
+                    setActiveArea={setActiveArea}
                 />
             )}
             {activeTab === 'needs' && (

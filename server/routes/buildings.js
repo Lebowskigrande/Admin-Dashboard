@@ -5,6 +5,12 @@ import { tableExists, ensureUniqueId, parseJsonField } from '../helpers/db-utils
 import { normalizeName, slugifyName } from '../helpers/people-utils.js';
 import { upsertEntityLink, deleteEntityLinks } from '../helpers/entity-utils.js';
 import { resolveContractFile } from '../helpers/file-utils.js';
+import {
+    getArchitecturalAreaMetadata,
+    getArchitecturalRecordsForArea,
+    getArchitecturalRecordsOverview,
+    recommendArchitecturalRecordsForTicket
+} from '../helpers/architectural-records.js';
 import { listTaskInstances, deleteTaskInstance } from '../services/taskEngine.js';
 
 const router = express.Router();
@@ -37,6 +43,31 @@ const normalizeBuildingName = (value = '') => {
     if (!name) return '';
     if (name.toLowerCase() === 'parish hall') return 'Fellows Hall';
     return name;
+};
+
+const buildFileUrls = (filePath = '') => ({
+    downloadUrl: filePath ? `/api/files/download?path=${encodeURIComponent(filePath)}` : '',
+    openPath: filePath
+});
+
+const loadBuildingsIndex = () => {
+    if (!tableExists('buildings')) return new Map();
+    const rows = db.prepare('SELECT id, name, category, size_sqft, parking_spaces, notes FROM buildings').all();
+    const index = new Map();
+    rows.forEach((row) => {
+        const building = {
+            id: row.id,
+            map_id: buildBuildingMapId(row.name || ''),
+            name: normalizeBuildingName(row.name || ''),
+            category: row.category || '',
+            size_sqft: row.size_sqft || 0,
+            parking_spaces: row.parking_spaces || 0,
+            notes: row.notes || ''
+        };
+        index.set(building.id, building);
+        index.set(building.map_id, building);
+    });
+    return index;
 };
 
 // --- Buildings Routes ---
@@ -82,6 +113,69 @@ router.get('/buildings', (req, res) => {
         };
     });
     res.json(buildings);
+});
+
+router.get('/buildings/records/overview', async (_req, res) => {
+    try {
+        const overview = await getArchitecturalRecordsOverview();
+        const buildingsIndex = loadBuildingsIndex();
+        const areaMetadata = getArchitecturalAreaMetadata();
+        return res.json({
+            ok: true,
+            rootPath: overview.rootPath,
+            generatedAt: overview.generatedAt,
+            summary: overview.summary,
+            layers: overview.layers,
+            systems: overview.systems,
+            areas: overview.areas.map((area) => ({
+                ...area,
+                building: buildingsIndex.get(area.id) || buildingsIndex.get(area.map_id) || areaMetadata[area.id] || null
+            })),
+            records: overview.records.map((record) => ({
+                ...record,
+                ...buildFileUrls(record.absolutePath)
+            }))
+        });
+    } catch (error) {
+        console.error('Architectural records overview error:', error);
+        return res.status(500).json({ ok: false, error: 'Failed to load architectural records overview' });
+    }
+});
+
+router.get('/buildings/records/by-area/:areaId', async (req, res) => {
+    try {
+        const areaId = String(req.params?.areaId || '').trim();
+        if (!areaId) {
+            return res.status(400).json({ ok: false, error: 'areaId is required' });
+        }
+        const payload = await getArchitecturalRecordsForArea({
+            areaId,
+            layer: req.query?.layer,
+            system: req.query?.system,
+            query: req.query?.q
+        });
+        const buildingsIndex = loadBuildingsIndex();
+        const areaMetadata = getArchitecturalAreaMetadata();
+        const area = payload.areas.find((entry) => entry.id === areaId) || areaMetadata[areaId] || null;
+        return res.json({
+            ok: true,
+            area: area
+                ? {
+                    ...area,
+                    building: buildingsIndex.get(areaId) || buildingsIndex.get(area?.map_id) || areaMetadata[areaId] || null
+                }
+                : null,
+            layers: payload.layers,
+            systems: payload.systems,
+            records: payload.records.map((record) => ({
+                ...record,
+                ...buildFileUrls(record.absolutePath)
+            }))
+        });
+    } catch (error) {
+        console.error('Architectural records by-area error:', error);
+        return res.status(500).json({ ok: false, error: 'Failed to load architectural records for area' });
+    }
 });
 
 router.post('/buildings', (req, res) => {
@@ -314,6 +408,40 @@ router.get('/tickets/:id', (req, res) => {
         return res.status(404).json({ error: 'Ticket not found' });
     }
     res.json(buildTicketResponse(row));
+});
+
+router.get('/tickets/:id/recommendations', async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!tableExists('tickets')) {
+            return res.status(404).json({ ok: false, error: 'Ticket not found' });
+        }
+        const row = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id);
+        if (!row) {
+            return res.status(404).json({ ok: false, error: 'Ticket not found' });
+        }
+        const ticket = buildTicketResponse(row);
+        const recommendations = await recommendArchitecturalRecordsForTicket({
+            ticket,
+            limit: Number.parseInt(req.query?.limit, 10) || 6
+        });
+        return res.json({
+            ok: true,
+            ticket: {
+                id: ticket.id,
+                title: ticket.title,
+                description: ticket.description,
+                areas: ticket.areas
+            },
+            recommendations: recommendations.map((record) => ({
+                ...record,
+                ...buildFileUrls(record.absolutePath)
+            }))
+        });
+    } catch (error) {
+        console.error('Ticket recommendations error:', error);
+        return res.status(500).json({ ok: false, error: 'Failed to load ticket recommendations' });
+    }
 });
 
 router.post('/tickets', (req, res) => {

@@ -4,22 +4,23 @@ import { access, stat } from 'fs/promises';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
-import { DROPBOX_ROOT } from '../helpers/file-utils.js';
+import {
+    DROPBOX_ROOT,
+    resolveExistingPathWithinRoots
+} from '../helpers/file-utils.js';
+import { ARCHITECTURAL_RECORDS_ROOT } from '../helpers/architectural-records.js';
+import { requireAdmin } from '../helpers/auth.js';
 import { printFile } from '../services/printService.js';
 
 const execFileAsync = promisify(execFile);
 const router = express.Router();
 
 const ALLOWED_ROOTS = [
-    resolve(DROPBOX_ROOT)
+    resolve(DROPBOX_ROOT),
+    resolve(ARCHITECTURAL_RECORDS_ROOT)
 ];
 
-const resolveAllowedPath = (rawPath) => {
-    if (!rawPath || typeof rawPath !== 'string') return null;
-    const resolved = resolve(rawPath);
-    const allowed = ALLOWED_ROOTS.some((root) => resolved.startsWith(root));
-    return allowed ? resolved : null;
-};
+const resolveAllowedPath = async (rawPath) => resolveExistingPathWithinRoots(rawPath, ALLOWED_ROOTS);
 
 const openFileLocation = async (filePath) => {
     const stats = await stat(filePath);
@@ -31,15 +32,17 @@ const openFileLocation = async (filePath) => {
     await execFileAsync('explorer.exe', [arg], { windowsHide: true });
 };
 
+router.use(requireAdmin);
+
 router.post('/open', async (req, res) => {
     const rawPath = String(req.body?.path || '').trim();
-    const resolved = resolveAllowedPath(rawPath);
-    if (!resolved) {
+    const resolvedPath = await resolveAllowedPath(rawPath);
+    if (!resolvedPath) {
         return res.status(400).json({ error: 'Invalid path' });
     }
     try {
-        await access(resolved);
-        await openFileLocation(resolved);
+        await access(resolvedPath);
+        await openFileLocation(resolvedPath);
         return res.json({ success: true });
     } catch (error) {
         console.error('Open file location error:', error);
@@ -49,13 +52,13 @@ router.post('/open', async (req, res) => {
 
 router.get('/download', async (req, res) => {
     const rawPath = String(req.query?.path || '').trim();
-    const resolved = resolveAllowedPath(rawPath);
-    if (!resolved) {
+    const resolvedPath = await resolveAllowedPath(rawPath);
+    if (!resolvedPath) {
         return res.status(400).json({ error: 'Invalid path' });
     }
     try {
-        await access(resolved);
-        return res.sendFile(resolved);
+        await access(resolvedPath);
+        return res.sendFile(resolvedPath);
     } catch (error) {
         console.error('Download file error:', error);
         return res.status(404).json({ error: 'File not found' });
@@ -64,12 +67,12 @@ router.get('/download', async (req, res) => {
 
 router.post('/print', async (req, res) => {
     const rawPath = String(req.body?.path || '').trim();
-    const resolved = resolveAllowedPath(rawPath);
-    if (!resolved) {
+    const resolvedPath = await resolveAllowedPath(rawPath);
+    if (!resolvedPath) {
         return res.status(400).json({ error: 'Invalid path' });
     }
     try {
-        const result = await printFile(resolved, { copies: req.body?.copies });
+        const result = await printFile(resolvedPath, { copies: req.body?.copies });
         return res.json({ success: true, ...result });
     } catch (error) {
         console.error('Print file error:', error);

@@ -17,7 +17,14 @@ const BuildingsMap = ({
     roomsListRef,
     formatSqft,
     activeAreaTickets,
-    focusTicket
+    focusTicket,
+    setActiveTab,
+    activeArchitecturalRecords,
+    activeArchitecturalLayers,
+    activeArchitecturalUtilities,
+    activeArchitecturalSystems,
+    activeArchitecturalSummary,
+    architecturalAreaLoading
 }) => (
     <Card className="campus-map-card">
         <div className="campus-map-layout">
@@ -46,7 +53,12 @@ const BuildingsMap = ({
                                 <span
                                     className={`map-dot map-dot-${area.type} ${categoryKey ? `map-dot-${categoryKey}` : ''}`}
                                 />
-                                {area.name}
+                                <span className="map-list-label">
+                                    {area.name}
+                                </span>
+                                {area.architecturalRecordCount ? (
+                                    <span className="map-record-count">{area.architecturalRecordCount}</span>
+                                ) : null}
                             </button>
                         );
                     })}
@@ -278,6 +290,73 @@ const BuildingsMap = ({
                                 </div>
                             </div>
                         )}
+                        <div className="architectural-detail-section">
+                            <div className="architectural-section-header">
+                                <div>
+                                    <h4>Architectural Records</h4>
+                                    <p>
+                                        {architecturalAreaLoading
+                                            ? 'Loading sheet associations...'
+                                            : activeArchitecturalSummary?.recordCount
+                                                ? `${activeArchitecturalSummary.recordCount} records linked across ${activeArchitecturalSummary.layerCount || 0} layers and ${activeArchitecturalSummary.systemCount || 0} systems.`
+                                                : 'No records linked to this area yet.'}
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    className="code-lookup-detail-btn"
+                                    onClick={() => setActiveTab('records')}
+                                >
+                                    Open archive
+                                </button>
+                            </div>
+                            {activeArchitecturalLayers?.length ? (
+                                <div className="architectural-layer-row">
+                                    {activeArchitecturalLayers.slice(0, 6).map((layer) => (
+                                        <span key={layer} className="architectural-layer-chip">{layer}</span>
+                                    ))}
+                                </div>
+                            ) : null}
+                            {activeArchitecturalSystems?.length ? (
+                                <div className="architectural-layer-row">
+                                    {activeArchitecturalSystems.slice(0, 6).map((system) => (
+                                        <span key={system} className="architectural-layer-chip system">{system}</span>
+                                    ))}
+                                </div>
+                            ) : null}
+                            {activeArchitecturalUtilities?.length ? (
+                                <div className="architectural-utility-strip">
+                                    {activeArchitecturalUtilities.slice(0, 3).map((record) => (
+                                        <button
+                                            key={record.id}
+                                            type="button"
+                                            className="architectural-utility-card"
+                                            onClick={() => setActiveTab('records')}
+                                        >
+                                            <strong>{record.layerLabel || record.layer || 'Utility'}</strong>
+                                            <span>{record.title}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            ) : null}
+                            <div className="architectural-record-snippets">
+                                {activeArchitecturalRecords?.length ? activeArchitecturalRecords.slice(0, 4).map((record) => (
+                                    <div key={record.id} className="architectural-record-snippet">
+                                        <div>
+                                            <strong>{record.title}</strong>
+                                            <span>{record.summary || record.fileName || 'No summary available.'}</span>
+                                        </div>
+                                        <div className="architectural-record-snippet-meta">
+                                            <span>{record.layerLabel || record.layer || 'General'}</span>
+                                            {record.utilitySystems?.length ? <span>{record.utilitySystems.slice(0, 2).join(', ')}</span> : null}
+                                            {record.pageCount ? <span>{record.pageCount} pages</span> : null}
+                                        </div>
+                                    </div>
+                                )) : (
+                                    <p className="map-ticket-empty">Select an area with linked sheets to see architectural records here.</p>
+                                )}
+                            </div>
+                        </div>
                     </>
                 )}
             </Card>
