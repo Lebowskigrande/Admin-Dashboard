@@ -1,23 +1,13 @@
-/****************************
+﻿/****************************
  * Parish Codes Extension
  * - Three menu trees: Invoice, Direct Debit, Contribution
- * - Inserts selected code into active Gmail field
+ * - Opens a confirmation modal after menu selection
  * - Posts job to dashboard server with Bearer token
  ****************************/
 
 /************* CONFIG *************/
-// Google Sheets (GViz JSON endpoint) — reuse your current IDs/sheets.
-// If your old extensions already have these, paste them here.
-
 const BUDGET_CODES_URL = "http://localhost:3001/api/sharefile/budget-codes";
 const ENVELOPE_NUMBERS_URL = "http://localhost:3001/api/sharefile/envelope-numbers";
-
-
-const BUDGET_SHEET_ID = "1ZhVcRYTabu61CnZxa2dJWMoRoOMI9f1svxGattHNxlU";
-const BUDGET_SHEET_NAME = "Sheet1";
-
-const ENV_SHEET_ID = "1SpJ0DE08kc8yKJvaeaegGsexT7mVdhjFA715wasnYd0";
-const ENV_SHEET_NAME = "Sheet1";
 
 // Server endpoints
 const ROUTE_EMAIL_URL = "http://localhost:3001/api/sharefile/route-email";
@@ -26,7 +16,9 @@ const RESOLVE_MESSAGE_URL = "http://localhost:3001/api/sharefile/resolve-message
 // Context menu visibility
 const MENU_CONTEXTS = ["editable", "selection", "page"];
 const GMAIL_URL_PATTERNS = ["https://mail.google.com/*"];
-const CONTEXT_MENU_OPEN_MODAL_ID = "open-routing-modal";
+const INVOICE_ROOT_ID = "invoice-root";
+const DIRECT_ROOT_ID = "direct-root";
+const CONTRIBUTION_ROOT_ID = "contrib-root";
 
 // storage keys
 const STORAGE_KEYS = {
@@ -62,53 +54,69 @@ chrome.commands?.onCommand?.addListener(async (command) => {
 async function rebuildMenus() {
   chrome.contextMenus.removeAll(async () => {
     chrome.contextMenus.create({
-      id: CONTEXT_MENU_OPEN_MODAL_ID,
-      title: "Open AP/AR Router",
+      id: INVOICE_ROOT_ID,
+      title: "Invoice",
       contexts: MENU_CONTEXTS,
       documentUrlPatterns: GMAIL_URL_PATTERNS
     });
+
+    chrome.contextMenus.create({
+      id: DIRECT_ROOT_ID,
+      title: "Direct Debit",
+      contexts: MENU_CONTEXTS,
+      documentUrlPatterns: GMAIL_URL_PATTERNS
+    });
+
+    chrome.contextMenus.create({
+      id: CONTRIBUTION_ROOT_ID,
+      title: "Contribution",
+      contexts: MENU_CONTEXTS,
+      documentUrlPatterns: GMAIL_URL_PATTERNS
+    });
+
+    await Promise.allSettled([
+      buildBudgetMenu(INVOICE_ROOT_ID, "invoice"),
+      buildBudgetMenu(DIRECT_ROOT_ID, "direct"),
+      buildEnvelopeMenu(CONTRIBUTION_ROOT_ID, "contrib")
+    ]);
   });
 }
 
 async function buildBudgetMenu(rootId, prefix) {
   try {
     const entries = await loadBudgetMenuEntries();
-
     if (!entries.length) throw new Error("No budget entries parsed");
 
-    // Build categories as submenus
     const categoryIds = {};
     let categoryIndex = 0;
 
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      if (!entry || typeof entry !== "object") continue;
+      if (entry.type === "catDivider" || !entry.category) continue;
 
-      if (e.type === "catDivider") continue;
-
-      if (!e.category) continue;
-
-      if (!categoryIds[e.category]) {
-        const catId = `${prefix}-budget-cat-${categoryIndex++}`;
-        categoryIds[e.category] = catId;
+      if (!categoryIds[entry.category]) {
+        const categoryId = `${prefix}-budget-cat-${categoryIndex}`;
+        categoryIds[entry.category] = categoryId;
+        categoryIndex += 1;
 
         chrome.contextMenus.create({
-          id: catId,
+          id: categoryId,
           parentId: rootId,
-          title: e.category,
+          title: entry.category,
           contexts: MENU_CONTEXTS,
           documentUrlPatterns: GMAIL_URL_PATTERNS
         });
       }
 
-      const parentId = categoryIds[e.category];
+      const parentId = categoryIds[entry.category];
+      if (entry.type === "codeDivider") continue;
 
-      if (e.type === "codeDivider") continue;
-
-      if (e.type === "heading") {
+      if (entry.type === "heading") {
         chrome.contextMenus.create({
-          id: `${prefix}-budget-head-${e.category}-${i}`,
+          id: `${prefix}-budget-head-${categoryIndex}-${i}`,
           parentId,
-          title: e.label,
+          title: String(entry.label || "").trim(),
           enabled: false,
           contexts: MENU_CONTEXTS,
           documentUrlPatterns: GMAIL_URL_PATTERNS
@@ -116,23 +124,19 @@ async function buildBudgetMenu(rootId, prefix) {
         continue;
       }
 
-      if (e.type === "item") {
-        const code = String(e.code || "").trim();
-        const encodedCode = encodeURIComponent(code);
-        const id = `${prefix}-budget-code-${e.category}-${i}-${encodedCode}`;
-        const title = e.line ? `${code} · ${e.line}` : code;
+      if (entry.type !== "item") continue;
+      const code = String(entry.code || "").trim();
+      if (!code) continue;
 
-        chrome.contextMenus.create({
-          id,
-          parentId,
-          title,
-          contexts: MENU_CONTEXTS,
-          documentUrlPatterns: GMAIL_URL_PATTERNS
-        });
-      }
+      chrome.contextMenus.create({
+        id: `${prefix}-budget-code-${i}-${encodeURIComponent(code)}`,
+        parentId,
+        title: entry.line ? `${code} · ${entry.line}` : code,
+        contexts: MENU_CONTEXTS,
+        documentUrlPatterns: GMAIL_URL_PATTERNS
+      });
     }
 
-    // Footer items
     chrome.contextMenus.create({
       id: `${prefix}-budget-bottom-sep`,
       parentId: rootId,
@@ -144,17 +148,17 @@ async function buildBudgetMenu(rootId, prefix) {
     chrome.contextMenus.create({
       id: `${prefix}-budget-refresh`,
       parentId: rootId,
-      title: "↻ Refresh budget codes",
+      title: "Refresh budget codes",
       contexts: MENU_CONTEXTS,
       documentUrlPatterns: GMAIL_URL_PATTERNS
     });
-  } catch (err) {
-    console.error("[Parish Codes] Budget menu build failed:", err);
+  } catch (error) {
+    console.error("[Parish Codes] Budget menu build failed:", error);
 
     chrome.contextMenus.create({
       id: `${prefix}-budget-error`,
       parentId: rootId,
-      title: "⚠ Could not load budget codes (click to retry)",
+      title: "Could not load budget codes (click to retry)",
       contexts: MENU_CONTEXTS,
       documentUrlPatterns: GMAIL_URL_PATTERNS
     });
@@ -170,7 +174,7 @@ async function buildBudgetMenu(rootId, prefix) {
     chrome.contextMenus.create({
       id: `${prefix}-budget-refresh`,
       parentId: rootId,
-      title: "↻ Refresh budget codes",
+      title: "Refresh budget codes",
       contexts: MENU_CONTEXTS,
       documentUrlPatterns: GMAIL_URL_PATTERNS
     });
@@ -198,17 +202,16 @@ async function buildEnvelopeMenu(rootId, prefix) {
       documentUrlPatterns: GMAIL_URL_PATTERNS
     });
 
-    const maxDigits = entries.reduce((max, e) => Math.max(max, e.number.length), 0);
-
-    const letters = Array.from(new Set(entries.map(e => e.letter).filter(Boolean))).sort();
+    const maxDigits = entries.reduce((max, entry) => Math.max(max, String(entry?.number || "").length), 0);
+    const letters = Array.from(new Set(entries.map((entry) => String(entry?.letter || "").trim()).filter(Boolean))).sort();
     const letterIds = {};
 
     for (const letter of letters) {
-      const lid = `${prefix}-env-letter-${letter}`;
-      letterIds[letter] = lid;
+      const letterId = `${prefix}-env-letter-${letter}`;
+      letterIds[letter] = letterId;
 
       chrome.contextMenus.create({
-        id: lid,
+        id: letterId,
         parentId: rootId,
         title: letter,
         contexts: MENU_CONTEXTS,
@@ -216,17 +219,16 @@ async function buildEnvelopeMenu(rootId, prefix) {
       });
     }
 
-    entries.forEach((item, idx) => {
-      const parentId = letterIds[item.letter];
-      if (!parentId) return;
-
-      const title = formatAlignedTitle(item.number, item.name, maxDigits);
-      const id = `${prefix}-env-item-${item.letter}-${idx}-${item.number}`;
+    entries.forEach((item, index) => {
+      const letter = String(item?.letter || "").trim();
+      const number = String(item?.number || "").trim();
+      const parentId = letterIds[letter];
+      if (!parentId || !number) return;
 
       chrome.contextMenus.create({
-        id,
+        id: `${prefix}-env-item-${index}-${encodeURIComponent(number)}`,
         parentId,
-        title,
+        title: formatAlignedTitle(number, String(item?.name || "").trim(), maxDigits),
         contexts: MENU_CONTEXTS,
         documentUrlPatterns: GMAIL_URL_PATTERNS
       });
@@ -243,17 +245,17 @@ async function buildEnvelopeMenu(rootId, prefix) {
     chrome.contextMenus.create({
       id: `${prefix}-env-refresh`,
       parentId: rootId,
-      title: "↻ Refresh envelope numbers",
+      title: "Refresh envelope numbers",
       contexts: MENU_CONTEXTS,
       documentUrlPatterns: GMAIL_URL_PATTERNS
     });
-  } catch (err) {
-    console.error("[Parish Codes] Envelope menu build failed:", err);
+  } catch (error) {
+    console.error("[Parish Codes] Envelope menu build failed:", error);
 
     chrome.contextMenus.create({
       id: `${prefix}-env-error`,
       parentId: rootId,
-      title: "⚠ Could not load envelope numbers (click to retry)",
+      title: "Could not load envelope numbers (click to retry)",
       contexts: MENU_CONTEXTS,
       documentUrlPatterns: GMAIL_URL_PATTERNS
     });
@@ -269,7 +271,7 @@ async function buildEnvelopeMenu(rootId, prefix) {
     chrome.contextMenus.create({
       id: `${prefix}-env-refresh`,
       parentId: rootId,
-      title: "↻ Refresh envelope numbers",
+      title: "Refresh envelope numbers",
       contexts: MENU_CONTEXTS,
       documentUrlPatterns: GMAIL_URL_PATTERNS
     });
@@ -279,8 +281,20 @@ async function buildEnvelopeMenu(rootId, prefix) {
 /************* CLICK HANDLER *************/
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
-  if (String(info.menuItemId || "") !== CONTEXT_MENU_OPEN_MODAL_ID) return;
-  await openRoutingModalForTab(tab.id);
+
+  const menuItemId = String(info.menuItemId || "");
+  if (menuItemId.endsWith("budget-refresh") || menuItemId.endsWith("budget-error")) {
+    await rebuildMenus();
+    return;
+  }
+  if (menuItemId.endsWith("env-refresh") || menuItemId.endsWith("env-error")) {
+    await rebuildMenus();
+    return;
+  }
+
+  const selection = parseClickedCode(menuItemId);
+  if (!selection) return;
+  await openRoutingModalForTab(tab.id, selection);
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -309,6 +323,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         routeKind: modalPayload.routeKind,
         designation: modalPayload.designation,
         vendor: modalPayload.vendor,
+        amount: modalPayload.amount,
         gmail: gmailContext,
         page: { url: sender?.tab?.url || null },
         client: { ts: new Date().toISOString() }
@@ -343,34 +358,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-function parseClickedCode(menuItemId) {
-  if (typeof menuItemId !== "string") return null;
-
-  if (menuItemId.startsWith("invoice-budget-code-")) {
-    const codeValue = decodeCodeFromMenuId(menuItemId);
-    if (!codeValue) return null;
-    return { codeType: "budget", codeValue, routeKind: "BILL" };
-  }
-
-  if (menuItemId.startsWith("direct-budget-code-")) {
-    const codeValue = decodeCodeFromMenuId(menuItemId);
-    if (!codeValue) return null;
-    return { codeType: "budget", codeValue, routeKind: "DB" };
-  }
-
-  if (menuItemId.startsWith("contrib-env-item-")) {
-    const codeValue = menuItemId.split("-").at(-1)?.trim();
-    if (!codeValue) return null;
-    return { codeType: "envelope", codeValue, routeKind: "CONTRIBUTION", designation: "", insertText: codeValue };
-  }
-
-  if (menuItemId === "contrib-designation-rent") {
-    return { codeType: "envelope", codeValue: "", routeKind: "CONTRIBUTION", designation: "Rent", insertText: "Rent" };
-  }
-
-  return null;
-}
-
 async function getGmailContext(tabId, frameId) {
   let result = await sendMessageSafe(tabId, { type: "getGmailContext" }, frameId, { expectResponse: true });
   if (result) return result;
@@ -384,7 +371,7 @@ function isGmailUrl(value) {
   return /^https:\/\/mail\.google\.com\//i.test(String(value || ""));
 }
 
-async function openRoutingModalForTab(tabId) {
+async function openRoutingModalForTab(tabId, initialSelection = null) {
   await ensureContentScriptInjected(tabId);
 
   let budgetEntries = [];
@@ -405,7 +392,8 @@ async function openRoutingModalForTab(tabId) {
       type: "openRoutingModal",
       payload: {
         budgetEntries,
-        envelopeEntries
+        envelopeEntries,
+        initialSelection
       }
     },
     undefined,
@@ -422,21 +410,26 @@ function normalizeModalPayload(payload) {
   const codeValue = String(payload?.codeValue || "").trim();
   const designation = String(payload?.designation || "").trim();
   const vendor = String(payload?.vendor || "").trim();
-  const normalizedRouteKind = routeKind === "DB"
-    ? "DB"
-    : routeKind === "CONTRIBUTION"
-      ? "CONTRIBUTION"
-      : "BILL";
+  const amount = normalizeAmount(payload?.amount || "");
+  const normalizedRouteKind = ["BILL", "DB", "EFT", "CHECK", "CONTRIBUTION"].includes(routeKind)
+    ? routeKind
+    : "BILL";
   const codeType = normalizedRouteKind === "CONTRIBUTION" ? "envelope" : "budget";
 
-  if (!codeValue) {
-    return { ok: false, error: normalizedRouteKind === "CONTRIBUTION" ? "Envelope is required." : "Budget code is required." };
-  }
-  if (normalizedRouteKind === "CONTRIBUTION" && !designation) {
-    return { ok: false, error: "Designation is required for AR." };
-  }
-  if (normalizedRouteKind !== "CONTRIBUTION" && !vendor) {
-    return { ok: false, error: "Vendor is required for AP." };
+  if (normalizedRouteKind === "CONTRIBUTION") {
+    if (!codeValue && !designation) {
+      return { ok: false, error: "Envelope number or designation is required for AR." };
+    }
+    if (codeValue && !designation) {
+      return { ok: false, error: "Designation is required for AR." };
+    }
+  } else {
+    if (!codeValue) {
+      return { ok: false, error: "Budget code is required." };
+    }
+    if (!vendor) {
+      return { ok: false, error: "Vendor is required for AP." };
+    }
   }
 
   return {
@@ -445,8 +438,17 @@ function normalizeModalPayload(payload) {
     codeType,
     codeValue,
     designation: normalizedRouteKind === "CONTRIBUTION" ? designation : "",
-    vendor: normalizedRouteKind === "CONTRIBUTION" ? "" : vendor
+    vendor: normalizedRouteKind === "CONTRIBUTION" ? "" : vendor,
+    amount: normalizedRouteKind === "CONTRIBUTION" ? "" : amount
   };
+}
+
+function normalizeAmount(value) {
+  const raw = String(value || "").replace(/\$/g, "").replace(/,/g, "").trim();
+  if (!raw) return "";
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return "";
+  return parsed.toFixed(2);
 }
 
 /************* SERVER CALLS *************/
@@ -456,7 +458,7 @@ async function getToken() {
 }
 
 async function postRouteEmail(payload) {
-    console.log("[Parish Codes] route-email payload:", payload);
+  console.log("[Parish Codes] route-email payload:", payload);
   const token = await getToken();
   if (!token) {
     console.warn("[Parish Codes] No token set. Open extension options and set Bearer token.");
@@ -473,12 +475,10 @@ async function postRouteEmail(payload) {
       body: JSON.stringify(payload)
     });
 
-    // If server needs a messageId and we only have threadId, optionally resolve then retry.
     if (!res.ok) {
       const text = await safeText(res);
       console.warn("[Parish Codes] route-email failed:", res.status, text);
 
-      // Optional fallback: if we got a threadId but not messageId, try resolve endpoint and retry once.
       const threadId = payload?.gmail?.threadId;
       const messageId = payload?.gmail?.messageId;
       if (!messageId && threadId) {
@@ -573,11 +573,7 @@ async function safeText(res) {
   try { return await res.text(); } catch { return ""; }
 }
 
-/************* DATA FETCH: BUDGET (GViz) *************/
-function budgetGvizUrl() {
-  return `https://docs.google.com/spreadsheets/d/${BUDGET_SHEET_ID}/gviz/tq?sheet=${encodeURIComponent(BUDGET_SHEET_NAME)}&tqx=out:json`;
-}
-
+/************* DATA FETCH: BUDGET *************/
 async function loadBudgetMenuEntries() {
   const token = await getToken();
   if (!token) throw new Error("Missing token for budget codes request");
@@ -597,23 +593,7 @@ async function loadBudgetMenuEntries() {
   return data.entries;
 }
 
-
-function isBudgetHeaderRow(cat, code, line) {
-  const a = (cat || "").toLowerCase();
-  const b = (code || "").toLowerCase();
-  const c = (line || "").toLowerCase();
-  return (
-    (a === "category" || a === "budget category") &&
-    (b === "code" || b === "budget code") &&
-    (c === "line" || c === "description" || c === "budget line")
-  );
-}
-
-/************* DATA FETCH: ENVELOPES (GViz) *************/
-function envGvizUrl() {
-  return `https://docs.google.com/spreadsheets/d/${ENV_SHEET_ID}/gviz/tq?sheet=${encodeURIComponent(ENV_SHEET_NAME)}&tqx=out:json`;
-}
-
+/************* DATA FETCH: ENVELOPES *************/
 async function loadEnvelopeData() {
   const token = await getToken();
   if (!token) throw new Error("Missing token for envelope numbers request");
@@ -631,36 +611,39 @@ async function loadEnvelopeData() {
     throw new Error("Envelope numbers payload invalid");
   }
 
-  // Optional: sort defensively
   data.entries.sort((a, b) => (String(a.letter).localeCompare(String(b.letter)) || String(a.number).localeCompare(String(b.number))));
   return data.entries;
 }
 
-function getLastName(name) {
-  if (!name) return "";
-  let n = String(name).trim();
-  if (n.includes("/")) n = n.split("/")[0].trim();
-  if (n.includes(",")) return n.split(",")[0].trim();
+function parseClickedCode(menuItemId) {
+  if (typeof menuItemId !== "string") return null;
 
-  const parts = n.split(/\s+/);
-  const suffixes = new Set(["jr", "sr", "ii", "iii", "iv", "v"]);
-
-  while (parts.length > 1) {
-    const last = parts.at(-1).replace(/\./g, "").toLowerCase();
-    if (suffixes.has(last)) parts.pop();
-    else break;
+  if (menuItemId.startsWith("invoice-budget-code-")) {
+    const codeValue = decodeMenuToken(menuItemId);
+    if (!codeValue) return null;
+    return { codeType: "budget", codeValue, routeKind: "BILL", designation: "", vendor: "" };
   }
-  return parts.at(-1) || "";
+
+  if (menuItemId.startsWith("direct-budget-code-")) {
+    const codeValue = decodeMenuToken(menuItemId);
+    if (!codeValue) return null;
+    return { codeType: "budget", codeValue, routeKind: "DB", designation: "", vendor: "" };
+  }
+
+  if (menuItemId.startsWith("contrib-env-item-")) {
+    const codeValue = decodeMenuToken(menuItemId);
+    if (!codeValue) return null;
+    return { codeType: "envelope", codeValue, routeKind: "CONTRIBUTION", designation: "", vendor: "" };
+  }
+
+  if (menuItemId === "contrib-designation-rent") {
+    return { codeType: "envelope", codeValue: "", routeKind: "CONTRIBUTION", designation: "Rent", vendor: "" };
+  }
+
+  return null;
 }
 
-function formatAlignedTitle(number, name, maxDigits) {
-  const nbsp = "\u00A0";
-  const diff = maxDigits - number.length;
-  const pad = nbsp.repeat(Math.max(0, diff + 2));
-  return name ? `${number}${pad}${name}` : number;
-}
-
-function decodeCodeFromMenuId(menuItemId) {
+function decodeMenuToken(menuItemId) {
   const encoded = String(menuItemId || "").split("-").at(-1)?.trim();
   if (!encoded) return "";
 
@@ -669,6 +652,13 @@ function decodeCodeFromMenuId(menuItemId) {
   } catch {
     return encoded;
   }
+}
+
+function formatAlignedTitle(number, name, maxDigits) {
+  const nbsp = "\u00A0";
+  const diff = maxDigits - String(number || "").length;
+  const pad = nbsp.repeat(Math.max(0, diff + 2));
+  return name ? `${number}${pad}${name}` : number;
 }
 
 async function sendMessageSafe(tabId, message, frameId, options = {}) {
@@ -779,3 +769,5 @@ async function showToastInTab(tabId, message, ok) {
     // ignore toast failures
   }
 }
+
+

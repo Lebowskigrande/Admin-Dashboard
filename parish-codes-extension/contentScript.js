@@ -1,4 +1,4 @@
-/**
+﻿/**
  * contentScript.js
  * - Inserts chosen code into active editable field (Gmail compose)
  * - Captures right-click context and tries to extract Gmail thread/message identifiers
@@ -222,6 +222,8 @@ function openRoutingModal(payload) {
 
   const budgetEntries = normalizeBudgetEntries(payload?.budgetEntries);
   const envelopeEntries = normalizeEnvelopeEntries(payload?.envelopeEntries);
+  const initialSelection = normalizeInitialSelection(payload?.initialSelection);
+  const initialMode = initialSelection.routeKind === "CONTRIBUTION" ? "ar" : "ap";
 
   const overlay = document.createElement("div");
   overlay.id = ROUTING_MODAL_ID;
@@ -271,16 +273,21 @@ function openRoutingModal(payload) {
   const apRouteKindId = `${ROUTING_MODAL_ID}-ap-routekind`;
   const apCodeId = `${ROUTING_MODAL_ID}-ap-code`;
   const apVendorId = `${ROUTING_MODAL_ID}-ap-vendor`;
+  const apAmountId = `${ROUTING_MODAL_ID}-ap-amount`;
   apSection.innerHTML = `
     <label for="${apRouteKindId}">AP Route Type</label>
     <select id="${apRouteKindId}">
       <option value="BILL">Invoice (BILL)</option>
-      <option value="DB">Direct Debit (DB)</option>
+      <option value="DB">Debit (DB)</option>
+      <option value="EFT">Electronic Transfer (EFT)</option>
+      <option value="CHECK">Check (Check)</option>
     </select>
     <label for="${apCodeId}">Budget Code</label>
     <select id="${apCodeId}"></select>
     <label for="${apVendorId}">Vendor</label>
     <input id="${apVendorId}" type="text" autocomplete="off" placeholder="Required (e.g. SoCalGas)" />
+    <label for="${apAmountId}">Amount</label>
+    <input id="${apAmountId}" type="text" inputmode="decimal" autocomplete="off" placeholder="Optional (e.g. 210.00)" />
   `;
 
   const arSection = document.createElement("div");
@@ -299,6 +306,7 @@ function openRoutingModal(payload) {
   const apRouteKindSelect = apSection.querySelector(`#${CSS.escape(apRouteKindId)}`);
   const apCodeSelect = apSection.querySelector(`#${CSS.escape(apCodeId)}`);
   const apVendorInput = apSection.querySelector(`#${CSS.escape(apVendorId)}`);
+  const apAmountInput = apSection.querySelector(`#${CSS.escape(apAmountId)}`);
   const arEnvelopeSelect = arSection.querySelector(`#${CSS.escape(arEnvId)}`);
   const arDesignationInput = arSection.querySelector(`#${CSS.escape(arDesignationId)}`);
   const cancelBtn = footer.querySelector('[data-action="cancel"]');
@@ -317,7 +325,7 @@ function openRoutingModal(payload) {
 
   const state = {
     overlay,
-    mode: "ap",
+    mode: initialMode,
     busy: false,
     refs: {
       apSection,
@@ -325,6 +333,7 @@ function openRoutingModal(payload) {
       apRouteKindSelect,
       apCodeSelect,
       apVendorInput,
+      apAmountInput,
       arEnvelopeSelect,
       arDesignationInput,
       routeBtn,
@@ -337,6 +346,8 @@ function openRoutingModal(payload) {
   };
   routingModalState = state;
 
+  applyInitialSelection(state, initialSelection);
+
   const setMode = (mode) => {
     if (!routingModalState) return;
     state.mode = mode === "ar" ? "ar" : "ap";
@@ -347,11 +358,7 @@ function openRoutingModal(payload) {
       button.classList.toggle("active", active);
     });
     clearModalError();
-    if (state.mode === "ap") {
-      state.refs.apVendorInput.focus();
-    } else {
-      state.refs.arDesignationInput.focus();
-    }
+    focusCurrentModalField(state);
   };
 
   const setBusy = (busy) => {
@@ -361,6 +368,7 @@ function openRoutingModal(payload) {
     state.refs.apRouteKindSelect.disabled = disabled;
     state.refs.apCodeSelect.disabled = disabled;
     state.refs.apVendorInput.disabled = disabled;
+    state.refs.apAmountInput.disabled = disabled;
     state.refs.arEnvelopeSelect.disabled = disabled;
     state.refs.arDesignationInput.disabled = disabled;
     state.refs.cancelBtn.disabled = disabled;
@@ -376,6 +384,7 @@ function openRoutingModal(payload) {
     const normalized = buildModalSubmission(state);
     if (!normalized.ok) {
       setModalError(normalized.error || "Missing required fields.");
+      focusCurrentModalField(state);
       return;
     }
     setModalError("");
@@ -391,6 +400,7 @@ function openRoutingModal(payload) {
         if (err) {
           setBusy(false);
           setModalError(String(err.message || "Failed to submit routing request."));
+          focusCurrentModalField(state);
           return;
         }
         if (response?.ok) {
@@ -399,6 +409,7 @@ function openRoutingModal(payload) {
         }
         setBusy(false);
         setModalError(String(response?.error || "Routing failed."));
+        focusCurrentModalField(state);
       }
     );
   };
@@ -421,6 +432,17 @@ function openRoutingModal(payload) {
       setMode(button.getAttribute("data-mode"));
     });
   });
+  apCodeSelect.addEventListener("change", () => {
+    clearModalError();
+    if (!state.busy && state.mode === "ap") focusCurrentModalField(state);
+  });
+  arEnvelopeSelect.addEventListener("change", () => {
+    clearModalError();
+    if (!state.busy && state.mode === "ar") focusCurrentModalField(state);
+  });
+  apVendorInput.addEventListener("input", clearModalError);
+  arDesignationInput.addEventListener("input", clearModalError);
+  apRouteKindSelect.addEventListener("change", clearModalError);
 
   modal.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -437,7 +459,7 @@ function openRoutingModal(payload) {
   document.addEventListener("keydown", state.onEsc, true);
 
   document.documentElement.appendChild(overlay);
-  setMode("ap");
+  setMode(initialMode);
 }
 
 function closeRoutingModal() {
@@ -466,8 +488,12 @@ function buildModalSubmission(state) {
   if (state.mode === "ar") {
     const codeValue = String(state.refs.arEnvelopeSelect.value || "").trim();
     const designation = String(state.refs.arDesignationInput.value || "").trim();
-    if (!codeValue) return { ok: false, error: "Envelope number is required." };
-    if (!designation) return { ok: false, error: "Designation is required." };
+    if (!codeValue && !designation) {
+      return { ok: false, error: "Envelope number or designation is required." };
+    }
+    if (codeValue && !designation) {
+      return { ok: false, error: "Designation is required." };
+    }
     return {
       ok: true,
       payload: {
@@ -479,11 +505,10 @@ function buildModalSubmission(state) {
     };
   }
 
-  const routeKind = String(state.refs.apRouteKindSelect.value || "BILL").trim().toUpperCase() === "DB"
-    ? "DB"
-    : "BILL";
+  const routeKind = normalizeApRouteKind(state.refs.apRouteKindSelect.value || "BILL");
   const codeValue = String(state.refs.apCodeSelect.value || "").trim();
   const vendor = String(state.refs.apVendorInput.value || "").trim();
+  const amount = normalizeAmountInput(state.refs.apAmountInput.value || "");
   if (!codeValue) return { ok: false, error: "Budget code is required." };
   if (!vendor) return { ok: false, error: "Vendor is required." };
   return {
@@ -492,11 +517,151 @@ function buildModalSubmission(state) {
       routeKind,
       codeType: "budget",
       codeValue,
-      vendor
+      vendor,
+      amount
     }
   };
 }
 
+function focusRoutingField(element) {
+  if (!element || typeof element.focus !== "function") return;
+  requestAnimationFrame(() => {
+    element.focus();
+    if (typeof element.select === "function" && element.tagName === "INPUT") {
+      element.select();
+      return;
+    }
+    if (typeof element.setSelectionRange === "function" && element.tagName === "INPUT") {
+      const valueLength = String(element.value || "").length;
+      element.setSelectionRange(0, valueLength);
+    }
+  });
+}
+
+function focusCurrentModalField(state) {
+  if (!state?.refs) return;
+
+  if (state.mode === "ap") {
+    const codeValue = String(state.refs.apCodeSelect.value || "").trim();
+    const vendor = String(state.refs.apVendorInput.value || "").trim();
+    if (!codeValue) {
+      focusRoutingField(state.refs.apCodeSelect);
+      return;
+    }
+    if (!vendor) {
+      focusRoutingField(state.refs.apVendorInput);
+      return;
+    }
+    focusRoutingField(state.refs.routeBtn);
+    return;
+  }
+
+  const codeValue = String(state.refs.arEnvelopeSelect.value || "").trim();
+  const designation = String(state.refs.arDesignationInput.value || "").trim();
+  if (!codeValue && !designation) {
+    focusRoutingField(state.refs.arEnvelopeSelect);
+    return;
+  }
+  if (codeValue && !designation) {
+    focusRoutingField(state.refs.arDesignationInput);
+    return;
+  }
+  focusRoutingField(state.refs.routeBtn);
+}
+
+function normalizeInitialSelection(selection) {
+  const routeKind = String(selection?.routeKind || "").trim().toUpperCase();
+  return {
+    routeKind: ["BILL", "DB", "EFT", "CHECK", "CONTRIBUTION"].includes(routeKind)
+      ? routeKind
+      : "BILL",
+    codeValue: String(selection?.codeValue || "").trim(),
+    designation: String(selection?.designation || "").trim(),
+    vendor: String(selection?.vendor || "").trim(),
+    amount: normalizeAmountInput(selection?.amount || "")
+  };
+}
+
+function applyInitialSelection(state, selection) {
+  if (!state?.refs || !selection) return;
+
+  state.refs.apRouteKindSelect.value = ["BILL", "DB", "EFT", "CHECK"].includes(selection.routeKind)
+    ? selection.routeKind
+    : "BILL";
+  state.refs.apVendorInput.value = selection.routeKind === "CONTRIBUTION" ? "" : selection.vendor;
+  state.refs.apAmountInput.value = selection.routeKind === "CONTRIBUTION"
+    ? ""
+    : (selection.amount || extractLikelyAmountFromPage());
+  state.refs.arDesignationInput.value = selection.routeKind === "CONTRIBUTION" ? selection.designation : "";
+
+  if (selection.routeKind === "CONTRIBUTION") {
+    setSelectValue(state.refs.arEnvelopeSelect, selection.codeValue);
+    setSelectValue(state.refs.apCodeSelect, "");
+    state.refs.apVendorInput.value = "";
+  } else {
+    setSelectValue(state.refs.apCodeSelect, selection.codeValue);
+    setSelectValue(state.refs.arEnvelopeSelect, "");
+    state.refs.arDesignationInput.value = "";
+  }
+}
+
+function normalizeApRouteKind(value) {
+  const upper = String(value || "").trim().toUpperCase();
+  if (upper === "DB") return "DB";
+  if (upper === "EFT") return "EFT";
+  if (upper === "CHECK") return "CHECK";
+  return "BILL";
+}
+
+function normalizeAmountInput(value) {
+  const raw = String(value || "").replace(/\$/g, "").replace(/,/g, "").trim();
+  if (!raw) return "";
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return "";
+  return parsed.toFixed(2);
+}
+
+function parseCurrencyToken(value) {
+  const normalized = normalizeAmountInput(value);
+  return normalized ? Number.parseFloat(normalized) : null;
+}
+
+function extractLikelyAmountFromPage() {
+  const source = String(document.body?.innerText || "").replace(/\s+/g, " ").trim();
+  if (!source) return "";
+
+  const labeledPatterns = [
+    /\b(?:amount due|balance due|total due|invoice total|amount paid|total payment|payment amount|net amount)\b[^$0-9]{0,20}\$?\(?([0-9,]+(?:\.\d{2})?)\)?/gi,
+    /\b(?:total|amt due)\b[^$0-9]{0,20}\$?\(?([0-9,]+(?:\.\d{2})?)\)?/gi
+  ];
+  const labeled = [];
+  labeledPatterns.forEach((pattern, priority) => {
+    for (const match of source.matchAll(pattern)) {
+      const amount = parseCurrencyToken(match[1]);
+      if (amount == null || amount <= 0 || amount >= 100000) continue;
+      labeled.push({ amount, priority, index: match.index || 0 });
+    }
+  });
+  labeled.sort((a, b) => a.priority - b.priority || b.index - a.index || b.amount - a.amount);
+  if (labeled[0]) return labeled[0].amount.toFixed(2);
+
+  const matches = [...source.matchAll(/\$([0-9]{1,3}(?:,[0-9]{3})*(?:\.\d{2})|[0-9]+\.\d{2})/g)]
+    .map((match) => parseCurrencyToken(match[1]))
+    .filter((amount) => amount != null && amount > 0 && amount < 100000);
+  if (!matches.length) return "";
+  return Math.max(...matches).toFixed(2);
+}
+
+function setSelectValue(selectEl, value) {
+  if (!selectEl) return;
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    selectEl.value = "";
+    return;
+  }
+  const option = Array.from(selectEl.options).find((item) => String(item.value || "").trim() === normalized);
+  selectEl.value = option ? normalized : "";
+}
 function normalizeBudgetEntries(entries) {
   const list = Array.isArray(entries) ? entries : [];
   const seen = new Set();
@@ -727,4 +892,6 @@ function showToast(message, ok) {
     setTimeout(() => toast.remove(), 200);
   }, 2500);
 }
+
+
 

@@ -5,6 +5,7 @@ import { resolve } from 'path';
 import { sqlite as db } from '../db.js';
 import {
     requireAuth,
+    requireAdmin,
     saveSharefileGmailTokens,
     getSharefileGmailTokens,
     getUserTokens,
@@ -14,6 +15,7 @@ import {
     removeSharefileRoutingAccount,
     getDefaultSharefileRoutingAccountUserId
 } from '../helpers/auth.js';
+import { loadBudgetCodes } from '../helpers/budget-utils.js';
 import { routeShareFileEmails, routeSharefileMessage, resolveSharefileMessageId, recordSharefileRoutingEvent } from '../services/sharefileEmailRouter.js';
 import { getAuthUrlWithRedirect, getTokensFromCodeWithRedirect, GOOGLE_SCOPES } from '../googleAuth.js';
 
@@ -214,12 +216,12 @@ router.get('/api/sharefile/google/status', requireAuth, (_req, res) => {
     });
 });
 
-router.get('/api/sharefile/google/accounts', requireAuth, (_req, res) => {
+router.get('/api/sharefile/google/accounts', requireAdmin, (_req, res) => {
     const accounts = getSharefileRoutingAccounts();
     res.json({ ok: true, accounts });
 });
 
-router.post('/api/sharefile/google/accounts/default', requireAuth, (req, res) => {
+router.post('/api/sharefile/google/accounts/default', requireAdmin, (req, res) => {
     const userId = String(req.body?.userId || '').trim();
     if (!userId) return res.status(400).json({ ok: false, error: 'userId is required' });
     const ok = setDefaultSharefileRoutingAccount(userId);
@@ -227,7 +229,7 @@ router.post('/api/sharefile/google/accounts/default', requireAuth, (req, res) =>
     return res.json({ ok: true });
 });
 
-router.post('/api/sharefile/google/accounts/disconnect', requireAuth, (req, res) => {
+router.post('/api/sharefile/google/accounts/disconnect', requireAdmin, (req, res) => {
     const userId = String(req.body?.userId || '').trim();
     if (!userId) return res.status(400).json({ ok: false, error: 'userId is required' });
     const ok = removeSharefileRoutingAccount(userId, { removeTokens: true });
@@ -235,7 +237,7 @@ router.post('/api/sharefile/google/accounts/disconnect', requireAuth, (req, res)
     return res.json({ ok: true });
 });
 
-router.post('/api/sharefile/route-emails', requireAuth, async (req, res) => {
+router.post('/api/sharefile/route-emails', requireAdmin, async (req, res) => {
     try {
         const result = await routeShareFileEmails({
             archive: false
@@ -260,6 +262,7 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
         routeKind: payload.routeKind,
         designation: payload.designation,
         vendor: payload.vendor,
+        amount: payload.amount,
         clientTs: payload.client?.ts || ''
     };
     const normalizedRouteKind = String(extraMeta.routeKind || '').trim().toUpperCase();
@@ -267,7 +270,7 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
     const normalizedDesignation = String(extraMeta.designation || '').trim();
     const normalizedVendor = String(extraMeta.vendor || '').trim();
 
-    if (!['BILL', 'DB', 'CONTRIBUTION'].includes(normalizedRouteKind)) {
+    if (!['BILL', 'DB', 'EFT', 'CHECK', 'CONTRIBUTION'].includes(normalizedRouteKind)) {
         return res.status(400).json({ error: 'Unsupported routeKind' });
     }
     if (normalizedRouteKind === 'CONTRIBUTION') {
@@ -284,6 +287,7 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
     extraMeta.codeValue = normalizedCodeValue;
     extraMeta.designation = normalizedDesignation;
     extraMeta.vendor = normalizedVendor;
+    extraMeta.amount = String(extraMeta.amount || '').trim();
 
     try {
         const tokenCandidates = getExtensionGmailTokenCandidates();
@@ -431,47 +435,6 @@ router.post('/api/sharefile/resolve-message-id', requireSharefileAuth, async (re
     }
 });
 
-const loadBudgetCodes = () => {
-    const filePath = resolve(process.cwd(), 'budget_codes.xlsx');
-    const workbook = xlsx.readFile(filePath);
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-    const entries = [];
-    let currentCategory = '';
-
-    rows.forEach((row) => {
-        const category = String(row[0] || '').trim();
-        const codeRaw = String(row[1] || '').trim();
-        const line = String(row[2] || '').trim();
-
-        if (category) {
-            currentCategory = category;
-        }
-        if (!currentCategory) return;
-
-        if (line.toLowerCase() === 'div') {
-            // Ignore divider marker rows; UI should render a flat category list.
-            return;
-        }
-
-        if (!codeRaw) {
-            if (line) {
-                entries.push({ type: 'heading', category: currentCategory, label: line });
-            }
-            return;
-        }
-
-        entries.push({
-            type: 'item',
-            category: currentCategory,
-            code: codeRaw,
-            line
-        });
-    });
-
-    return entries;
-};
-
 const loadEnvelopeNumbers = () => {
     const filePath = resolve(process.cwd(), 'envelope_numbers.xlsx');
     const workbook = xlsx.readFile(filePath);
@@ -492,7 +455,7 @@ const loadEnvelopeNumbers = () => {
     return entries;
 };
 
-router.get('/api/sharefile/budget-codes', (_req, res) => {
+router.get('/api/sharefile/budget-codes', requireSharefileAuth, (_req, res) => {
     try {
         const entries = loadBudgetCodes();
         res.json({ ok: true, entries });
@@ -502,7 +465,7 @@ router.get('/api/sharefile/budget-codes', (_req, res) => {
     }
 });
 
-router.get('/api/sharefile/envelope-numbers', (_req, res) => {
+router.get('/api/sharefile/envelope-numbers', requireSharefileAuth, (_req, res) => {
     try {
         const entries = loadEnvelopeNumbers();
         res.json({ ok: true, entries });
@@ -513,3 +476,4 @@ router.get('/api/sharefile/envelope-numbers', (_req, res) => {
 });
 
 export default router;
+

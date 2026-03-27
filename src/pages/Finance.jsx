@@ -8,6 +8,12 @@ import { formatCurrency } from '../utils/formatters';
 import './Finance.css';
 
 const MIN_DEPOSIT_ROWS = 18;
+const AP_ROUTE_KIND_OPTIONS = [
+    { value: 'BILL', label: 'Invoice (BILL)' },
+    { value: 'DB', label: 'Debit (DB)' },
+    { value: 'EFT', label: 'Electronic Transfer (EFT)' },
+    { value: 'CHECK', label: 'Check (Check)' }
+];
 
 const createCheckRow = () => ({
     id: globalThis.crypto?.randomUUID?.() || `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -58,6 +64,18 @@ const buildPayloadAmount = (value) => {
     if (!normalized) return '';
     return `$${normalized}`;
 };
+
+const normalizeApRouteKind = (value) => {
+    const upper = String(value || '').trim().toUpperCase();
+    if (upper === 'DB') return 'DB';
+    if (upper === 'EFT') return 'EFT';
+    if (upper === 'CHECK') return 'CHECK';
+    return 'BILL';
+};
+
+const getApRouteKindLabel = (value) => (
+    AP_ROUTE_KIND_OPTIONS.find((option) => option.value === normalizeApRouteKind(value))?.label || 'Invoice (BILL)'
+);
 
 const loadSavedChecks = () => {
     if (typeof window === 'undefined') return null;
@@ -155,7 +173,7 @@ const Finance = () => {
     const [apLog, setApLog] = useState({ loading: false, error: '', notice: '', entries: [], revealBusyKey: '', designationBusyKey: '', attachBusyKey: '' });
     const [arLog, setArLog] = useState({ loading: false, error: '', notice: '', entries: [], revealBusyKey: '', designationBusyKey: '' });
     const [apEditingKey, setApEditingKey] = useState('');
-    const [apEditDraft, setApEditDraft] = useState({ codeValue: '', vendor: '', files: {}, filePaths: {}, deleted: {} });
+    const [apEditDraft, setApEditDraft] = useState({ codeValue: '', vendor: '', routeKind: 'BILL', amount: '', files: {}, filePaths: {}, deleted: {} });
     const [arEditingKey, setArEditingKey] = useState('');
     const [arEditDraft, setArEditDraft] = useState({ codeValue: '', designation: '', files: {}, filePaths: {}, deleted: {} });
     const apAttachInputRef = useRef(null);
@@ -559,6 +577,8 @@ const Finance = () => {
         setApEditDraft({
             codeValue: String(entry.codeValue || ''),
             vendor: String(entry.vendor || ''),
+            routeKind: normalizeApRouteKind(entry.routeKind || ''),
+            amount: normalizeAmountInput(entry.amount || ''),
             files: filesDraft,
             filePaths: (Array.isArray(entry.files) ? entry.files : []).reduce((acc, file) => {
                 acc[String(file.fileIndex)] = String(file.path || '');
@@ -570,7 +590,7 @@ const Finance = () => {
 
     const cancelApInlineEdit = () => {
         setApEditingKey('');
-        setApEditDraft({ codeValue: '', vendor: '', files: {}, filePaths: {}, deleted: {} });
+        setApEditDraft({ codeValue: '', vendor: '', routeKind: 'BILL', amount: '', files: {}, filePaths: {}, deleted: {} });
     };
 
     const startArInlineEdit = (entry) => {
@@ -706,6 +726,8 @@ const Finance = () => {
         const actionDateKey = getRoutingDateForType('ap');
         const codeValue = String(apEditDraft.codeValue || '').trim();
         const vendor = String(apEditDraft.vendor || '').trim();
+        const routeKind = normalizeApRouteKind(apEditDraft.routeKind || '');
+        const amount = normalizeAmountInput(apEditDraft.amount || '');
         if (!codeValue) {
             setApLog((prev) => ({ ...prev, error: 'Code cannot be empty.', notice: '' }));
             return;
@@ -725,6 +747,8 @@ const Finance = () => {
                     jobId: key,
                     codeValue,
                     vendor,
+                    routeKind,
+                    amount,
                     files: filesPayload
                 })
             });
@@ -749,6 +773,8 @@ const Finance = () => {
                         ...row,
                         codeValue: String(payload.codeValue || codeValue),
                         vendor: String(payload.vendor || vendor),
+                        routeKind: normalizeApRouteKind(payload.routeKind || routeKind),
+                        amount: normalizeAmountInput(payload.amount || amount),
                         vendorMissing: !String(payload.vendor || vendor).trim(),
                         files: Array.isArray(payload.files) ? payload.files : row.files
                     };
@@ -920,7 +946,7 @@ const Finance = () => {
                                                 onClick={() => startApInlineEdit(entry)}
                                                 disabled={apLog.designationBusyKey === String(entry.jobId || entry.id || '').trim()}
                                                 aria-label="Edit AP entry"
-                                                title="Edit code, vendor, and filenames"
+                                                title="Edit code, type, vendor, amount, and filenames"
                                             >
                                                 <FaEdit />
                                             </button>
@@ -928,11 +954,30 @@ const Finance = () => {
                                     )}
                                 </div>
                                 <div className="routing-log-designation-row">
+                                    <span className="routing-log-designation-label">Type:</span>
+                                    <strong>{getApRouteKindLabel(entry.routeKind)}</strong>
+                                </div>
+                                <div className="routing-log-designation-row">
                                     <span className="routing-log-designation-label">Vendor:</span>
                                     <strong>{entry.vendor || 'Vendor not found'}</strong>
                                 </div>
+                                <div className="routing-log-designation-row">
+                                    <span className="routing-log-designation-label">Amount:</span>
+                                    <strong>{entry.amount ? formatCurrency(Number(entry.amount)) : 'Not set'}</strong>
+                                </div>
                                 {apEditingKey === String(entry.jobId || entry.id || '').trim() && (
                                     <div className="routing-log-inline-editor">
+                                        <label>
+                                            Type
+                                            <select
+                                                value={apEditDraft.routeKind}
+                                                onChange={(event) => setApEditDraft((prev) => ({ ...prev, routeKind: event.target.value }))}
+                                            >
+                                                {AP_ROUTE_KIND_OPTIONS.map((option) => (
+                                                    <option key={option.value} value={option.value}>{option.label}</option>
+                                                ))}
+                                            </select>
+                                        </label>
                                         <label>
                                             Code
                                             <input
@@ -947,6 +992,17 @@ const Finance = () => {
                                                 type="text"
                                                 value={apEditDraft.vendor}
                                                 onChange={(event) => setApEditDraft((prev) => ({ ...prev, vendor: event.target.value }))}
+                                            />
+                                        </label>
+                                        <label>
+                                            Amount
+                                            <input
+                                                type="text"
+                                                inputMode="decimal"
+                                                value={apEditDraft.amount}
+                                                onChange={(event) => setApEditDraft((prev) => ({ ...prev, amount: event.target.value }))}
+                                                onBlur={(event) => setApEditDraft((prev) => ({ ...prev, amount: normalizeAmountInput(event.target.value) }))}
+                                                placeholder="Optional"
                                             />
                                         </label>
                                     </div>

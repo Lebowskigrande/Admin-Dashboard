@@ -249,6 +249,29 @@ const extractDesignationFromOutput = (output) => {
 };
 
 const extractVendorFromOutput = (output) => compactWhitespace(output?.routing?.vendor || output?.vendor || '');
+const normalizeApRouteKind = (value) => {
+    const upper = compactWhitespace(value).toUpperCase();
+    if (upper === 'DB') return 'DB';
+    if (upper === 'EFT') return 'EFT';
+    if (upper === 'CHECK') return 'CHECK';
+    return 'BILL';
+};
+const formatApFilenameKind = (value) => normalizeApRouteKind(value) === 'CHECK' ? 'Check' : normalizeApRouteKind(value);
+const normalizeApAmount = (value) => {
+    const raw = String(value || '').replace(/\$/g, '').replace(/,/g, '').trim();
+    if (!raw) return '';
+    const parsed = Number.parseFloat(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) return '';
+    return parsed.toFixed(2);
+};
+const formatApAmountToken = (value) => {
+    const normalized = normalizeApAmount(value);
+    if (!normalized) return '';
+    const parsed = Number.parseFloat(normalized);
+    if (!Number.isFinite(parsed)) return '';
+    return Number.isInteger(parsed) ? `$${String(parsed)}` : `$${parsed.toFixed(2)}`;
+};
+const extractAmountFromOutput = (output) => normalizeApAmount(output?.routing?.amount || output?.amount || '');
 const extractPersonFromOutput = (output) => {
     const personId = compactWhitespace(output?.routing?.personId || output?.personId || '');
     const personName = compactWhitespace(output?.routing?.personName || output?.personName || '');
@@ -434,6 +457,8 @@ const buildRoutingLogEntryFromGroup = async ({
         personName: person.personName,
         personMatchConfidence: person.personMatchConfidence,
         vendor,
+        routeKind: isAp ? normalizeApRouteKind(output?.routing?.routeKind || '') : 'CONTRIBUTION',
+        amount: isAp ? extractAmountFromOutput(output) : '',
         vendorMissing: isAp && !vendor,
         status,
         errorText,
@@ -539,17 +564,17 @@ const ensureUniqueFilePath = async (targetPath) => {
     }
 };
 
-const buildRenamedApFilename = (currentName, { routeKind = 'BILL', vendor = '' } = {}) => {
+const buildRenamedApFilename = (currentName, { routeKind = 'BILL', vendor = '', amount = '' } = {}) => {
     const raw = String(currentName || '').trim();
     if (!raw) return '';
-    const match = raw.match(/^(\d{4}\.\d{2})\s+SEEC\s+([A-Z]+)\s+(.+?)(?:-(\d+))?\.pdf$/i);
+    const match = raw.match(/^(\d{4}\.\d{2})\s+SEEC(?:\s*-\s*|\s+)([A-Za-z]+)\s+(.+?)(?:\s+\$[0-9][0-9,]*(?:\.\d{2})?)?(?:-(\d+))?\.pdf$/i);
     const monthPart = match?.[1] || '';
-    const kindPart = String(match?.[2] || routeKind || 'BILL').toUpperCase();
     const suffixPart = match?.[4] ? `-${match[4]}` : '';
     if (!monthPart) return '';
     const vendorToken = sanitizeVendorToken(vendor);
     if (!vendorToken) return '';
-    return `${monthPart} SEEC ${kindPart} ${vendorToken}${suffixPart}.pdf`;
+    const amountToken = formatApAmountToken(amount);
+    return `${monthPart} SEEC - ${formatApFilenameKind(routeKind)} ${vendorToken}${amountToken ? ` ${amountToken}` : ''}${suffixPart}.pdf`;
 };
 
 const pathExists = async (targetPath) => {
@@ -1164,7 +1189,8 @@ router.post('/routing-log/vendor', async (req, res) => {
         }
 
         const output = safeParseJson(jobRow.output_json || '{}');
-        const routeKind = String(output?.routing?.routeKind || '').toUpperCase() || 'BILL';
+        const routeKind = normalizeApRouteKind(output?.routing?.routeKind || '');
+        const amount = extractAmountFromOutput(output);
         const rawFiles = Array.isArray(output?.files) ? output.files : [];
         const normalizedFiles = normalizeJobFiles(output);
         if (!normalizedFiles.length) {
@@ -1180,7 +1206,8 @@ router.post('/routing-log/vendor', async (req, res) => {
             const currentName = basename(currentPath);
             const renamed = buildRenamedApFilename(currentName, {
                 routeKind,
-                vendor: normalizedVendor
+                vendor: normalizedVendor,
+                amount
             });
             if (!renamed || renamed === currentName) {
                 if (rawFile && typeof rawFile === 'object') {
@@ -1236,6 +1263,7 @@ router.post('/routing-log/vendor', async (req, res) => {
                 ...(output?.routing || {}),
                 routeKind,
                 vendor: normalizedVendor,
+                amount,
                 vendorFound: true,
                 vendorUpdatedAt: new Date().toISOString()
             }
@@ -1247,6 +1275,7 @@ router.post('/routing-log/vendor', async (req, res) => {
             historyAction: 'vendor-update',
             historyDetails: {
                 vendor: normalizedVendor,
+                amount,
                 renamedFiles: renamedCount,
                 fileMutations: fileMutations.sort((a, b) => Number(a.fileIndex) - Number(b.fileIndex))
             }
@@ -1256,6 +1285,7 @@ router.post('/routing-log/vendor', async (req, res) => {
             ok: true,
             jobId: jobRow.id,
             vendor: normalizedVendor,
+            amount,
             renamedFiles: renamedCount
         });
     } catch (error) {
@@ -1269,6 +1299,8 @@ router.post('/routing-log/ap-entry', async (req, res) => {
         const rawJobId = String(req.body?.jobId || '').trim();
         const codeValueInput = compactWhitespace(req.body?.codeValue || '');
         const vendorInput = compactWhitespace(req.body?.vendor || '');
+        const routeKindInput = compactWhitespace(req.body?.routeKind || '');
+        const amountInput = compactWhitespace(req.body?.amount || '');
         const incomingFiles = Array.isArray(req.body?.files) ? req.body.files : [];
         if (!rawJobId) {
             return res.status(400).json({ ok: false, error: 'jobId is required' });
@@ -1296,9 +1328,11 @@ router.post('/routing-log/ap-entry', async (req, res) => {
 
         const nextCodeValue = codeValueInput || String(jobRow.code_value || '').trim() || 'unknown';
         const nextVendor = sanitizeVendorToken(vendorInput);
+        const nextRouteKind = routeKindInput ? normalizeApRouteKind(routeKindInput) : '';
+        const nextAmount = normalizeApAmount(amountInput);
         const output = safeParseJson(jobRow.output_json || '{}');
         const targetDir = String(output?.targetDir || '').trim();
-        const routeKind = String(output?.routing?.routeKind || '').toUpperCase() || 'BILL';
+        const routeKind = nextRouteKind || normalizeApRouteKind(output?.routing?.routeKind || '');
         const normalizedFiles = await normalizeJobFilesWithCurrentPaths(output, jobRow.created_at, new Map());
         if (!normalizedFiles.length) {
             return res.status(404).json({ ok: false, error: 'No saved files found for this routing job' });
@@ -1349,7 +1383,7 @@ router.post('/routing-log/ap-entry', async (req, res) => {
             }
             let nextName = sanitizeFilenameToken(desiredNameByIndex.get(fileIndex) || '');
             if (!nextName) {
-                nextName = buildRenamedApFilename(currentName, { routeKind, vendor: nextVendor }) || currentName;
+                nextName = buildRenamedApFilename(currentName, { routeKind, vendor: nextVendor, amount: nextAmount }) || currentName;
             }
             if (!nextName.toLowerCase().endsWith('.pdf')) {
                 nextName = `${nextName}.pdf`;
@@ -1417,6 +1451,7 @@ router.post('/routing-log/ap-entry', async (req, res) => {
                 ...(output?.routing || {}),
                 routeKind,
                 vendor: nextVendor,
+                amount: nextAmount,
                 vendorFound: Boolean(nextVendor),
                 vendorUpdatedAt: new Date().toISOString()
             }
@@ -1430,6 +1465,8 @@ router.post('/routing-log/ap-entry', async (req, res) => {
             historyDetails: {
                 codeValue: nextCodeValue,
                 vendor: nextVendor,
+                routeKind,
+                amount: nextAmount,
                 renamedFiles: renamedCount,
                 deletedFiles: deletedCount,
                 fileMutations: fileMutations.sort((a, b) => Number(a.fileIndex) - Number(b.fileIndex))
@@ -1442,6 +1479,8 @@ router.post('/routing-log/ap-entry', async (req, res) => {
             jobId: jobRow.id,
             codeValue: nextCodeValue,
             vendor: nextVendor,
+            routeKind,
+            amount: nextAmount,
             renamedFiles: renamedCount,
             deletedFiles: deletedCount,
             files

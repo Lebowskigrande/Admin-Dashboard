@@ -475,8 +475,16 @@ const buildNoteText = (_metadata, extra = {}) => {
 const normalizeRouteKind = (value) => {
     const upper = String(value || '').trim().toUpperCase();
     if (upper === 'DB') return 'DB';
+    if (upper === 'EFT') return 'EFT';
+    if (upper === 'CHECK') return 'CHECK';
     if (upper === 'CONTRIBUTION') return 'CONTRIBUTION';
     return 'BILL';
+};
+
+const formatApFilenameKind = (value) => {
+    const normalized = normalizeRouteKind(value);
+    if (normalized === 'CHECK') return 'Check';
+    return normalized;
 };
 
 const isContributionEmail = (metadata, bodyText) => {
@@ -523,12 +531,50 @@ const buildInvoiceFilename = async ({
         baseName = formatContributionFilenameBase({ timestamp: time, donor, amount, sourceToken });
     } else {
         const yearMonth = formatDate(time, 'yyyy.MM');
-        const hhmmss = formatDate(time, 'HHmmss');
         const vendorToken = sanitizeApVendorToken(vendor);
-        baseName = `${yearMonth} SEEC ${kind} ${vendorToken || hhmmss}`;
+        const normalizedAmount = normalizeCurrencyAmount(amount);
+        const amountNumber = normalizedAmount ? Number.parseFloat(normalizedAmount) : null;
+        const amountToken = Number.isFinite(amountNumber)
+            ? `$${Number.isInteger(amountNumber) ? String(amountNumber) : amountNumber.toFixed(2)}`
+            : '';
+        const parts = [`${yearMonth} SEEC - ${formatApFilenameKind(kind)}`, vendorToken].filter(Boolean);
+        if (amountToken) parts.push(amountToken);
+        baseName = parts.join(' ');
     }
 
     return ensureUniquePath(targetDir, baseName);
+};
+
+const parseCurrencyToken = (value) => {
+    const normalized = normalizeCurrencyAmount(value);
+    if (!normalized) return null;
+    const parsed = Number.parseFloat(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const extractApAmountFromText = (text) => {
+    const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    const labeledPatterns = [
+        /\b(?:amount due|balance due|total due|invoice total|amount paid|total payment|payment amount|net amount)\b[^$0-9]{0,20}\$?\(?([0-9,]+(?:\.\d{2})?)\)?/gi,
+        /\b(?:total|amt due)\b[^$0-9]{0,20}\$?\(?([0-9,]+(?:\.\d{2})?)\)?/gi
+    ];
+    const labeled = [];
+    labeledPatterns.forEach((pattern, priority) => {
+        for (const match of normalized.matchAll(pattern)) {
+            const amount = parseCurrencyToken(match[1]);
+            if (amount == null || amount <= 0 || amount >= 100000) continue;
+            labeled.push({ amount, priority, index: match.index || 0 });
+        }
+    });
+    labeled.sort((a, b) => a.priority - b.priority || b.index - a.index || b.amount - a.amount);
+    if (labeled[0]) return labeled[0].amount.toFixed(2);
+
+    const generalMatches = [...normalized.matchAll(/\$([0-9]{1,3}(?:,[0-9]{3})*(?:\.\d{2})|[0-9]+\.\d{2})/g)]
+        .map((match) => parseCurrencyToken(match[1]))
+        .filter((amount) => amount != null && amount > 0 && amount < 100000);
+    if (!generalMatches.length) return '';
+    return Math.max(...generalMatches).toFixed(2);
 };
 
 const saveRoutedPdfOutput = async ({
@@ -1798,6 +1844,9 @@ export const routeShareFileEmails = async ({
                     designationFallback: ''
                 })
                 : null;
+            const apAmount = routeKind === 'CONTRIBUTION'
+                ? ''
+                : normalizeCurrencyAmount(extractApAmountFromText(bodyText));
             codeType = routeKind === 'CONTRIBUTION' ? 'envelope' : 'budget';
             codeValue = routeKind === 'CONTRIBUTION'
                 ? String(contributionMeta?.envelopeNumber || '').trim()
@@ -1945,7 +1994,7 @@ export const routeShareFileEmails = async ({
                         filenameTimestamp,
                         targetDir: resolvedRoot,
                         donor: contributionMeta?.donor || '',
-                        amount: contributionMeta?.amount || '',
+                        amount: routeKind === 'CONTRIBUTION' ? (contributionMeta?.amount || '') : apAmount,
                         sourceToken,
                         noteText,
                         tempDir,
@@ -1981,7 +2030,7 @@ export const routeShareFileEmails = async ({
                     filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
-                    amount: contributionMeta?.amount || '',
+                    amount: routeKind === 'CONTRIBUTION' ? (contributionMeta?.amount || '') : apAmount,
                     sourceToken,
                     noteText,
                     tempDir,
@@ -2013,7 +2062,7 @@ export const routeShareFileEmails = async ({
                         filenameTimestamp,
                         targetDir: resolvedRoot,
                         donor: contributionMeta?.donor || '',
-                        amount: contributionMeta?.amount || '',
+                        amount: routeKind === 'CONTRIBUTION' ? (contributionMeta?.amount || '') : apAmount,
                         sourceToken,
                         noteText,
                         tempDir,
@@ -2041,6 +2090,7 @@ export const routeShareFileEmails = async ({
                         ? Number(contributionMeta?.personMatchConfidence || 0)
                         : 0,
                     vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
+                    amount: routeKind === 'CONTRIBUTION' ? '' : apAmount,
                     vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor || contextVendorFallback),
                     canonicalPublishedCount: canonicalSync.published,
                     canonicalFailedCount: canonicalSync.failed,
@@ -2262,14 +2312,6 @@ export const routeSharefileMessage = async ({
             designationFallback: extraMeta.designation
         })
         : null;
-    const noteText = buildNoteText(metadata, {
-        ...extraMeta,
-        routeKind,
-        donor: contributionMeta?.donor || '',
-        envelopeNumber: contributionMeta?.envelopeNumber || '',
-        designation: contributionMeta?.designation || '',
-        amount: contributionMeta?.amount || ''
-    });
     const attachments = collectAttachments(message.payload);
     const isContributionRoute = routeKind === 'CONTRIBUTION';
     const threadPdfAttachments = !isContributionRoute
@@ -2280,6 +2322,17 @@ export const routeSharefileMessage = async ({
     const conversationText = !isContributionRoute && allowThreadContext && !useThreadPdfAttachments
         ? buildConversationText(threadMessages)
         : '';
+    const apAmount = routeKind === 'CONTRIBUTION'
+        ? ''
+        : normalizeCurrencyAmount(extraMeta?.amount || extractApAmountFromText(`${bodyText}\n${conversationText}`));
+    const noteText = buildNoteText(metadata, {
+        ...extraMeta,
+        routeKind,
+        donor: contributionMeta?.donor || '',
+        envelopeNumber: contributionMeta?.envelopeNumber || '',
+        designation: contributionMeta?.designation || '',
+        amount: contributionMeta?.amount || ''
+    });
     const contextVendorMeta = isContributionRoute
         ? { vendor: '', found: false, confidence: 0 }
         : resolveApVendorFromContext(metadata, bodyText, conversationText);
@@ -2390,7 +2443,7 @@ export const routeSharefileMessage = async ({
                     filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
-                    amount: contributionMeta?.amount || '',
+                    amount: routeKind === 'CONTRIBUTION' ? (contributionMeta?.amount || '') : apAmount,
                     sourceToken,
                     noteText,
                     tempDir,
@@ -2426,7 +2479,7 @@ export const routeSharefileMessage = async ({
                 filenameTimestamp,
                 targetDir: resolvedRoot,
                 donor: contributionMeta?.donor || '',
-                amount: contributionMeta?.amount || '',
+                amount: routeKind === 'CONTRIBUTION' ? (contributionMeta?.amount || '') : apAmount,
                 sourceToken,
                 noteText,
                 tempDir,
@@ -2458,7 +2511,7 @@ export const routeSharefileMessage = async ({
                     filenameTimestamp,
                     targetDir: resolvedRoot,
                     donor: contributionMeta?.donor || '',
-                    amount: contributionMeta?.amount || '',
+                    amount: routeKind === 'CONTRIBUTION' ? (contributionMeta?.amount || '') : apAmount,
                     sourceToken,
                     noteText,
                     tempDir,
@@ -2506,6 +2559,7 @@ export const routeSharefileMessage = async ({
                     ? Number(contributionMeta?.personMatchConfidence || 0)
                     : 0,
                 vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
+                amount: routeKind === 'CONTRIBUTION' ? '' : apAmount,
                 vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor || contextVendorFallback),
                 canonicalPublishedCount: canonicalSync.published,
                 canonicalFailedCount: canonicalSync.failed,
