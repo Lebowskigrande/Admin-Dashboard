@@ -4,18 +4,24 @@ import { tableExists, tableHasColumn } from '../helpers/db-utils.js';
 import { upsertEntityLink, deleteEntityLinks } from '../helpers/entity-utils.js';
 import {
     formatTaskInstanceRow,
-    sortTasksByPriority,
-    getPriorityTier,
     getDefaultPriorityBase
 } from '../helpers/task-utils.js';
 import { recordTaskProgressHistory } from '../helpers/task-progress-history.js';
 import { normalizeWorshipTypeSlug } from '../helpers/worship-service-utils.js';
-
-const DEFAULT_ORGANIST_ID = 'rob-hovencamp';
-const STATUS_PROGRESS_STEPS = [
-    { key: 'in-process', title: 'In Process', sort_order: 10 },
-    { key: 'done', title: 'Done', sort_order: 20 }
-];
+import {
+    addDaysIso,
+    getEventTaskSchedule,
+    getLastDayOfMonthKey,
+    getNextWeekdayDate,
+    getTimesheetTargetPeriod,
+    getVestryTaskSchedule,
+    getWeekStartMonday,
+    toDateKey,
+    toMonthKey,
+    toYearKey
+} from './taskEngineScheduling.js';
+import { syncDefaultWorshipServiceTemplates, WORSHIP_TEMPLATE_SCHEMAS } from './taskEngineTemplates.js';
+export { buildOriginRollups } from './taskEngineRollups.js';
 
 const ensureTaskInstanceNotes = () => {
     const table = db.prepare(`
@@ -190,132 +196,19 @@ const upsertRecurringTemplateDefinition = (definition) => {
     );
 };
 
-const getStatusTemplateDefinitions = ({
-    templateIdPrefix,
-    listKey,
-    listTitle,
-    dueOffsetDays,
-    priorityBase
-}) => STATUS_PROGRESS_STEPS.map((step, index) => ({
-    id: `${templateIdPrefix}-${listKey}-${step.key}`,
-    listKey,
-    listTitle,
-    listMode: 'progressive',
-    stepKey: `${listKey}-${step.key}`,
-    title: step.title,
-    sortOrder: step.sort_order,
-    dueOffsetDays: index === 0 ? dueOffsetDays : -1,
-    priorityBase
-}));
-
-const WORSHIP_TEMPLATE_SCHEMAS = {
-    'rite-i-service': [
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-ritei',
-            listKey: 'bulletin',
-            listTitle: 'Bulletin',
-            dueOffsetDays: -5,
-            priorityBase: 70
-        }),
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-ritei',
-            listKey: 'music',
-            listTitle: 'Music',
-            dueOffsetDays: -7,
-            priorityBase: 62
-        })
-    ],
-    'rite-ii-service': [
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-riteii',
-            listKey: 'bulletin',
-            listTitle: 'Bulletin',
-            dueOffsetDays: -5,
-            priorityBase: 70
-        }),
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-riteii',
-            listKey: 'insert',
-            listTitle: 'Insert',
-            dueOffsetDays: -4,
-            priorityBase: 68
-        }),
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-riteii',
-            listKey: 'music',
-            listTitle: 'Music',
-            dueOffsetDays: -7,
-            priorityBase: 62
-        })
-    ],
-    'weekly-service': [
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-weekly',
-            listKey: 'bulletin',
-            listTitle: 'Bulletin',
-            dueOffsetDays: -5,
-            priorityBase: 70
-        }),
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-weekly',
-            listKey: 'insert',
-            listTitle: 'Insert',
-            dueOffsetDays: -4,
-            priorityBase: 68
-        }),
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-weekly',
-            listKey: 'music',
-            listTitle: 'Music',
-            dueOffsetDays: -7,
-            priorityBase: 62
-        })
-    ],
-    'special-service': [
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-special',
-            listKey: 'bulletin',
-            listTitle: 'Bulletin',
-            dueOffsetDays: -5,
-            priorityBase: 70
-        }),
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-special',
-            listKey: 'clergy',
-            listTitle: 'Clergy & Roles',
-            dueOffsetDays: -7,
-            priorityBase: 68
-        }),
-        ...getStatusTemplateDefinitions({
-            templateIdPrefix: 'tmpl-event-worship-special',
-            listKey: 'music',
-            listTitle: 'Music',
-            dueOffsetDays: -7,
-            priorityBase: 66
-        })
-    ],
-    'eucharist-service': []
-};
-
 const ensureDefaultWorshipServiceTemplates = () => {
-    const worshipTypeIds = getEventTypeIdsBySlugs(Object.keys(WORSHIP_TEMPLATE_SCHEMAS));
-    if (!worshipTypeIds.length) return;
-    const originIds = worshipTypeIds.map((row) => String(row.id));
-    const placeholders = originIds.map(() => '?').join(', ');
-    db.prepare(`
-        DELETE FROM recurring_task_templates
-        WHERE origin_type = 'event'
-          AND origin_id IN (${placeholders})
-    `).run(...originIds);
-
-    worshipTypeIds.forEach(({ slug, id }) => {
-        const definitions = WORSHIP_TEMPLATE_SCHEMAS[slug] || [];
-        definitions.forEach((definition) => upsertRecurringTemplateDefinition({
-            ...definition,
-            id: `${definition.id}-${slug}`,
-            originType: 'event',
-            originId: String(id)
-        }));
+    syncDefaultWorshipServiceTemplates({
+        getEventTypeIdsBySlugs,
+        clearTemplates: (originIds) => {
+            if (!originIds.length) return;
+            const placeholders = originIds.map(() => '?').join(', ');
+            db.prepare(`
+                DELETE FROM recurring_task_templates
+                WHERE origin_type = 'event'
+                  AND origin_id IN (${placeholders})
+            `).run(...originIds);
+        },
+        upsertTemplate: upsertRecurringTemplateDefinition
     });
 };
 let taskEngineRuntime = {
@@ -409,124 +302,6 @@ const collapseOperationsRecurringTasks = () => {
     return Number(result.changes || 0);
 };
 
-const addDaysIso = (dateKey, offsetDays) => {
-    const base = new Date(`${dateKey}T00:00:00`);
-    const next = new Date(base.getTime() + offsetDays * 86400000);
-    return next.toISOString().slice(0, 10);
-};
-
-const toDateKey = (dateValue) => {
-    const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
-    if (Number.isNaN(date.getTime())) return '';
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-};
-
-const toMonthKey = (dateValue) => {
-    const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
-    if (Number.isNaN(date.getTime())) return '';
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-};
-
-const toYearKey = (dateValue) => {
-    const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
-    if (Number.isNaN(date.getTime())) return '';
-    return String(date.getFullYear());
-};
-
-const getWeekStartMonday = (dateValue = new Date()) => {
-    const date = dateValue instanceof Date ? new Date(dateValue) : new Date(dateValue);
-    if (Number.isNaN(date.getTime())) return new Date();
-    const day = date.getDay();
-    const mondayOffset = (day + 6) % 7;
-    date.setHours(0, 0, 0, 0);
-    date.setDate(date.getDate() - mondayOffset);
-    return date;
-};
-
-const getNextWeekdayDate = (baseDate, weekday) => {
-    const next = new Date(baseDate);
-    const day = next.getDay();
-    const delta = (weekday - day + 7) % 7;
-    next.setDate(next.getDate() + delta);
-    next.setHours(0, 0, 0, 0);
-    return next;
-};
-
-const getLastDayOfMonthKey = (year, monthIndex) => {
-    const lastDay = new Date(year, monthIndex + 1, 0);
-    return lastDay.toISOString().slice(0, 10);
-};
-
-const getNthWeekdayOfMonth = (year, monthIndex, weekday, nth) => {
-    const first = new Date(year, monthIndex, 1);
-    const offset = (weekday - first.getDay() + 7) % 7;
-    return new Date(year, monthIndex, 1 + offset + ((nth - 1) * 7));
-};
-
-const getVestryMeetingDate = (year, monthIndex) => {
-    const nth = (monthIndex === 10 || monthIndex === 11) ? 3 : 4;
-    return getNthWeekdayOfMonth(year, monthIndex, 4, nth);
-};
-
-const getVestryTaskSchedule = ({ year, monthIndex, listKey, dueOffsetDays = null } = {}) => {
-    const meetingDate = getVestryMeetingDate(year, monthIndex);
-    const meetingKey = toDateKey(meetingDate);
-    const mondayBeforeKey = addDaysIso(meetingKey, -3);
-    const mondayAfterKey = addDaysIso(meetingKey, 4);
-    const normalizedListKey = normalizeListKey(listKey);
-    const startAt = normalizedListKey === 'postvestry' ? mondayAfterKey : mondayBeforeKey;
-
-    if (dueOffsetDays != null && String(dueOffsetDays).trim() !== '' && Number.isFinite(Number(dueOffsetDays))) {
-        return {
-            meetingKey,
-            startAt,
-            dueAt: addDaysIso(meetingKey, Number(dueOffsetDays))
-        };
-    }
-
-    if (normalizedListKey === 'postvestry') {
-        return {
-            meetingKey,
-            startAt: mondayAfterKey,
-            dueAt: addDaysIso(meetingKey, 7)
-        };
-    }
-
-    if (normalizedListKey === 'email' || normalizedListKey === 'print') {
-        return {
-            meetingKey,
-            startAt: mondayBeforeKey,
-            dueAt: addDaysIso(meetingKey, -1)
-        };
-    }
-
-    return {
-        meetingKey,
-        startAt: mondayBeforeKey,
-        dueAt: meetingKey
-    };
-};
-
-const getEventTaskSchedule = ({ dateKey, dueOffsets = [] } = {}) => {
-    const validOffsets = (Array.isArray(dueOffsets) ? dueOffsets : [dueOffsets])
-        .filter((value) => value != null && String(value).trim() !== '')
-        .map((value) => Number(value))
-        .filter((value) => Number.isFinite(value));
-    if (!dateKey || !validOffsets.length) {
-        return {
-            startAt: dateKey || null,
-            dueAt: dateKey || null
-        };
-    }
-    return {
-        startAt: addDaysIso(dateKey, Math.min(...validOffsets)),
-        dueAt: addDaysIso(dateKey, Math.max(...validOffsets))
-    };
-};
-
 const parseJsonObject = (value, fallback = {}) => {
     if (!value) return fallback;
     try {
@@ -607,67 +382,6 @@ const pruneSeededEventTasksForOccurrence = ({ occurrenceId, allowedListKeys }) =
         if (allowedListKeys.has(row.list_key)) return;
         deleteTaskInstance(row.task_instance_id);
     });
-};
-
-const parseMonthdays = (value, fallback = []) => {
-    if (!value) return fallback;
-    const monthdays = String(value)
-        .split(',')
-        .map((part) => Number.parseInt(part.trim(), 10))
-        .filter((part) => Number.isInteger(part) && part >= 1 && part <= 31);
-    return monthdays.length ? monthdays : fallback;
-};
-
-const getStrictPreviousMonday = (dateValue) => {
-    const date = dateValue instanceof Date ? new Date(dateValue) : new Date(dateValue);
-    if (Number.isNaN(date.getTime())) return null;
-    date.setHours(0, 0, 0, 0);
-    const weekday = date.getDay();
-    const delta = weekday === 1 ? 7 : (weekday + 6) % 7;
-    date.setDate(date.getDate() - delta);
-    return date;
-};
-
-const getTimesheetTargetPeriod = (templates, now = new Date()) => {
-    const configTemplate = Array.isArray(templates) ? templates.find((template) => template) : null;
-    const anchorMonthdays = parseMonthdays(configTemplate?.anchor_monthdays, [10, 25]);
-    const scheduleRule = String(configTemplate?.schedule_rule || 'friday_before_monday_before_anchor').trim().toLowerCase();
-    const today = now instanceof Date ? new Date(now) : new Date(now);
-    if (Number.isNaN(today.getTime())) return null;
-    today.setHours(0, 0, 0, 0);
-
-    const candidates = [];
-    for (let monthOffset = 0; monthOffset <= 2; monthOffset += 1) {
-        const cursor = new Date(today.getFullYear(), today.getMonth() + monthOffset, 1);
-        anchorMonthdays.forEach((monthday) => {
-            const anchorDate = new Date(cursor.getFullYear(), cursor.getMonth(), monthday);
-            if (anchorDate.getMonth() !== cursor.getMonth()) return;
-            anchorDate.setHours(0, 0, 0, 0);
-            candidates.push(anchorDate);
-        });
-    }
-
-    const periodEnd = candidates
-        .sort((a, b) => a.getTime() - b.getTime())
-        .find((candidate) => candidate.getTime() >= today.getTime());
-
-    if (!periodEnd) return null;
-
-    let dueDate = new Date(periodEnd);
-    if (scheduleRule === 'friday_before_monday_before_anchor') {
-        const mondayBeforeAnchor = getStrictPreviousMonday(periodEnd);
-        dueDate = mondayBeforeAnchor ? new Date(mondayBeforeAnchor) : dueDate;
-        dueDate.setDate(dueDate.getDate() - 3);
-    }
-
-    const periodMonthKey = toMonthKey(periodEnd);
-    const periodHalf = periodEnd.getDate() <= 15 ? 'a' : 'b';
-
-    return {
-        originId: `timesheets-${periodMonthKey}-${periodHalf}`,
-        periodEndKey: toDateKey(periodEnd),
-        dueAt: toDateKey(dueDate)
-    };
 };
 
 export const createTaskInstance = (payload) => {
@@ -1629,50 +1343,6 @@ const cleanupDuplicateEventServiceReadyTasks = () => {
     return rows.length;
 };
 
-const getListRollupCandidate = (listTasks = []) => {
-    if (!Array.isArray(listTasks) || !listTasks.length) return null;
-    const listMode = listTasks[0]?.list_mode || 'sequential';
-    const hasSequence = listMode === 'sequential'
-        || listTasks.some((task) => task.rank != null || task.step_order != null);
-    if (!hasSequence) {
-        return sortTasksByPriority(listTasks)[0] || null;
-    }
-
-    const sorted = [...listTasks].sort((a, b) => {
-        const rankA = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
-        const rankB = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
-        if (rankA !== rankB) return rankA - rankB;
-        const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : a.step_order;
-        const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : b.step_order;
-        if (orderA !== orderB) return orderA - orderB;
-        const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-        const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
-        if (dueA !== dueB) return dueA - dueB;
-        return b.priority_effective - a.priority_effective;
-    });
-    const chainMax = Math.max(...listTasks.map((task) => task.priority_effective ?? 0));
-    return {
-        ...sorted[0],
-        priority_effective: chainMax,
-        priority_tier: getPriorityTier(chainMax)
-    };
-};
-
-const getOriginNextTask = (openTasks = []) => {
-    if (!Array.isArray(openTasks) || !openTasks.length) return null;
-    const listGroups = openTasks.reduce((acc, task) => {
-        const listKey = task.list_key || 'default';
-        if (!acc[listKey]) acc[listKey] = [];
-        acc[listKey].push(task);
-        return acc;
-    }, {});
-    const listCandidates = Object.values(listGroups)
-        .map((listTasks) => getListRollupCandidate(listTasks))
-        .filter(Boolean);
-    if (!listCandidates.length) return null;
-    return sortTasksByPriority(listCandidates)[0] || null;
-};
-
 export const listTaskInstances = (whereClause = '', params = []) => {
     if (tableExists('tasks_new') && tableExists('task_instances')) {
         const hasTemplates = tableExists('recurring_task_templates');
@@ -1747,47 +1417,6 @@ export const runTaskMaintenance = () => {
         archivedCount,
         archivedAt: taskEngineRuntime.lastArchiveSweepAt
     };
-};
-export const buildOriginRollups = (tasks) => {
-    const grouped = tasks.reduce((acc, task) => {
-        if (task.archived_at) return acc;
-        const originType = task.origin_type || 'manual';
-        const originId = task.origin_id || 'manual';
-        const key = `${originType}:${originId}`;
-        if (!acc[key]) {
-            acc[key] = {
-                key,
-                origin_type: originType,
-                origin_id: originId,
-                tasks: []
-            };
-        }
-        acc[key].tasks.push(task);
-        return acc;
-    }, {});
-
-    const rollups = Object.values(grouped).map((group) => {
-        const total = group.tasks.length;
-        const openTasks = group.tasks.filter((task) => !task.completed);
-        const completedCount = total - openTasks.length;
-        const nextTask = getOriginNextTask(openTasks);
-        return {
-            key: group.key,
-            origin_type: group.origin_type,
-            origin_id: group.origin_id,
-            total_count: total,
-            open_count: openTasks.length,
-            completed_count: completedCount,
-            next_task: nextTask
-        };
-    });
-
-    const withNext = rollups.filter((row) => row.next_task);
-    const withoutNext = rollups.filter((row) => !row.next_task);
-    const sortedWithNext = sortTasksByPriority(withNext.map((row) => row.next_task)).map((task) => (
-        withNext.find((row) => row.next_task?.id === task.id)
-    )).filter(Boolean);
-    return [...sortedWithNext, ...withoutNext];
 };
 
 export const seedTaskEngine = () => {

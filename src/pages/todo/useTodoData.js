@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import { format, startOfWeek, endOfWeek, addWeeks, isWithinInterval, parseISO } from 'date-fns';
 
 import { API_URL } from '../../services/apiConfig';
 import { getOriginRoute } from '../../config/appRoutes';
 import { getTaskProgressMeta, getTaskNextStepLabel } from '../../utils/taskProgress';
+import { buildOriginGroups } from '../../../shared/taskRollups.js';
 import {
     PRIORITY_OPTIONS,
     isDateString,
     normalizeOriginKey,
-    getListKey,
     parseDueDate,
     sortTasksByPriority,
     sortTasksForDetails,
@@ -69,11 +69,45 @@ const getDueAtFromPreset = (preset) => {
     return `${toDateKey(due)}T00:00:00`;
 };
 
+const initialSelectionState = {
+    originKey: '',
+    sectionKey: '',
+    taskId: ''
+};
+
+const selectionReducer = (state, action) => {
+    switch (action.type) {
+    case 'select-focus':
+        return {
+            originKey: action.originKey || '',
+            sectionKey: action.sectionKey || '',
+            taskId: action.taskId || ''
+        };
+    case 'select-origin':
+        return {
+            originKey: action.originKey || '',
+            sectionKey: '',
+            taskId: ''
+        };
+    case 'select-section':
+        return {
+            ...state,
+            sectionKey: action.sectionKey || '',
+            taskId: action.taskId || ''
+        };
+    case 'select-task':
+        return {
+            ...state,
+            taskId: action.taskId || ''
+        };
+    default:
+        return state;
+    }
+};
+
 export const useTodoData = () => {
     const [taskList, setTaskList] = useState([]);
-    const [selectedOriginKey, setSelectedOriginKey] = useState('');
-    const [selectedSectionKey, setSelectedSectionKey] = useState('');
-    const [selectedTaskId, setSelectedTaskId] = useState('');
+    const [selection, dispatchSelection] = useReducer(selectionReducer, initialSelectionState);
     const [tasksLoading, setTasksLoading] = useState(true);
     const [error, setError] = useState('');
     const [newTask, setNewTask] = useState('');
@@ -93,6 +127,18 @@ export const useTodoData = () => {
     const [nestedExpanded, setNestedExpanded] = useState({});
     const [nestedTasks, setNestedTasks] = useState({});
     const [nestedLoading, setNestedLoading] = useState({});
+    const setSelectedOriginKey = useCallback((originKey) => {
+        dispatchSelection({ type: 'select-origin', originKey });
+    }, []);
+    const setSelectedSectionKey = useCallback((sectionKey) => {
+        dispatchSelection({ type: 'select-section', sectionKey });
+    }, []);
+    const setSelectedTaskId = useCallback((taskId) => {
+        dispatchSelection({ type: 'select-task', taskId });
+    }, []);
+    const selectFocus = useCallback(({ originKey = '', sectionKey = '', taskId = '' }) => {
+        dispatchSelection({ type: 'select-focus', originKey, sectionKey, taskId });
+    }, []);
 
     const upsertTaskInState = useCallback((nextTask) => {
         if (!nextTask?.id) return;
@@ -198,122 +244,10 @@ export const useTodoData = () => {
             const listKey = String(task?.list_key || '').toLowerCase();
             return listKey === 'bulletins-10am' || listKey === 'bulletins-8am';
         };
-        const grouped = new Map();
-        taskList.forEach((task) => {
-            if (task.archived_at) return;
-            if (isLegacySundayBulletinList(task)) return;
-            const originKey = normalizeOriginKey(task.origin_type, task.origin_id);
-            if (!grouped.has(originKey)) {
-                grouped.set(originKey, {
-                    key: originKey,
-                    origin_type: task.origin_type || 'manual',
-                    origin_id: task.origin_id || 'manual',
-                    tasks: [],
-                    lists: new Map(),
-                    sample: task
-                });
-            }
-            const group = grouped.get(originKey);
-            group.tasks.push(task);
-            const listKey = getListKey(task);
-            if (!group.lists.has(listKey)) {
-                group.lists.set(listKey, {
-                    key: listKey,
-                    title: task.list_title || listKey,
-                    mode: task.list_mode || 'sequential',
-                    tasks: []
-                });
-            }
-            group.lists.get(listKey).tasks.push(task);
+        return buildOriginGroups(taskList, {
+            excludeTask: isLegacySundayBulletinList,
+            sortTasks: sortTasksByPriority
         });
-
-        const groups = Array.from(grouped.values()).map((group) => {
-            const openTasks = group.tasks.filter((task) => !task.completed && !task.archived_at);
-            const originDueDates = openTasks
-                .map((task) => parseDueDate(task.due_at))
-                .filter(Boolean)
-                .sort((a, b) => a.getTime() - b.getTime());
-            const originDue = originDueDates.length ? originDueDates[0] : null;
-            const listSummaries = Array.from(group.lists.values()).map((list) => {
-                const listMode = list.mode || 'sequential';
-                if (listMode === 'progressive') {
-                    const task = list.tasks[0] || null;
-                    const progressMeta = getTaskProgressMeta(task);
-                    const isComplete = progressMeta?.isComplete || task?.completed;
-                    const totalCount = progressMeta?.steps?.length ?? (task ? 1 : 0);
-                    const completedCount = progressMeta
-                        ? Math.max(0, progressMeta.currentIndex + 1)
-                        : (task?.completed ? totalCount : 0);
-                    const openCount = isComplete ? 0 : (task ? 1 : 0);
-                    const nextTask = !isComplete && task
-                        ? { ...task, progress_meta: progressMeta }
-                        : null;
-                    return {
-                        ...list,
-                        totalCount,
-                        openCount,
-                        completedCount,
-                        nextTask
-                    };
-                }
-
-                const totalCount = list.tasks.length;
-                const openTasks = list.tasks.filter((task) => !task.completed);
-                const completedCount = totalCount - openTasks.length;
-                const hasSequence = listMode === 'sequential'
-                    || openTasks.some((task) => task.rank != null || task.step_order != null);
-                let nextTask = null;
-                if (openTasks.length) {
-                    if (hasSequence) {
-                        const sorted = [...openTasks].sort((a, b) => {
-                            const rankA = a.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
-                            const rankB = b.rank == null ? Number.POSITIVE_INFINITY : Number(b.rank);
-                            if (rankA !== rankB) return rankA - rankB;
-                            const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : Number(a.step_order);
-                            const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : Number(b.step_order);
-                            if (orderA !== orderB) return orderA - orderB;
-                            const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-                            const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
-                            if (dueA !== dueB) return dueA - dueB;
-                            return (b.priority_effective || 0) - (a.priority_effective || 0);
-                        });
-                        const chainMax = Math.max(...openTasks.map((task) => task.priority_effective ?? 0));
-                        nextTask = {
-                            ...sorted[0],
-                            priority_effective: chainMax
-                        };
-                    } else {
-                        nextTask = sortTasksByPriority(openTasks)[0];
-                    }
-                }
-                return {
-                    ...list,
-                    totalCount,
-                    openCount: openTasks.length,
-                    completedCount,
-                    nextTask
-                };
-            });
-
-            const listNext = listSummaries.map((list) => list.nextTask).filter(Boolean);
-            const nextTask = listNext.length ? sortTasksByPriority(listNext)[0] : null;
-            return {
-                ...group,
-                lists: listSummaries,
-                totalCount: group.tasks.length,
-                openCount: group.tasks.filter((task) => !task.completed).length,
-                completedCount: group.tasks.filter((task) => task.completed).length,
-                nextTask,
-                originDue
-            };
-        });
-
-        const withNext = groups.filter((group) => group.nextTask);
-        const withoutNext = groups.filter((group) => !group.nextTask);
-        const sortedWithNext = sortTasksByPriority(withNext.map((group) => group.nextTask)).map((task) => (
-            withNext.find((group) => group.nextTask?.id === task.id)
-        )).filter(Boolean);
-        return [...sortedWithNext, ...withoutNext];
     }, [taskList]);
 
     const filteredOriginGroups = useMemo(() => {
@@ -389,27 +323,14 @@ export const useTodoData = () => {
         };
     }, [visibleTaskRows]);
 
-    useEffect(() => {
-        if (filteredOriginGroups.length === 0 || visibleTaskRows.length === 0) {
-            setSelectedOriginKey('');
-            setSelectedSectionKey('');
-            setSelectedTaskId('');
-            return;
-        }
-        const hasOrigin = selectedOriginKey
-            && filteredOriginGroups.some((group) => group.key === selectedOriginKey);
-        if (!hasOrigin) {
-            const fallback = visibleTaskRows[0];
-            if (fallback) {
-                setSelectedOriginKey(fallback.originKey);
-            }
-            return;
-        }
-    }, [filteredOriginGroups, selectedOriginKey, visibleTaskRows]);
-
     const selectedOrigin = useMemo(() => (
-        filteredOriginGroups.find((group) => group.key === selectedOriginKey) || null
-    ), [filteredOriginGroups, selectedOriginKey]);
+        filteredOriginGroups.find((group) => group.key === selection.originKey)
+        || visibleTaskRows[0]?.origin
+        || filteredOriginGroups[0]
+        || null
+    ), [filteredOriginGroups, selection.originKey, visibleTaskRows]);
+
+    const selectedOriginKey = selectedOrigin?.key || '';
 
     const selectedWorkPackage = useMemo(() => (
         selectedOrigin ? getWorkPackageSummary(selectedOrigin) : null
@@ -417,18 +338,19 @@ export const useTodoData = () => {
 
     const selectedSection = useMemo(() => {
         if (!selectedWorkPackage) return null;
-        return selectedWorkPackage.sections.find((section) => section.key === selectedSectionKey)
+        return selectedWorkPackage.sections.find((section) => section.key === selection.sectionKey)
             || selectedWorkPackage.primarySection
             || selectedWorkPackage.sections[0]
             || null;
-    }, [selectedSectionKey, selectedWorkPackage]);
+    }, [selection.sectionKey, selectedWorkPackage]);
+
+    const selectedSectionKey = selectedSection?.key || '';
 
     useEffect(() => {
         if (!selectedOrigin) {
             setOriginLinks({ parent: null, children: [] });
             setNestedExpanded({});
             setNestedTasks({});
-            setSelectedSectionKey('');
             return;
         }
         loadOriginLinks(selectedOrigin.origin_type, selectedOrigin.origin_id);
@@ -438,25 +360,13 @@ export const useTodoData = () => {
     }, [loadOriginLinks, selectedOrigin]);
 
     useEffect(() => {
-        if (!selectedWorkPackage) {
-            setSelectedSectionKey('');
-            return;
-        }
-        const hasSection = selectedSectionKey
-            && selectedWorkPackage.sections.some((section) => section.key === selectedSectionKey);
-        if (!hasSection) {
-            setSelectedSectionKey(selectedWorkPackage.primarySection?.key || selectedWorkPackage.sections[0]?.key || '');
-        }
-    }, [selectedSectionKey, selectedWorkPackage]);
-
-    useEffect(() => {
         const handleOutsideClick = (event) => {
             const target = event.target;
             if (target.closest('.tasks-detail-card')) return;
             if (target.closest('.origin-summary-row')) return;
             if (target.closest('.task-detail-task')) return;
             if (target.closest('.origin-task-row')) return;
-            setSelectedTaskId('');
+            dispatchSelection({ type: 'select-task', taskId: '' });
         };
         document.addEventListener('mousedown', handleOutsideClick);
         return () => {
@@ -522,8 +432,10 @@ export const useTodoData = () => {
             upsertTaskInState(created);
             setNewTask('');
             setNewTaskDuePreset('');
-            setSelectedOriginKey(normalizeOriginKey(created.origin_type, created.origin_id));
-            setSelectedTaskId(created.id || '');
+            selectFocus({
+                originKey: normalizeOriginKey(created.origin_type, created.origin_id),
+                taskId: created.id || ''
+            });
             if (openDetails) {
                 openTaskModal(created);
             }
@@ -623,10 +535,10 @@ export const useTodoData = () => {
     };
 
     const selectedTask = useMemo(() => {
-        if (!selectedOrigin || !selectedTaskId) return null;
+        if (!selectedOrigin || !selection.taskId) return null;
         const allTasks = selectedOrigin.lists.flatMap((list) => list.tasks || []);
-        return allTasks.find((task) => task.id === selectedTaskId) || null;
-    }, [selectedOrigin, selectedTaskId]);
+        return allTasks.find((task) => task.id === selection.taskId) || null;
+    }, [selectedOrigin, selection.taskId]);
 
     const focusTask = selectedTask
         || selectedSection?.actionTask
@@ -637,7 +549,8 @@ export const useTodoData = () => {
         setTaskNotesDraft(focusTask?.notes || '');
     }, [focusTask?.notes]);
 
-    const selectedTaskKey = selectedTask?.id || focusTask?.id || selectedTaskId || '';
+    const selectedTaskId = selectedTask?.id || '';
+    const selectedTaskKey = selectedTask?.id || focusTask?.id || selection.taskId || '';
 
     const selectedOriginSubtitle = selectedOrigin?.sample ? getWorkPackageSubtitle(selectedOrigin) : '';
     const selectedOriginTitle = selectedOrigin?.sample

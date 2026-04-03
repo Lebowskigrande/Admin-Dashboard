@@ -1,5 +1,8 @@
 import { format, startOfWeek } from 'date-fns';
 import { getTaskProgressMeta } from '../../utils/taskProgress';
+import { getListKey, normalizeOriginKey } from '../../../shared/taskRollups.js';
+import { getSectionPresentation } from './sectionCatalog';
+export { getListKey, normalizeOriginKey } from '../../../shared/taskRollups.js';
 
 export const PRIORITY_OPTIONS = [
     { label: 'Critical', value: 80 },
@@ -18,8 +21,6 @@ const stateOrder = {
 
 export const isDateString = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '');
 export const isMonthString = (value) => /^\d{4}-\d{2}$/.test(value || '');
-export const normalizeOriginKey = (originType, originId) => `${originType || 'manual'}:${originId || 'manual'}`;
-export const getListKey = (task) => task?.list_key || 'default';
 
 export const toDateKey = (date) => {
     if (!date) return '';
@@ -447,79 +448,6 @@ export const getWorkPackageSubtitle = (originOrTask) => {
     return formatOriginSubtitle(sample);
 };
 
-const GENERIC_SECTION_TITLES = new Set([
-    'weekly ops',
-    'weekly operations',
-    'operations',
-    'tasks',
-    'task',
-    'weekly'
-]);
-
-const normalizeDisplayText = (value) => String(value || '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const isGenericSectionTitle = (value) => {
-    const normalized = normalizeDisplayText(value).toLowerCase();
-    return GENERIC_SECTION_TITLES.has(normalized);
-};
-
-const toCompactPhrase = (value, maxWords = 2) => {
-    const words = normalizeDisplayText(value)
-        .split(' ')
-        .filter(Boolean);
-    if (!words.length) return 'Section';
-    return words.slice(0, maxWords).join(' ');
-};
-
-const getOperationsSectionTitle = (list, task) => {
-    const listTitle = normalizeDisplayText(list?.title || '');
-    if (!isGenericSectionTitle(listTitle)) return listTitle || normalizeDisplayText(task?.text || '') || 'Operations';
-    return normalizeDisplayText(task?.text || '') || listTitle || 'Operations';
-};
-
-const getOperationsShortLabel = (title, task) => {
-    const raw = `${title} ${task?.text || ''}`.toLowerCase();
-    if (/(bill|invoice|expense|ap |accounts payable)/.test(raw)) return 'Bills';
-    if (/(deposit|check|bank)/.test(raw)) return 'Deposits';
-    if (/(timesheet|payroll|staff hours)/.test(raw)) return 'Payroll';
-    if (/(email|newsletter|communication|announcement)/.test(raw)) return 'Comms';
-    if (/(record|archive|scan|filing|file)/.test(raw)) return 'Records';
-    if (/(budget|finance|payment|reconcile)/.test(raw)) return 'Finance';
-    return toCompactPhrase(title, 3);
-};
-
-const getSectionVisualConfig = (list, currentTask, sectionTitle = '') => {
-    const raw = `${list?.key || ''} ${sectionTitle || list?.title || ''} ${currentTask?.text || ''}`.toLowerCase();
-
-    if (/(bulletin|packet|certificate|contract|document|print|file|doc)/.test(raw)) {
-        return { iconKey: 'documents', shortLabel: /(packet)/.test(raw) ? 'Packet' : /(certificate)/.test(raw) ? 'Certificates' : 'Docs' };
-    }
-    if (/(roster|contact|people|guest|clergy|vestry|minister|leader|attendee)/.test(raw)) {
-        return { iconKey: 'people', shortLabel: /(roster)/.test(raw) ? 'Roster' : 'People' };
-    }
-    if (/(music|musician|organ|choir|hymn|anthem)/.test(raw)) {
-        return { iconKey: 'music', shortLabel: 'Music' };
-    }
-    if (/(setup|ready|logistics|building|facility|room|site|campus|sacristy)/.test(raw)) {
-        return { iconKey: 'setup', shortLabel: 'Setup' };
-    }
-    if (/(email|communication|invite|announcement|newsletter|outreach)/.test(raw)) {
-        return { iconKey: 'communications', shortLabel: 'Comms' };
-    }
-    if (/(follow|post |minutes|recap|close|archive|thank)/.test(raw)) {
-        return { iconKey: 'followup', shortLabel: 'Follow-up' };
-    }
-    if (/(hospitality|food|kitchen|refreshment|supply)/.test(raw)) {
-        return { iconKey: 'hospitality', shortLabel: 'Hospitality' };
-    }
-    if (/(budget|finance|deposit|payment|invoice|expense)/.test(raw)) {
-        return { iconKey: 'finance', shortLabel: 'Finance' };
-    }
-    return { iconKey: 'general', shortLabel: sectionTitle || list?.title || 'Section' };
-};
-
 const getSectionAttention = (task, status) => {
     if (status === 'done') return 'done';
     const dueInfo = getDueInfo(task);
@@ -538,9 +466,13 @@ export const getWorkPackageSummary = (origin) => {
                 ? getTaskProgressMeta(checklist.representativeTask)
                 : null;
             const currentTask = checklist.currentItem?.task || representativeTask || null;
-            const effectiveTitle = origin?.origin_type === 'operations'
-                ? getOperationsSectionTitle(list, currentTask || representativeTask)
-                : (list.title || getTopLevelTaskTitle(list, currentTask));
+            const presentation = getSectionPresentation({
+                originType: origin?.origin_type,
+                listKey: list.key,
+                listTitle: list.title || getTopLevelTaskTitle(list, currentTask),
+                taskText: (currentTask || representativeTask)?.text || ''
+            });
+            const effectiveTitle = presentation.title;
             const isDone = checklist.totalCount > 0 && checklist.completedCount >= checklist.totalCount;
             const status = isDone
                 ? 'done'
@@ -550,16 +482,12 @@ export const getWorkPackageSummary = (origin) => {
             const actionTask = checklist.mode === 'progressive'
                 ? checklist.representativeTask
                 : (checklist.currentItem?.task || representativeTask || null);
-            const visual = getSectionVisualConfig(list, currentTask || actionTask, effectiveTitle);
-            const shortLabel = origin?.origin_type === 'operations'
-                ? getOperationsShortLabel(effectiveTitle, currentTask || actionTask)
-                : visual.shortLabel;
 
             return {
                 key: list.key,
                 title: effectiveTitle,
-                shortLabel,
-                iconKey: visual.iconKey,
+                shortLabel: presentation.shortLabel,
+                iconKey: presentation.iconKey,
                 currentLabel: progressMeta?.currentLabel
                     || checklist.currentItem?.label
                     || (checklist.totalCount ? 'Checklist complete' : 'No checklist items'),

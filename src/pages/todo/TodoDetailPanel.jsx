@@ -2,23 +2,13 @@ import { format } from 'date-fns';
 import { FaExternalLinkAlt } from 'react-icons/fa';
 import Card from '../../components/Card';
 import { getSectionIconComponent } from './todoVisuals';
+import { getTaskActionLabel } from '../../utils/taskProgress';
 
 const CHECKLIST_LABELS = {
     done: 'Done',
     current: 'Current',
     open: 'Open',
     upcoming: 'Up next'
-};
-
-const getActionLabel = (section, task) => {
-    if (!task) return '';
-    if (section?.checklist?.mode !== 'progressive') {
-        return task.completed ? 'Undo' : 'Complete';
-    }
-    const currentLabel = String(section?.currentLabel || '').trim().toLowerCase();
-    if (!currentLabel || currentLabel === 'not started') return 'Start';
-    if (currentLabel === 'in process') return 'Mark Done';
-    return 'Advance';
 };
 
 const TodoDetailPanel = ({
@@ -163,7 +153,7 @@ const TodoDetailPanel = ({
                                             className="btn-primary btn-compact"
                                             onClick={() => toggleTask(selectedSection.actionTask)}
                                         >
-                                            {getActionLabel(selectedSection, selectedSection.actionTask)}
+                                            {getTaskActionLabel(selectedSection.actionTask)}
                                         </button>
                                     ) : null}
                                 </div>
@@ -247,7 +237,7 @@ const TodoDetailPanel = ({
                                         disabled={!selectedSection.checklist.canAdvance}
                                         onClick={() => toggleTask(selectedSection.actionTask)}
                                     >
-                                        {getActionLabel(selectedSection, selectedSection.actionTask)}
+                                        {getTaskActionLabel(selectedSection.actionTask)}
                                     </button>
                                 </div>
                             )}

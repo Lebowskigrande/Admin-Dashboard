@@ -6,14 +6,12 @@ import Card from '../components/Card';
 import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
 import { APP_ROUTES, getOriginRoute } from '../config/appRoutes';
-import { getTaskProgressMeta } from '../utils/taskProgress';
+import { buildOriginGroups } from '../../shared/taskRollups.js';
 import {
-    getListKey,
     getOriginColorClass,
     getWorkPackageSubtitle,
     getWorkPackageSummary,
     getWorkPackageTitle,
-    normalizeOriginKey,
     sortTasksByPriority
 } from './todo/todoHelpers';
 import { getSectionIconComponent } from './todo/todoVisuals';
@@ -114,92 +112,6 @@ const eventSourceLabel = (event) => {
     if (event?.source === 'google') return 'Google';
     if (REGULAR_SUNDAY_SERVICE_SLUGS.has(event?.type_slug)) return 'Sunday';
     return event?.category_name || 'Event';
-};
-
-const buildFocusOrigins = (tasks = []) => {
-    const grouped = new Map();
-    tasks.forEach((task) => {
-        if (task?.archived_at) return;
-        const originKey = normalizeOriginKey(task.origin_type, task.origin_id);
-        if (!grouped.has(originKey)) {
-            grouped.set(originKey, {
-                key: originKey,
-                origin_type: task.origin_type || 'manual',
-                origin_id: task.origin_id || 'manual',
-                tasks: [],
-                lists: new Map(),
-                sample: task
-            });
-        }
-        const group = grouped.get(originKey);
-        group.tasks.push(task);
-        const listKey = getListKey(task);
-        if (!group.lists.has(listKey)) {
-            group.lists.set(listKey, {
-                key: listKey,
-                title: task.list_title || listKey,
-                mode: task.list_mode || 'sequential',
-                tasks: []
-            });
-        }
-        group.lists.get(listKey).tasks.push(task);
-    });
-
-    const groups = Array.from(grouped.values()).map((group) => {
-        const listSummaries = Array.from(group.lists.values()).map((list) => {
-            const listMode = String(list.mode || 'sequential').toLowerCase();
-            if (listMode === 'progressive') {
-                const task = list.tasks[0] || null;
-                const progressMeta = getTaskProgressMeta(task);
-                const isComplete = progressMeta?.isComplete || task?.completed;
-                return {
-                    ...list,
-                    nextTask: !isComplete && task ? { ...task, progress_meta: progressMeta } : null
-                };
-            }
-
-            const openListTasks = list.tasks.filter((task) => !task.completed);
-            let nextTask = null;
-            if (openListTasks.length) {
-                const hasSequence = listMode === 'sequential'
-                    || openListTasks.some((task) => task.rank != null || task.step_order != null);
-                if (hasSequence) {
-                    const sorted = [...openListTasks].sort((a, b) => {
-                        const rankA = a.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
-                        const rankB = b.rank == null ? Number.POSITIVE_INFINITY : Number(b.rank);
-                        if (rankA !== rankB) return rankA - rankB;
-                        const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : Number(a.step_order);
-                        const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : Number(b.step_order);
-                        if (orderA !== orderB) return orderA - orderB;
-                        const dueA = parseDateValue(a.due_at)?.getTime() ?? Number.POSITIVE_INFINITY;
-                        const dueB = parseDateValue(b.due_at)?.getTime() ?? Number.POSITIVE_INFINITY;
-                        if (dueA !== dueB) return dueA - dueB;
-                        return (b.priority_effective || 0) - (a.priority_effective || 0);
-                    });
-                    nextTask = sorted[0];
-                } else {
-                    nextTask = sortTasksByPriority(openListTasks)[0];
-                }
-            }
-            return { ...list, nextTask };
-        });
-
-        const listNext = listSummaries.map((list) => list.nextTask).filter(Boolean);
-        const nextTask = listNext.length ? sortTasksByPriority(listNext)[0] : null;
-        return {
-            ...group,
-            lists: listSummaries,
-            nextTask,
-            openCount: group.tasks.filter((task) => !task.completed).length
-        };
-    });
-
-    const withNext = groups.filter((group) => group.nextTask);
-    const withoutNext = groups.filter((group) => !group.nextTask);
-    const sortedWithNext = sortTasksByPriority(withNext.map((group) => group.nextTask))
-        .map((task) => withNext.find((group) => group.nextTask?.id === task.id))
-        .filter(Boolean);
-    return [...sortedWithNext, ...withoutNext];
 };
 
 const Dashboard = () => {
@@ -488,7 +400,9 @@ const Dashboard = () => {
         APP_ROUTES.todo
     ]);
 
-    const focusQueue = useMemo(() => buildFocusOrigins(snapshot.tasks).slice(0, 4), [snapshot.tasks]);
+    const focusQueue = useMemo(() => (
+        buildOriginGroups(snapshot.tasks, { sortTasks: sortTasksByPriority }).slice(0, 4)
+    ), [snapshot.tasks]);
     const issueCount = issues.length;
     const weeklyEventTotal = week.reduce((sum, day) => sum + day.items.length, 0);
     const kpis = [

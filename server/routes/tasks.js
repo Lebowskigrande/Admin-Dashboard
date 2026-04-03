@@ -9,7 +9,6 @@ import {
 import { normalizeName } from '../helpers/people-utils.js';
 import {
     sortTasksByPriority,
-    getPriorityTier,
     getDefaultPriorityBase
 } from '../helpers/task-utils.js';
 import {
@@ -1070,69 +1069,7 @@ router.get('/recurring-templates/instances', (req, res) => {
         return true;
     });
 
-    const grouped = filtered.reduce((acc, task) => {
-        const originIdValue = task.origin_id || 'manual';
-        const key = `${task.origin_type}:${originIdValue}`;
-        if (!acc[key]) {
-            acc[key] = {
-                key,
-                origin_type: task.origin_type,
-                origin_id: originIdValue,
-                tasks: [],
-                sample: task
-            };
-        }
-        acc[key].tasks.push(task);
-        return acc;
-    }, {});
-
-    const instances = Object.values(grouped).map((group) => {
-        const openTasks = group.tasks.filter((task) => !task.completed);
-        let nextTask = null;
-        if (openTasks.length) {
-            const listMode = openTasks[0]?.list_mode || 'sequential';
-            const hasSequence = listMode === 'sequential'
-                || openTasks.some((task) => task.rank != null || task.step_order != null);
-            if (hasSequence) {
-                const sorted = [...openTasks].sort((a, b) => {
-                    const rankA = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
-                    const rankB = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
-                    if (rankA !== rankB) return rankA - rankB;
-                    const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : a.step_order;
-                    const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : b.step_order;
-                    if (orderA !== orderB) return orderA - orderB;
-                    const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-                    const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
-                    if (dueA !== dueB) return dueA - dueB;
-                    return b.priority_effective - a.priority_effective;
-                });
-                const chainMax = Math.max(...openTasks.map((task) => task.priority_effective ?? 0));
-                nextTask = {
-                    ...sorted[0],
-                    priority_effective: chainMax,
-                    priority_tier: getPriorityTier(chainMax)
-                };
-            } else {
-                nextTask = sortTasksByPriority(openTasks)[0];
-            }
-        }
-        return {
-            key: group.key,
-            origin_type: group.origin_type,
-            origin_id: group.origin_id,
-            total_count: group.tasks.length,
-            open_count: openTasks.length,
-            next_task: nextTask,
-            sample: group.sample
-        };
-    });
-
-    const withNext = instances.filter((row) => row.next_task);
-    const withoutNext = instances.filter((row) => !row.next_task);
-    const sortedWithNext = sortTasksByPriority(withNext.map((row) => row.next_task)).map((task) => (
-        withNext.find((row) => row.next_task?.id === task.id)
-    )).filter(Boolean);
-    res.json([...sortedWithNext, ...withoutNext]);
+    res.json(buildOriginRollups(filtered));
 });
 
 export default router;

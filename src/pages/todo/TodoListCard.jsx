@@ -1,16 +1,6 @@
 import Card from '../../components/Card';
 import { getSectionIconComponent } from './todoVisuals';
-
-const getActionLabel = (section, task) => {
-    if (!task) return '';
-    if (section?.checklist?.mode !== 'progressive') {
-        return task.completed ? 'Undo' : 'Complete';
-    }
-    const currentLabel = String(section?.currentLabel || '').trim().toLowerCase();
-    if (!currentLabel || currentLabel === 'not started') return 'Start';
-    if (currentLabel === 'in process') return 'Mark Done';
-    return 'Advance';
-};
+import { getTaskActionLabel } from '../../utils/taskProgress';
 
 const TodoListCard = ({
     title,
@@ -163,7 +153,14 @@ const TodoListCard = ({
                                             toggleTask(primaryTask);
                                         }}
                                     >
-                                        {getActionLabel(primarySection, primaryTask)}
+                                        {getTaskActionLabel(
+                                            primaryTask,
+                                            {
+                                                completeLabel: primarySection?.checklist?.mode === 'progressive'
+                                                    ? 'Advance'
+                                                    : 'Complete'
+                                            }
+                                        )}
                                     </button>
                                 ) : null}
                             </div>
