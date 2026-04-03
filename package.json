@@ -13,6 +13,7 @@
     "preview": "vite preview",
     "dev:client": "vite",
     "dev:server": "node scripts/start-server.js",
+    "sharefile:worker": "node server/sharefile-worker.js",
     "dev:both": "node scripts/dev-both.js",
     "launcher": "node scripts/launcher-server.js",
     "tauri:dev": "tauri dev",
@@ -66,3 +67,4 @@
     "vite": "^7.2.4"
   }
 }
+

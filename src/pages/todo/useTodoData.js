@@ -72,6 +72,7 @@ const getDueAtFromPreset = (preset) => {
 export const useTodoData = () => {
     const [taskList, setTaskList] = useState([]);
     const [selectedOriginKey, setSelectedOriginKey] = useState('');
+    const [selectedSectionKey, setSelectedSectionKey] = useState('');
     const [selectedTaskId, setSelectedTaskId] = useState('');
     const [tasksLoading, setTasksLoading] = useState(true);
     const [error, setError] = useState('');
@@ -391,6 +392,7 @@ export const useTodoData = () => {
     useEffect(() => {
         if (filteredOriginGroups.length === 0 || visibleTaskRows.length === 0) {
             setSelectedOriginKey('');
+            setSelectedSectionKey('');
             setSelectedTaskId('');
             return;
         }
@@ -409,11 +411,24 @@ export const useTodoData = () => {
         filteredOriginGroups.find((group) => group.key === selectedOriginKey) || null
     ), [filteredOriginGroups, selectedOriginKey]);
 
+    const selectedWorkPackage = useMemo(() => (
+        selectedOrigin ? getWorkPackageSummary(selectedOrigin) : null
+    ), [selectedOrigin]);
+
+    const selectedSection = useMemo(() => {
+        if (!selectedWorkPackage) return null;
+        return selectedWorkPackage.sections.find((section) => section.key === selectedSectionKey)
+            || selectedWorkPackage.primarySection
+            || selectedWorkPackage.sections[0]
+            || null;
+    }, [selectedSectionKey, selectedWorkPackage]);
+
     useEffect(() => {
         if (!selectedOrigin) {
             setOriginLinks({ parent: null, children: [] });
             setNestedExpanded({});
             setNestedTasks({});
+            setSelectedSectionKey('');
             return;
         }
         loadOriginLinks(selectedOrigin.origin_type, selectedOrigin.origin_id);
@@ -421,6 +436,18 @@ export const useTodoData = () => {
         setNestedTasks({});
         setNestedLoading({});
     }, [loadOriginLinks, selectedOrigin]);
+
+    useEffect(() => {
+        if (!selectedWorkPackage) {
+            setSelectedSectionKey('');
+            return;
+        }
+        const hasSection = selectedSectionKey
+            && selectedWorkPackage.sections.some((section) => section.key === selectedSectionKey);
+        if (!hasSection) {
+            setSelectedSectionKey(selectedWorkPackage.primarySection?.key || selectedWorkPackage.sections[0]?.key || '');
+        }
+    }, [selectedSectionKey, selectedWorkPackage]);
 
     useEffect(() => {
         const handleOutsideClick = (event) => {
@@ -540,9 +567,9 @@ export const useTodoData = () => {
     };
 
     const saveTaskNotes = async () => {
-        if (!selectedTask?.id) return;
+        if (!focusTask?.id) return;
         try {
-            const response = await fetch(`${API_URL}/tasks/${selectedTask.id}`, {
+            const response = await fetch(`${API_URL}/tasks/${focusTask.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ notes: taskNotesDraft || '' })
@@ -601,11 +628,16 @@ export const useTodoData = () => {
         return allTasks.find((task) => task.id === selectedTaskId) || null;
     }, [selectedOrigin, selectedTaskId]);
 
-    useEffect(() => {
-        setTaskNotesDraft(selectedTask?.notes || '');
-    }, [selectedTask?.notes]);
+    const focusTask = selectedTask
+        || selectedSection?.actionTask
+        || selectedSection?.currentTask
+        || null;
 
-    const selectedTaskKey = selectedTask?.id || selectedTaskId || '';
+    useEffect(() => {
+        setTaskNotesDraft(focusTask?.notes || '');
+    }, [focusTask?.notes]);
+
+    const selectedTaskKey = selectedTask?.id || focusTask?.id || selectedTaskId || '';
 
     const selectedOriginSubtitle = selectedOrigin?.sample ? getWorkPackageSubtitle(selectedOrigin) : '';
     const selectedOriginTitle = selectedOrigin?.sample
@@ -615,8 +647,8 @@ export const useTodoData = () => {
     const getOriginLink = useCallback((origin) => getOriginRoute({
         originType: origin?.origin_type,
         originId: origin?.origin_id,
-        taskId: selectedTask?.id
-    }), [selectedTask?.id]);
+        taskId: focusTask?.id
+    }), [focusTask?.id]);
 
     const parentOriginKey = originLinks.parent
         ? normalizeOriginKey(originLinks.parent.origin_type, originLinks.parent.origin_id)
@@ -639,12 +671,16 @@ export const useTodoData = () => {
         taskDraft,
         taskNotesDraft,
         selectedOriginKey,
+        selectedSectionKey,
         selectedTaskId,
         selectedTaskKey,
         selectedOrigin,
+        selectedWorkPackage,
+        selectedSection,
         selectedOriginTitle,
         selectedOriginSubtitle,
         selectedTask,
+        focusTask,
         originLinks,
         nestedExpanded,
         nestedTasks,
@@ -661,6 +697,7 @@ export const useTodoData = () => {
         setTaskDraft,
         setTaskNotesDraft,
         setSelectedOriginKey,
+        setSelectedSectionKey,
         setSelectedTaskId,
         setNestedExpanded,
         setNestedTasks,

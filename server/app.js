@@ -6,8 +6,9 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 
 import { sqlite } from './db.js';
-import { loadSessionUser } from './helpers/auth.js';
+import { attachRequestUser, requireAuth, requireAdmin } from './helpers/auth.js';
 import { getDropboxAccessToken } from './helpers/dropbox-utils.js';
+import { resolveExistingPathWithinRoots } from './helpers/file-utils.js';
 
 import authRouter from './routes/auth.js';
 import peopleRouter from './routes/people.js';
@@ -18,6 +19,7 @@ import youtubeRouter from './routes/youtube.js';
 import hgkRouter from './routes/hgk.js';
 import communicationsRouter from './routes/communications.js';
 import financeRouter from './routes/finance.js';
+import budgetRouter from './routes/budget.js';
 import vestryRouter from './routes/vestry.js';
 import sundayRouter from './routes/sunday.js';
 import filesRouter from './routes/files.js';
@@ -31,6 +33,7 @@ const __dirname = dirname(__filename);
 const backupDir = process.env.DB_BACKUP_DIR || 'C:\\Users\\jclar\\Dropbox\\Parish Administrator';
 const backupPattern = /^church-db-.*\.db$/;
 const dbPath = join(__dirname, 'church.db');
+const allowedBackupRoots = [resolve(backupDir)];
 
 const findLatestDbBackup = async () => {
     try {
@@ -41,7 +44,12 @@ const findLatestDbBackup = async () => {
                 .map(async (name) => {
                     const fullPath = join(backupDir, name);
                     const stats = await stat(fullPath);
-                    return { path: fullPath, name, mtime: stats.mtimeMs };
+                    return {
+                        path: fullPath,
+                        name,
+                        mtime: stats.mtimeMs,
+                        modified: stats.mtime.toISOString()
+                    };
                 })
         );
         if (!backups.length) return null;
@@ -63,28 +71,29 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
         res.json({ ok: true });
     });
 
-    app.use((req, _res, next) => {
-        req.user = loadSessionUser(req);
-        next();
-    });
+    app.use(attachRequestUser);
 
     app.use('/api', authRouter);
-    app.use('/api/people', peopleRouter);
-    app.use('/api', buildingsRouter);
     app.use(googleRouter);
     app.use(dropboxRouter);
-    app.use(youtubeRouter);
-    app.use(hgkRouter);
     app.use(communicationsRouter);
-    app.use('/api/deposit-slip', financeRouter);
+    app.use(sharefileRouter);
+    app.use(hgkRouter);
+
+    app.use('/api', requireAuth);
+
+    app.use('/api/people', peopleRouter);
+    app.use('/api', buildingsRouter);
+    app.use(youtubeRouter);
+    app.use('/api/deposit-slip', requireAdmin, financeRouter);
+    app.use('/api/budget', budgetRouter);
     app.use('/api/vestry', vestryRouter);
     app.use('/api', sundayRouter);
     app.use('/api/files', filesRouter);
-    app.use(sharefileRouter);
     app.use('/api', tasksRouter);
     app.use('/api', eventsRouter);
 
-    app.get('/api/db-backups/latest', async (_req, res) => {
+    app.get('/api/db-backups/latest', requireAdmin, async (_req, res) => {
         try {
             const latest = await findLatestDbBackup();
             if (!latest) return res.status(404).json({ error: 'No database backups found' });
@@ -95,18 +104,17 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
         }
     });
 
-    app.post('/api/db-backups/restore', async (req, res) => {
+    app.post('/api/db-backups/restore', requireAdmin, async (req, res) => {
         try {
-            const requestedPath = req.body?.path;
+            const requestedPath = String(req.body?.path || '').trim();
             const latest = await findLatestDbBackup();
-            const target = requestedPath || latest?.path;
-            if (!target) {
+            const targetPath = requestedPath || latest?.path || '';
+            if (!targetPath) {
                 return res.status(404).json({ error: 'No database backup available to restore' });
             }
 
-            const resolvedTarget = resolve(target);
-            const resolvedDir = resolve(backupDir);
-            if (!resolvedTarget.startsWith(resolvedDir)) {
+            const resolvedTarget = await resolveExistingPathWithinRoots(targetPath, allowedBackupRoots);
+            if (!resolvedTarget) {
                 return res.status(400).json({ error: 'Invalid backup path' });
             }
 
@@ -132,7 +140,7 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
         }
     });
 
-    app.post('/api/dev/restart', (req, res) => {
+    app.post('/api/dev/restart', requireAdmin, (req, res) => {
         const ip = req.ip || req.connection?.remoteAddress || '';
         const isLocal = ip.includes('127.0.0.1') || ip === '::1' || ip.endsWith('::1');
         if (process.env.NODE_ENV === 'production' || !isLocal) {
@@ -153,7 +161,7 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
         }
     });
 
-    app.post('/api/people/backup-db', async (_req, res) => {
+    app.post('/api/people/backup-db', requireAdmin, async (_req, res) => {
         try {
             const token = await getDropboxAccessToken();
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');

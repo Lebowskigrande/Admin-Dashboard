@@ -4,7 +4,9 @@ import { sqlite as db } from '../db.js';
 import {
     parseCookies,
     setCcStateCookie,
-    CC_STATE_COOKIE
+    CC_STATE_COOKIE,
+    requireAuth,
+    requireAdmin
 } from '../helpers/auth.js';
 import {
     CC_AUTH_URL,
@@ -25,13 +27,15 @@ import {
 const router = express.Router();
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 
+router.use('/api/constant-contact', requireAuth);
+
 router.get('/api/constant-contact/status', (req, res) => {
     const userId = getCcUserId(req);
     const tokens = getCcTokens(userId);
     res.json({ connected: !!tokens?.access_token });
 });
 
-router.post('/api/constant-contact/disconnect', (req, res) => {
+router.post('/api/constant-contact/disconnect', requireAdmin, (req, res) => {
     try {
         const userId = getCcUserId(req);
         db.prepare('DELETE FROM constant_contact_tokens WHERE user_id = ?').run(userId);
@@ -48,7 +52,7 @@ router.get('/api/constant-contact/debug', (req, res) => {
     if (!tokens) {
         return res.json({ connected: false });
     }
-    res.json({
+    return res.json({
         connected: !!tokens.access_token,
         scope: tokens.scope || null,
         tokenType: tokens.token_type || null,
@@ -64,10 +68,10 @@ router.get('/api/constant-contact/from-emails', async (req, res) => {
             return res.status(401).json({ error: 'Constant Contact not connected' });
         }
         const emails = await fetchCcFromEmails(tokens);
-        res.json({ emails });
+        return res.json({ emails });
     } catch (error) {
         console.error('Constant Contact from emails failed:', error);
-        res.status(500).json({ error: 'Failed to load Constant Contact from emails' });
+        return res.status(500).json({ error: 'Failed to load Constant Contact from emails' });
     }
 });
 
@@ -85,14 +89,14 @@ router.get('/api/constant-contact/debug-emails', async (req, res) => {
             }
         });
         const payload = await response.json().catch(() => ({}));
-        res.status(response.ok ? 200 : response.status).json({
+        return res.status(response.ok ? 200 : response.status).json({
             ok: response.ok,
             status: response.status,
             payload
         });
     } catch (error) {
         console.error('Constant Contact debug emails failed:', error);
-        res.status(500).json({ error: 'Failed to debug Constant Contact emails' });
+        return res.status(500).json({ error: 'Failed to debug Constant Contact emails' });
     }
 });
 
@@ -105,14 +109,14 @@ router.get('/api/constant-contact/lists', async (req, res) => {
         }
         const data = await fetchCcJson(`${CC_API_BASE}/contact_lists`, tokens);
         const lists = Array.isArray(data?.lists) ? data.lists : [];
-        res.json({ lists });
+        return res.json({ lists });
     } catch (error) {
         console.error('Constant Contact lists failed:', error);
-        res.status(500).json({ error: 'Failed to load Constant Contact lists' });
+        return res.status(500).json({ error: 'Failed to load Constant Contact lists' });
     }
 });
 
-router.get('/auth/constant-contact', (req, res) => {
+router.get('/auth/constant-contact', requireAuth, (req, res) => {
     const clientId = process.env.CC_CLIENT_ID;
     const redirectUri = process.env.CC_REDIRECT_URI;
     if (!clientId || !redirectUri) {
@@ -128,10 +132,10 @@ router.get('/auth/constant-contact', (req, res) => {
         state
     });
     console.log('Constant Contact auth URL', `${CC_AUTH_URL}?${params.toString()}`);
-    res.redirect(`${CC_AUTH_URL}?${params.toString()}`);
+    return res.redirect(`${CC_AUTH_URL}?${params.toString()}`);
 });
 
-router.get('/auth/constant-contact/callback', async (req, res) => {
+router.get('/auth/constant-contact/callback', requireAuth, async (req, res) => {
     const { code, error, error_description: errorDescription, state } = req.query;
     if (error) {
         return res.status(400).send(errorDescription || 'Constant Contact authorization failed');
@@ -171,14 +175,14 @@ router.get('/auth/constant-contact/callback', async (req, res) => {
         const tokens = await response.json();
         const userId = getCcUserId(req);
         saveCcTokens(userId, tokens);
-        res.redirect(`${CLIENT_ORIGIN}/settings`);
+        return res.redirect(`${CLIENT_ORIGIN}/settings`);
     } catch (error) {
         console.error('Constant Contact OAuth failed:', error);
-        res.status(500).send('Constant Contact authentication failed');
+        return res.status(500).send('Constant Contact authentication failed');
     }
 });
 
-router.post('/api/constant-contact/email', async (req, res) => {
+router.post('/api/constant-contact/email', requireAdmin, async (req, res) => {
     try {
         const userId = getCcUserId(req);
         const tokens = await ensureCcAccessToken(userId);
@@ -331,13 +335,13 @@ router.post('/api/constant-contact/email', async (req, res) => {
             body: JSON.stringify({ scheduled_date: scheduledDate })
         });
 
-        res.json({ success: true, activityId, scheduledDate });
+        return res.json({ success: true, activityId, scheduledDate });
     } catch (error) {
         console.error('Constant Contact email failed:', error?.message || error);
         if (error?.message?.includes('Constant Contact request failed')) {
             console.error('Constant Contact email error detail:', error.message);
         }
-        res.status(500).json({ error: 'Failed to create Constant Contact email' });
+        return res.status(500).json({ error: 'Failed to create Constant Contact email' });
     }
 });
 

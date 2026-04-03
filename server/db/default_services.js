@@ -36,6 +36,17 @@ const parseJsonObject = (value) => {
     }
 };
 
+const getOccurrenceNotes = (occurrenceId) => {
+    if (!hasTable('event_occurrences')) return {};
+    const row = sqlite.prepare('SELECT notes FROM event_occurrences WHERE id = ?').get(occurrenceId);
+    return parseJsonObject(row?.notes);
+};
+
+const organistDefaultSuppressed = (occurrenceId) => {
+    const notes = getOccurrenceNotes(occurrenceId);
+    return !!notes?.template?.default_overrides?.organist_removed;
+};
+
 const getSundayIndex = (dateStr) => {
     const date = new Date(`${dateStr}T00:00:00`);
     const firstOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
@@ -116,11 +127,12 @@ const getTeamAssignmentsForDate = (dateStr) => {
 
 export const applyDefaultSundayAssignments = (occurrenceId, date, time, { forceOrganist = false, skipTeams = false } = {}) => {
     ensurePerson(DEFAULT_ORGANIST_ID, 'Rob Hovencamp');
+    const skipDefaultOrganist = !forceOrganist && organistDefaultSuppressed(occurrenceId);
     if (forceOrganist) {
         sqlite.prepare('DELETE FROM assignments WHERE occurrence_id = ? AND role_key = ?')
             .run(occurrenceId, 'organist');
     }
-    if (!hasAssignment(occurrenceId, 'organist')) {
+    if (!skipDefaultOrganist && !hasAssignment(occurrenceId, 'organist')) {
         insertAssignment(occurrenceId, 'organist', DEFAULT_ORGANIST_ID);
     }
 
@@ -189,6 +201,23 @@ export const ensureDefaultSundayServices = () => {
         SELECT id, date, start_time FROM event_occurrences WHERE event_id = ?
     `).all(eventId);
     existingOccurrences.forEach((occurrence) => {
-        applyDefaultSundayAssignments(occurrence.id, occurrence.date, occurrence.start_time || '10:00', { forceOrganist: true });
+        applyDefaultSundayAssignments(occurrence.id, occurrence.date, occurrence.start_time || '10:00');
+    });
+
+    const regularServiceOccurrences = sqlite.prepare(`
+        SELECT o.id, o.date, o.start_time
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        JOIN event_types t ON t.id = e.event_type_id
+        WHERE t.slug IN ('rite-i-service', 'rite-ii-service', 'weekly-service')
+    `).all();
+
+    regularServiceOccurrences.forEach((occurrence) => {
+        applyDefaultSundayAssignments(
+            occurrence.id,
+            occurrence.date,
+            occurrence.start_time || '10:00',
+            { skipTeams: true }
+        );
     });
 };

@@ -8,13 +8,17 @@ import { sqlite as db } from '../db.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Constants (Restored)
 export const CC_AUTH_URL = 'https://authz.constantcontact.com/oauth2/default/v1/authorize';
 export const CC_TOKEN_URL = 'https://authz.constantcontact.com/oauth2/default/v1/token';
 export const CC_API_BASE = 'https://api.cc.email/v3';
 
-// Helper Functions
-export const getCcUserId = (req) => req.user?.id || 'local';
+export const getCcUserId = (req) => {
+    const userId = String(req?.user?.id || '').trim();
+    if (!userId) {
+        throw new Error('Authentication required');
+    }
+    return userId;
+};
 
 export const getCcTokens = (userId) => {
     return db.prepare(`
@@ -133,13 +137,6 @@ export const getNextSaturdayAtSix = () => {
     return target;
 };
 
-// Note: This requires the template file to be relative correctly.
-// index.js assumed '../CC_livestream_email_template.txt'.
-// If this file is in 'server/helpers', '../' goes to 'server/'.
-// If template is in 'server/', then '../CC...' refers to 'server/CC...'.
-// index.js was in 'server/', so '../' was 'server/../' -> 'root/'.
-// The template is likely in the project root.
-// So relative to 'server/helpers/communications-utils.js', it is '../../CC_livestream_email_template.txt'.
 export const loadEmailTemplate = async () => {
     const templatePath = join(__dirname, '../../CC_livestream_email_template.txt');
     return readFile(templatePath, 'utf8');

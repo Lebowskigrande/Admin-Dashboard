@@ -43,3 +43,16 @@ export const getTaskNextStepLabel = (task) => {
     if (!meta) return task?.text || 'Next step';
     return meta.nextLabel || (meta.isComplete ? 'Complete' : 'Next');
 };
+
+export const getTaskActionLabel = (task, { progressiveFallback = 'Advance', completeLabel = 'Complete' } = {}) => {
+    const meta = getTaskProgressMeta(task);
+    if (!meta) {
+        return task?.completed ? 'Undo' : completeLabel;
+    }
+    if (meta.currentIndex < 0 && meta.nextStep) return 'Start';
+    if (meta.nextStep && String(meta.nextStep.title || '').trim().toLowerCase() === 'done') {
+        return 'Mark Done';
+    }
+    if (meta.nextStep) return progressiveFallback;
+    return completeLabel;
+};

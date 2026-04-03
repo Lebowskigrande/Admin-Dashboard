@@ -1,0 +1,203 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>UX Redesign Review</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=Space+Grotesk:wght@400;500;700&display=swap');
+:root {
+  --bg:#edf3f7; --ink:#122033; --muted:#5b6d82; --line:rgba(18,32,51,.12);
+  --surface:rgba(255,255,255,.84); --white:#fff; --navy:#122a43; --blue:#1f5f95;
+  --mint:#2e8a78; --gold:#c7922c; --red:#c55656; --radius:22px; --shadow:0 18px 40px rgba(15,30,48,.12);
+}
+*{box-sizing:border-box} body{margin:0;font-family:"Space Grotesk","Segoe UI",sans-serif;color:var(--ink);background:
+radial-gradient(circle at 10% 10%,rgba(255,255,255,.9),transparent 24%),
+radial-gradient(circle at 90% 12%,rgba(209,227,239,.9),transparent 20%),
+linear-gradient(180deg,#eef4f7,#dfeaf1);}
+main{width:min(1420px,calc(100vw - 28px));margin:18px auto 40px;display:grid;gap:16px}
+h1,h2,h3{margin:0;font-family:"Fraunces",Georgia,serif;letter-spacing:-.02em}
+.card,.screen,.side{background:var(--surface);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.hero{padding:28px;border-radius:28px;background:linear-gradient(135deg,rgba(18,42,67,.96),rgba(32,96,150,.92));color:#f5f8fb;position:relative;overflow:hidden}
+.hero:after{content:"";position:absolute;right:-70px;bottom:-70px;width:240px;height:240px;border-radius:50%;background:radial-gradient(circle,rgba(242,223,178,.24),transparent 70%)}
+.hero-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:20px;align-items:start}
+.eyebrow{font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:rgba(245,248,251,.74)}
+.hero p{max-width:780px;line-height:1.6;color:rgba(245,248,251,.86)}
+.hero-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:22px}
+.metric{padding:13px 14px;border-radius:16px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.14)}
+.metric span{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:rgba(245,248,251,.72)} .metric strong{display:block;margin-top:6px;font-size:1.18rem}
+.pill-stack{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.pill{padding:8px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.1);font-size:.82rem}
+.audit{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card{padding:18px}.card p{margin:8px 0 0;color:var(--muted);line-height:1.55;font-size:.92rem}.list{display:grid;gap:10px;margin-top:14px}.item{padding:11px 12px;border-radius:16px;background:rgba(255,255,255,.76);border:1px solid rgba(18,32,51,.08)}.item small{display:block;margin-top:4px;color:var(--muted);line-height:1.45}
+.layout{display:grid;grid-template-columns:280px 1fr;gap:16px}.side{padding:16px;position:sticky;top:18px}.side p{margin:8px 0 0;color:var(--muted);line-height:1.55;font-size:.92rem}
+.tab{width:100%;text-align:left;padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:#fff;color:var(--ink);margin-top:8px;font-weight:700}.tab small{display:block;margin-top:4px;font-weight:400;color:var(--muted)}.tab.active{background:#f4f9ff;border-color:rgba(31,95,149,.34)}
+.screen{padding:14px;display:none}.screen.active{display:block}.screen-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:14px}.screen-head span{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.chip{padding:8px 12px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.8);font-size:.8rem;color:var(--muted);font-weight:600}.toolbar{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.command{display:grid;grid-template-columns:78px 1fr;gap:14px;min-height:760px}.rail{border-radius:22px;background:linear-gradient(180deg,#122a43,#183d60);padding:12px;display:flex;flex-direction:column;gap:10px;align-items:center;color:#eff6fb}.dot,.railbtn{width:48px;height:48px;border-radius:16px;display:grid;place-items:center}.dot{background:rgba(255,255,255,.12);color:#f2dfb2;font-weight:700}.railbtn{background:transparent;border:0;color:rgba(239,246,251,.82);font-weight:700}.railbtn.active{background:rgba(255,255,255,.14)}
+.shell{display:grid;grid-template-rows:auto auto 1fr;gap:12px}.topbar{display:grid;grid-template-columns:1fr auto;gap:10px}.search{height:56px;border-radius:18px;border:1px solid var(--line);display:flex;align-items:center;padding:0 16px;background:rgba(255,255,255,.88);color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap}.btn{padding:12px 14px;border-radius:16px;border:1px solid var(--line);background:#fff;font-weight:700}.btn.primary{background:linear-gradient(135deg,var(--blue),#3283c3);color:#fff;border:0}
+.hero2{padding:20px;border-radius:24px;background:linear-gradient(135deg,rgba(18,42,67,.96),rgba(31,95,149,.92));color:#f6f9fb;display:grid;grid-template-columns:1.1fr .9fr;gap:14px}.hero2 p{margin:10px 0 0;color:rgba(246,249,251,.82);line-height:1.55}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;align-self:end}.stat{padding:11px;border-radius:14px;background:rgba(255,255,255,.11);border:1px solid rgba(255,255,255,.14)}.stat span{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:rgba(246,249,251,.72)}.stat strong{display:block;margin-top:6px}
+.grid3{display:grid;grid-template-columns:1.1fr 1fr .92fr;gap:12px}.panel{background:rgba(255,255,255,.96);border:1px solid rgba(18,32,51,.08);border-radius:20px;padding:14px}.panel h3{font-size:1rem}.paneltop{display:flex;justify-content:space-between;gap:10px;align-items:start;margin-bottom:10px}.paneltop small{color:var(--muted);display:block;line-height:1.45}.rowlist{display:grid;gap:9px}.row{padding:11px;border-radius:14px;border:1px solid rgba(18,32,51,.08);background:#fff}.row strong{display:block;font-size:.88rem}.row em{display:block;margin-top:4px;color:var(--muted);font-style:normal;font-size:.79rem;line-height:1.4}.bar{margin-top:8px;height:8px;border-radius:999px;background:#d9e5ed;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--mint))}.flag{padding:5px 8px;border-radius:999px;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;font-weight:700}.warn{background:#fff1db;color:#9b5d00}.good{background:#e7f6ef;color:#176538}.alert{background:#fbe6e6;color:#9f3131}
+.workbench{display:grid;grid-template-columns:.78fr 1.18fr .78fr;gap:12px;min-height:760px}.box{background:rgba(255,255,255,.96);border:1px solid rgba(18,32,51,.08);border-radius:20px;padding:14px}.mini{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}.mini span{padding:5px 8px;border-radius:999px;background:#f4f7fb;border:1px solid rgba(18,32,51,.08);font-size:.72rem;color:var(--muted);font-weight:700}.wf{padding:10px 12px;border-radius:14px;border:1px solid rgba(18,32,51,.08);background:#fff;margin-top:8px}.wf.active{background:#f6fbff;border-color:rgba(31,95,149,.32)}.wf strong{display:block;font-size:.88rem}.wf small{display:block;margin-top:4px;color:var(--muted);line-height:1.4}
+.tablewrap{overflow:hidden;border-radius:18px;border:1px solid rgba(18,32,51,.08);margin-top:12px}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:left;padding:11px 12px;border-bottom:1px solid rgba(18,32,51,.07);font-size:.82rem;vertical-align:top}th{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);background:#f7fafc}tr:last-child td{border-bottom:none}.lane{padding:5px 8px;border-radius:999px;font-size:.67rem;text-transform:uppercase;letter-spacing:.05em;font-weight:700}.lane.now{background:#eef7ff;color:#1d5f95}.lane.risk{background:#fff1db;color:#9b5d00}.lane.block{background:#fbe6e6;color:#9f3131}
+.records{display:grid;grid-template-rows:auto auto 1fr;gap:12px;min-height:760px}.filters,.summary{display:grid;gap:10px}.filters{grid-template-columns:1.2fr repeat(4,.55fr)}.field{height:48px;border-radius:14px;border:1px solid var(--line);display:flex;align-items:center;padding:0 14px;background:rgba(255,255,255,.88);color:var(--muted);font-size:.83rem}.summary{grid-template-columns:repeat(4,1fr)}.sum{padding:12px 14px;border-radius:18px;background:linear-gradient(180deg,#fff,#f6fafc);border:1px solid rgba(18,32,51,.08)}.sum span{display:block;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}.sum strong{display:block;margin-top:8px}
+.gridbox{overflow:hidden;border-radius:22px;border:1px solid rgba(18,32,51,.08);background:rgba(255,255,255,.94)}.gridtop{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:14px;border-bottom:1px solid rgba(18,32,51,.08);background:rgba(248,251,253,.9)}.gridactions{display:flex;gap:8px;flex-wrap:wrap}.soft{padding:8px 10px;border-radius:12px;border:1px solid rgba(18,32,51,.12);background:#fff;font-size:.74rem;font-weight:700}.identity{display:grid;gap:4px}.identity strong{font-size:.88rem}.identity small,.micro{color:var(--muted);font-size:.76rem;line-height:1.35}.status{padding:5px 8px;border-radius:999px;font-size:.67rem;text-transform:uppercase;letter-spacing:.05em;font-weight:700}.blue{background:#e8f3ff;color:#1d5f95}.green{background:#e8f7ef;color:#176538}.gold{background:#fff3df;color:#946110}.red{background:#fbe6e6;color:#9f3131}
+.note{padding:14px 16px;border-radius:18px;border:1px solid var(--line);background:rgba(255,255,255,.74);color:var(--muted);line-height:1.55;font-size:.9rem}
+@media (max-width:1280px){.audit,.layout,.grid3,.workbench,.command,.hero-grid,.hero2,.filters,.summary{grid-template-columns:1fr}.topbar{grid-template-columns:1fr}.layout{grid-template-columns:1fr}.side{position:static}.command{grid-template-columns:1fr}.rail{flex-direction:row;justify-content:space-between}}
+@media (max-width:860px){main{width:min(100vw - 16px,1420px);margin:8px auto 28px}.hero-metrics{grid-template-columns:1fr}.screen-head,.gridtop{display:grid;grid-template-columns:1fr}.toolbar,.actions,.gridactions,.pill-stack{justify-content:flex-start}}
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="hero-grid">
+      <div>
+        <div class="eyebrow">SE UX REVIEW + REDESIGN DIRECTION</div>
+        <h1>Make the dashboard feel like an operations cockpit, not a stack of admin forms.</h1>
+        <p>The app already has solid module coverage and useful detail panels. The biggest opportunity is to sharpen hierarchy, expose urgency faster, and move dense pages toward a real workbench model.</p>
+        <div class="hero-metrics">
+          <div class="metric"><span>Current strength</span><strong>Clear module coverage</strong></div>
+          <div class="metric"><span>Current weakness</span><strong>Too many equal-weight cards</strong></div>
+          <div class="metric"><span>Design goal</span><strong>Faster triage, denser execution</strong></div>
+        </div>
+      </div>
+      <div class="pill-stack">
+        <div class="pill">13 top-level destinations today</div>
+        <div class="pill">Best current pattern: queue + detail</div>
+        <div class="pill">Primary gap: urgency is readable, not instantly visible</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="audit">
+    <article class="card">
+      <h2>What should stay</h2>
+      <p>Strong domain separation, reusable card patterns, and the existing detail-pane model are worth preserving.</p>
+      <div class="list">
+        <div class="item">Clear page segmentation<small>Sunday, Finance, People, Buildings, Calendar, and Vestry already map to recognizable work modes.</small></div>
+        <div class="item">Good workflow foundation<small>Task and people pages already hint at a workbench interaction shape.</small></div>
+      </div>
+    </article>
+    <article class="card">
+      <h2>What is slowing users down</h2>
+      <p>The UI is clean but too even. Critical, passive, and secondary data often share the same visual weight.</p>
+      <div class="list">
+        <div class="item">Navigation is flat and long<small>Everything competes in a single rail with minimal grouping.</small></div>
+        <div class="item">Data density is moderate<small>Too much height is spent on framing before users reach the real work.</small></div>
+      </div>
+    </article>
+    <article class="card">
+      <h2>System shifts</h2>
+      <p>This should be more than a reskin. The redesign should shorten the gap from awareness to action.</p>
+      <div class="list">
+        <div class="item">Grouped navigation bands<small>Command, Planning, Records, Systems.</small></div>
+        <div class="item">Workbench pages<small>Queue left, execution center, context rail right.</small></div>
+        <div class="item">Compact record rhythm<small>Sticky context, denser rows, and fewer decorative borders.</small></div>
+      </div>
+    </article>
+  </section>
+
+  <section class="layout">
+    <aside class="side">
+      <h3>Mockup Set</h3>
+      <p>Three concept screens turn the recommendations into product-level patterns: a command center, a workflow workbench, and a denser shared record system.</p>
+      <button class="tab active" data-screen="commandScreen">Operations Command Center<small>Cross-module priorities, readiness, and blockers in one view.</small></button>
+      <button class="tab" data-screen="workbenchScreen">Workflow Workbench<small>Queue, execution table, and automation sidecar.</small></button>
+      <button class="tab" data-screen="recordsScreen">Record Grid System<small>Compact, high-signal display for People and Finance pages.</small></button>
+    </aside>
+
+    <section class="screen active" id="commandScreen">
+      <div class="screen-head">
+        <div><span>Interactive mockup</span><h2>Operations Command Center</h2></div>
+        <div class="toolbar"><div class="chip">Focus: faster scan -> faster action</div><div class="chip">Theme: cool, modern, denser</div></div>
+      </div>
+      <div class="command">
+        <aside class="rail"><div class="dot">SE</div><button class="railbtn active">C</button><button class="railbtn">P</button><button class="railbtn">R</button><button class="railbtn">S</button><button class="railbtn">+</button></aside>
+        <div class="shell">
+          <div class="topbar"><div class="search"><strong style="margin-right:8px;color:var(--ink)">Command Search</strong>jump to task, person, vendor, event, or document</div><div class="actions"><button class="btn">Saved Views</button><button class="btn primary">Quick Add</button></div></div>
+          <section class="hero2">
+            <div><div class="eyebrow" style="color:rgba(246,249,251,.72)">Operations command center</div><h3 style="font-size:1.7rem">Wednesday, March 11</h3><p>The dashboard stops being a count board and starts showing readiness, blockers, and immediate next actions across Sunday, Finance, People, and Operations.</p></div>
+            <div class="stats"><div class="stat"><span>Sunday readiness</span><strong>74%</strong></div><div class="stat"><span>Urgent items</span><strong>6</strong></div><div class="stat"><span>Open blockers</span><strong>3</strong></div></div>
+          </section>
+          <section class="grid3">
+            <article class="panel"><div class="paneltop"><div><h3>Readiness timeline</h3><small>Visible progress, not just text labels.</small></div><span class="flag warn">2 steps behind</span></div><div class="rowlist"><div class="row"><strong>Bulletin flow</strong><em>Draft approved. Print queue and upload handoff still open.</em><div class="bar"><i style="width:58%"></i></div></div><div class="row"><strong>Liturgical roster</strong><em>10 AM still needs usher coverage and one LEM backfill.</em><div class="bar"><i style="width:76%"></i></div></div><div class="row"><strong>Livestream + mail</strong><em>Template complete and ready to send on schedule.</em><div class="bar"><i style="width:91%"></i></div></div></div></article>
+            <article class="panel"><div class="paneltop"><div><h3>Action queue</h3><small>Cross-module work sorted by urgency and effort.</small></div><span class="chip">6 items need attention</span></div><div class="rowlist"><div class="row"><strong>Confirm HVAC vendor arrival window</strong><em>Buildings issue linked to Sunday comfort risk and front-office schedule.</em></div><div class="row"><strong>Resolve two AP receipts missing budget tags</strong><em>Both are blocking this week's reconciliation.</em></div><div class="row"><strong>Review duplicate family merge cluster</strong><em>Five records collide with Sunday assignments and envelope data.</em></div></div></article>
+            <article class="panel"><div class="paneltop"><div><h3>Signals board</h3><small>Dense but readable sidecar context.</small></div><span class="chip">Ops mode</span></div><div class="rowlist"><div class="row"><strong>$4,328 pending approvals</strong><em>Finance packet draft is saved but not cleared.</em></div><div class="row"><strong>12 people conflicts</strong><em>Role and assignment collisions across March.</em></div><div class="row"><strong>Best next action</strong><em>Open Sunday blocker panel and fill the usher gap from People.</em></div></div></article>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="workbenchScreen">
+      <div class="screen-head">
+        <div><span>Interactive mockup</span><h2>Workflow Workbench</h2></div>
+        <div class="toolbar"><div class="chip">Pattern: queue + execution + context</div></div>
+      </div>
+      <div class="workbench">
+        <aside class="box">
+          <h3>Workflow queue</h3>
+          <div class="mini"><span>Overdue</span><span>Today</span><span>This week</span></div>
+          <div class="wf active"><strong>Weekly deposits</strong><small>7 open tasks, next step is collection and coding.</small></div>
+          <div class="wf"><strong>Sunday bulletin</strong><small>4 open tasks, print and upload are still pending.</small></div>
+          <div class="wf"><strong>Timesheets</strong><small>One active sequence, ready for scan/send.</small></div>
+          <div class="wf"><strong>ShareFile routing</strong><small>2 exceptions need naming and designation cleanup.</small></div>
+        </aside>
+        <section class="box">
+          <div class="paneltop"><div><h3>Weekly deposits</h3><small>Use denser rows, frozen context, and clear next-step labeling.</small></div><span class="chip">7 active items</span></div>
+          <div class="mini"><span>Owner: Ops</span><span>Template: Sequential</span><span>Density: Compact</span></div>
+          <div class="tablewrap">
+            <table>
+              <thead><tr><th>Action</th><th>Task</th><th>Due</th><th>Owner</th><th>State</th><th>Next</th></tr></thead>
+              <tbody>
+                <tr><td><span class="lane now">Now</span></td><td>Collect offering and other checks</td><td>Mar 11</td><td>Ops</td><td>Open</td><td>Bag + count</td></tr>
+                <tr><td><span class="lane risk">Soon</span></td><td>Code checks and envelopes</td><td>Mar 11</td><td>Ops</td><td>Queued</td><td>Enter codes</td></tr>
+                <tr><td><span class="lane now">Now</span></td><td>Scan and send to ESP</td><td>Mar 11</td><td>Ops</td><td>Queued</td><td>Attach PDFs</td></tr>
+                <tr><td><span class="lane block">Blocked</span></td><td>Finalize deposit slip packet</td><td>Mar 11</td><td>Finance</td><td>Waiting</td><td>Budget code fix</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="actions" style="margin-top:12px"><button class="btn">Previous step</button><button class="btn">Quick note</button><button class="btn primary">Complete next action</button></div>
+        </section>
+        <aside class="box">
+          <h3>Context sidecar</h3>
+          <div class="list">
+            <div class="item">Suggested automation<small>Pre-fill the deposit packet from OCR results and flag missing budget codes before export.</small></div>
+            <div class="item">Related entities<small>Finance packet, envelope numbers, and routing records stay within reach.</small></div>
+            <div class="item">Why this is better<small>The page becomes a workstation instead of a browser with stacked cards.</small></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="screen" id="recordsScreen">
+      <div class="screen-head">
+        <div><span>Interactive mockup</span><h2>Record Grid System</h2></div>
+        <div class="toolbar"><div class="chip">Use the same row language for People and Finance</div></div>
+      </div>
+      <div class="records">
+        <div class="filters"><div class="field">Search by person, family, vendor, designation, or notes</div><div class="field">Status: Active</div><div class="field">Assignment: Sunday</div><div class="field">Flag: Needs review</div><div class="field">Density: Compact</div></div>
+        <div class="summary"><div class="sum"><span>Records in view</span><strong>148</strong></div><div class="sum"><span>Needs action</span><strong>9</strong></div><div class="sum"><span>Linked context</span><strong>34</strong></div><div class="sum"><span>Missing field</span><strong>5</strong></div></div>
+        <section class="gridbox">
+          <div class="gridtop"><div><div class="eyebrow" style="color:var(--muted)">People grid concept</div><h3 style="font-size:1.08rem">Identity, status, related context, and action in one row rhythm</h3></div><div class="gridactions"><button class="soft">Save view</button><button class="soft">Bulk edit</button><button class="btn primary">Add record</button></div></div>
+          <div class="tablewrap" style="margin:0;border:0;border-radius:0">
+            <table>
+              <thead><tr><th>Identity</th><th>Status</th><th>Related context</th><th>Current signal</th><th>Actions</th></tr></thead>
+              <tbody>
+                <tr><td><div class="identity"><strong>Helen Navarro</strong><small>Family #214 · Pledger · Envelope 681</small></div></td><td><span class="status blue">Clergy support</span></td><td><div class="micro">Sunday: Usher backup<br>Teams: Welcome, outreach</div></td><td><div>Missing mobile number<br><span class="micro">Still assigned to March service follow-up</span></div></td><td><div class="gridactions"><button class="soft">Open</button><button class="soft">Message</button></div></td></tr>
+                <tr><td><div class="identity"><strong>Chiwanga household</strong><small>Potential duplicate cluster · 3 linked people</small></div></td><td><span class="status gold">Needs merge review</span></td><td><div class="micro">Envelope record conflict<br>Sunday role references present</div></td><td><div>Conflicting family address<br><span class="micro">Review before next export</span></div></td><td><div class="gridactions"><button class="soft">Compare</button><button class="soft">Merge</button></div></td></tr>
+                <tr><td><div class="identity"><strong>Marina Flores</strong><small>Staff · Bulletin coordination</small></div></td><td><span class="status green">Healthy</span></td><td><div class="micro">Sunday: Bulletin review<br>Calendar: Two March events</div></td><td><div>Ready for next assignment cycle<br><span class="micro">No missing contact data</span></div></td><td><div class="gridactions"><button class="soft">Open</button><button class="soft">Assign</button></div></td></tr>
+                <tr><td><div class="identity"><strong>Victor Lang</strong><small>Parishioner · Envelope 219</small></div></td><td><span class="status red">At risk</span></td><td><div class="micro">Finance donation history exists<br>Mailing address may be stale</div></td><td><div>Returned mail last week<br><span class="micro">Update before annual mail merge</span></div></td><td><div class="gridactions"><button class="soft">Open</button><button class="soft">Flag</button></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </section>
+  </section>
+
+  <section class="note">Recommended implementation order: redesign the shell and dashboard first, then move task-heavy pages into the workbench pattern, then refactor People and Finance into a shared compact grid language. That sequence gives the app a stronger identity quickly without forcing a full rewrite.</section>
+</main>
+<script>
+const tabs=[...document.querySelectorAll('.tab')]; const screens=[...document.querySelectorAll('.screen')];
+tabs.forEach(tab=>tab.addEventListener('click',()=>{tabs.forEach(t=>t.classList.remove('active'));screens.forEach(s=>s.classList.remove('active'));tab.classList.add('active');document.getElementById(tab.dataset.screen).classList.add('active');}));
+</script>
+</body>
+</html>

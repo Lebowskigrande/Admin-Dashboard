@@ -9,6 +9,8 @@ import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
 import './AtAGlance.css';
 
+const REGULAR_SUNDAY_SERVICE_SLUGS = new Set(['weekly-service', 'rite-i-service', 'rite-ii-service']);
+
 const AtAGlance = () => {
     const navigate = useNavigate();
     const { events } = useEvents();
@@ -84,7 +86,7 @@ const AtAGlance = () => {
             if (!event?.date) return false;
             if (!isSameDay(event.date, currentDate)) return false;
             if (event.source === 'liturgical') return false;
-            if (event.type_slug === 'weekly-service') return false;
+            if (REGULAR_SUNDAY_SERVICE_SLUGS.has(event.type_slug)) return false;
             if (event.id === 'sunday-service') return false;
             return true;
         });

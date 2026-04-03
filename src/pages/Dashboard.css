@@ -287,6 +287,174 @@
     gap: 0.65rem;
 }
 
+.dashboard-focus-board {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+}
+
+.dashboard-focus-card.origin-color-sunday {
+    --focus-accent: #235789;
+    --focus-soft: #eaf2fb;
+}
+
+.dashboard-focus-card.origin-color-event {
+    --focus-accent: #b85c38;
+    --focus-soft: #fdf1e8;
+}
+
+.dashboard-focus-card.origin-color-operations {
+    --focus-accent: #1f6f50;
+    --focus-soft: #ecf7f1;
+}
+
+.dashboard-focus-card.origin-color-ticket {
+    --focus-accent: #7c3f58;
+    --focus-soft: #f9edf2;
+}
+
+.dashboard-focus-card {
+    --focus-accent: #235789;
+    --focus-soft: #eef2f7;
+    width: 100%;
+    text-align: left;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: 20px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(247, 245, 240, 0.94) 100%);
+    padding: 0.9rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.72rem;
+    box-shadow: 0 14px 28px rgba(15, 23, 42, 0.05);
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
+}
+
+.dashboard-focus-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 18px 30px rgba(15, 23, 42, 0.08);
+    border-color: color-mix(in srgb, var(--focus-accent) 26%, white 74%);
+}
+
+.dashboard-focus-card-topline,
+.dashboard-focus-card-footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.55rem;
+    align-items: center;
+}
+
+.dashboard-focus-origin-label {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.56rem;
+    border-radius: 999px;
+    background: var(--focus-soft);
+    color: var(--focus-accent);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.dashboard-focus-card-title {
+    font-size: 0.98rem;
+    font-weight: 700;
+    color: #102b42;
+    line-height: 1.3;
+}
+
+.dashboard-focus-card-subtitle {
+    font-size: 0.8rem;
+    color: #64748b;
+    line-height: 1.4;
+}
+
+.dashboard-focus-card-current {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+}
+
+.dashboard-focus-current-label {
+    font-size: 0.67rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #94a3b8;
+}
+
+.dashboard-focus-card-current strong {
+    font-size: 0.84rem;
+    color: #1e293b;
+    line-height: 1.35;
+}
+
+.dashboard-focus-section-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+    gap: 0.45rem;
+}
+
+.dashboard-focus-node {
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    background: rgba(255, 255, 255, 0.86);
+    border-radius: 16px;
+    padding: 0.48rem 0.35rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.24rem;
+    min-height: 80px;
+}
+
+.dashboard-focus-node.attention-urgent {
+    border-color: rgba(220, 38, 38, 0.35);
+}
+
+.dashboard-focus-node.attention-today {
+    border-color: rgba(217, 119, 6, 0.35);
+}
+
+.dashboard-focus-node-icon {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #f8fafc;
+    color: #475569;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    font-size: 0.92rem;
+}
+
+.dashboard-focus-node-icon.state-done {
+    background: #e8f7ef;
+    color: #166534;
+    border-color: #bbf7d0;
+}
+
+.dashboard-focus-node-icon.state-current,
+.dashboard-focus-node-icon.state-open {
+    background: color-mix(in srgb, var(--focus-soft) 78%, white 22%);
+    color: var(--focus-accent);
+    border-color: color-mix(in srgb, var(--focus-accent) 20%, white 80%);
+}
+
+.dashboard-focus-node-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #1e293b;
+    text-align: center;
+    line-height: 1.1;
+}
+
+.dashboard-focus-node-meta,
+.dashboard-focus-card-footer span {
+    font-size: 0.7rem;
+    color: #64748b;
+}
+
 .dashboard-focus-row,
 .dashboard-status-row,
 .dashboard-issue-row {

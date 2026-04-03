@@ -10,16 +10,207 @@ import {
     parseJsonField,
     parseNotes
 } from '../helpers/db-utils.js';
+import {
+    allowsCustomWorshipRoles,
+    buildWorshipRoleDefinitions,
+    getDefaultRosterAssignments,
+    getDefaultMusicians,
+    getWorshipDisplayName,
+    isRegularSundayServiceType,
+    isWorshipServiceTypeSlug,
+    normalizeRosterForType,
+    normalizeWorshipTypeSlug,
+    sanitizeCustomRoles,
+    sanitizeGuestMusicians
+} from '../helpers/worship-service-utils.js';
 import { buildDocumentPreview } from '../services/bulletinService.js';
 import {
     ensureEventDocDir,
     ensureUniquePath
 } from '../helpers/file-utils.js';
 import { seedEventTasksForOccurrence } from '../services/taskEngine.js';
-import { isSundayDate } from '../helpers/sunday-utils.js';
+import {
+    getLinkedSundayScheduleOccurrence,
+    isSundayDate,
+    replaceAllAssignmentsForOccurrence,
+    syncLinkedSundayAliasOccurrences
+} from '../helpers/sunday-utils.js';
 
 const router = express.Router();
 const eventDocUpload = multer({ dest: join(tmpdir(), 'event-doc-uploads') });
+
+const getOccurrenceAssignments = (occurrenceId) => {
+    if (!tableExists('assignments')) return [];
+    return db.prepare(`
+        SELECT
+            a.role_key,
+            a.person_id,
+            p.display_name,
+            p.category
+        FROM assignments a
+        LEFT JOIN people p ON p.id = a.person_id
+        WHERE a.occurrence_id = ?
+        ORDER BY a.role_key ASC, COALESCE(p.display_name, a.person_id) ASC
+    `).all(occurrenceId);
+};
+
+const getRiteIInheritedAssignments = ({ dateKey, excludeOccurrenceId }) => {
+    if (!dateKey || !tableExists('event_occurrences') || !tableExists('events') || !tableExists('assignments')) return [];
+    return db.prepare(`
+        SELECT
+            a.role_key,
+            a.person_id,
+            p.display_name,
+            p.category
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        LEFT JOIN event_types t ON t.id = e.event_type_id
+        JOIN assignments a ON a.occurrence_id = o.id
+        LEFT JOIN people p ON p.id = a.person_id
+        WHERE o.date = ?
+          AND o.start_time = '10:00'
+          AND o.id != ?
+          AND a.role_key IN ('celebrant', 'preacher')
+          AND (
+              e.id = 'sunday-service'
+              OR COALESCE(t.slug, '') IN ('weekly-service', 'rite-ii-service')
+          )
+        ORDER BY a.role_key ASC, COALESCE(p.display_name, a.person_id) ASC
+    `).all(dateKey, excludeOccurrenceId || '');
+};
+
+const buildWorshipPlanning = ({ typeSlug, notes, occurrenceId, dateKey }) => {
+    if (!isWorshipServiceTypeSlug(typeSlug)) return null;
+    const normalizedTypeSlug = normalizeWorshipTypeSlug(typeSlug);
+    const template = notes?.template && typeof notes.template === 'object' ? notes.template : {};
+    const customRoles = allowsCustomWorshipRoles(normalizedTypeSlug)
+        ? sanitizeCustomRoles(template.custom_roles)
+        : [];
+    const roleDefinitions = buildWorshipRoleDefinitions(normalizedTypeSlug, customRoles);
+    const assignments = getOccurrenceAssignments(occurrenceId);
+    const assignmentsByRole = assignments.reduce((acc, row) => {
+        const roleKey = String(row.role_key || '').trim();
+        if (!roleKey) return acc;
+        if (!acc[roleKey]) acc[roleKey] = [];
+        acc[roleKey].push({
+            id: row.person_id,
+            display_name: row.display_name || row.person_id,
+            category: row.category || ''
+        });
+        return acc;
+    }, {});
+    if (normalizedTypeSlug === 'rite-i-service') {
+        getRiteIInheritedAssignments({ dateKey, excludeOccurrenceId: occurrenceId }).forEach((row) => {
+            const roleKey = String(row.role_key || '').trim();
+            if (!roleKey || assignmentsByRole[roleKey]?.length) return;
+            assignmentsByRole[roleKey] = [{
+                id: row.person_id,
+                display_name: row.display_name || row.person_id,
+                category: row.category || '',
+                is_inherited: true
+            }];
+        });
+    }
+    const defaultRoster = getDefaultRosterAssignments(normalizedTypeSlug);
+    Object.entries(defaultRoster).forEach(([roleKey, personIds]) => {
+        if (assignmentsByRole[roleKey]?.length) return;
+        assignmentsByRole[roleKey] = personIds.map((personId) => ({
+            id: personId,
+            display_name: personId,
+            category: 'clergy',
+            is_default: true
+        }));
+    });
+    const guestMusicians = sanitizeGuestMusicians(template.guest_musicians);
+    return {
+        service_type: normalizedTypeSlug,
+        service_label: getWorshipDisplayName(normalizedTypeSlug),
+        custom_roles_enabled: allowsCustomWorshipRoles(normalizedTypeSlug),
+        role_definitions: roleDefinitions.map((role) => ({
+            key: role.key,
+            label: role.label,
+            allows_multiple: !!role.allowsMultiple,
+            is_custom: !!role.isCustom,
+            assignments: assignmentsByRole[role.key] || []
+        })),
+        custom_roles: customRoles,
+        musicians: {
+            regular: getDefaultMusicians(normalizedTypeSlug, dateKey),
+            guests: guestMusicians,
+            all: [...getDefaultMusicians(normalizedTypeSlug, dateKey), ...guestMusicians]
+        }
+    };
+};
+
+const getSharedSundayScheduleContext = (row) => {
+    const linkedOccurrence = getLinkedSundayScheduleOccurrence({
+        eventId: row?.event_id,
+        date: row?.date,
+        startTime: row?.start_time,
+        title: row?.title
+    });
+    if (!linkedOccurrence || linkedOccurrence.id === row?.occurrence_id) {
+        return {
+            linked: false,
+            assignmentOccurrenceId: row?.occurrence_id,
+            buildingId: row?.building_id || null
+        };
+    }
+    return {
+        linked: true,
+        assignmentOccurrenceId: linkedOccurrence.id,
+        buildingId: linkedOccurrence.building_id || row?.building_id || null
+    };
+};
+
+const createManualEvent = db.transaction((payload) => {
+    const {
+        title,
+        description,
+        date,
+        time,
+        location,
+        parsedTypeId,
+        metadata
+    } = payload;
+    const eventId = `event-${randomUUID()}`;
+    const occurrenceId = `occ-${randomUUID()}`;
+    const now = new Date().toISOString();
+
+    db.prepare(`
+        INSERT INTO events (id, title, description, event_type_id, source, metadata, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'manual', ?, ?, ?)
+    `).run(
+        eventId,
+        title,
+        description,
+        parsedTypeId,
+        metadata ? JSON.stringify(metadata) : null,
+        now,
+        now
+    );
+
+    db.prepare(`
+        INSERT INTO event_occurrences (
+            id, event_id, date, start_time, end_time, building_id, rite, is_default, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, NULL)
+    `).run(
+        occurrenceId,
+        eventId,
+        date,
+        time || null,
+        null,
+        location || null
+    );
+
+    seedEventTasksForOccurrence({
+        occurrenceId,
+        eventTypeId: parsedTypeId,
+        dateKey: date
+    });
+
+    return { eventId, occurrenceId };
+});
 
 // --- Events Engine Core Endpoints ---
 
@@ -146,13 +337,23 @@ router.get('/event-occurrences/:id', (req, res) => {
     }
     const notes = parseNotes(row.notes);
     const metadata = row.metadata ? parseNotes(row.metadata) : {};
+    const sharedSundayContext = getSharedSundayScheduleContext(row);
+    const planning = buildWorshipPlanning({
+        typeSlug: row.type_slug,
+        notes,
+        occurrenceId: sharedSundayContext.assignmentOccurrenceId,
+        dateKey: row.date
+    });
+    if (planning && sharedSundayContext.linked) {
+        planning.shared_source = 'liturgical-schedule';
+    }
     res.json({
         occurrence: {
             id: row.occurrence_id,
             date: row.date,
             start_time: row.start_time,
             end_time: row.end_time,
-            building_id: row.building_id
+            building_id: sharedSundayContext.buildingId
         },
         event: {
             id: row.event_id,
@@ -166,7 +367,8 @@ router.get('/event-occurrences/:id', (req, res) => {
             color: row.type_color
         },
         notes,
-        metadata
+        metadata,
+        planning
     });
 });
 
@@ -175,18 +377,147 @@ router.put('/event-occurrences/:id', (req, res) => {
     if (!tableExists('event_occurrences')) {
         return res.status(404).json({ error: 'Events not available' });
     }
-    const existing = db.prepare('SELECT notes FROM event_occurrences WHERE id = ?').get(id);
+    const existing = db.prepare(`
+        SELECT
+            o.id AS occurrence_id,
+            o.date,
+            o.start_time,
+            o.notes,
+            o.building_id,
+            e.id AS event_id,
+            e.title,
+            e.event_type_id,
+            t.slug AS type_slug
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        LEFT JOIN event_types t ON t.id = e.event_type_id
+        WHERE o.id = ?
+    `).get(id);
     if (!existing) {
         return res.status(404).json({ error: 'Event occurrence not found' });
     }
-    const { internal_notes: internalNotes, template_data: templateData } = req.body || {};
+    const {
+        internal_notes: internalNotes,
+        template_data: templateData,
+        building_id: buildingId,
+        guest_musicians: guestMusicians,
+        custom_roles: customRoles,
+        roster
+    } = req.body || {};
     const notes = parseNotes(existing.notes);
     notes.internal = String(internalNotes || '').trim();
     if (templateData && typeof templateData === 'object') {
         notes.template = templateData;
     }
-    db.prepare('UPDATE event_occurrences SET notes = ? WHERE id = ?').run(JSON.stringify(notes), id);
-    res.json({ success: true, notes });
+    if (!notes.template || typeof notes.template !== 'object') {
+        notes.template = {};
+    }
+    if (!notes.template.default_overrides || typeof notes.template.default_overrides !== 'object') {
+        notes.template.default_overrides = {};
+    }
+    const normalizedTypeSlug = normalizeWorshipTypeSlug(existing.type_slug);
+    const customRolesEnabled = allowsCustomWorshipRoles(normalizedTypeSlug);
+    if (guestMusicians !== undefined) {
+        notes.template.guest_musicians = sanitizeGuestMusicians(guestMusicians);
+    }
+    if (customRoles !== undefined) {
+        notes.template.custom_roles = customRolesEnabled ? sanitizeCustomRoles(customRoles) : [];
+    } else if (!customRolesEnabled) {
+        notes.template.custom_roles = [];
+    }
+    const sharedSundayContext = getSharedSundayScheduleContext(existing);
+    const resolvedBuildingId = buildingId !== undefined
+        ? (String(buildingId || '').trim() || null)
+        : sharedSundayContext.buildingId || existing.building_id || null;
+
+    let nextRosterMap = null;
+    if (roster && typeof roster === 'object' && tableExists('assignments')) {
+        const nextRoles = isWorshipServiceTypeSlug(existing.type_slug)
+            ? buildWorshipRoleDefinitions(normalizedTypeSlug, notes.template.custom_roles)
+            : [];
+        const validRoleKeys = new Set(nextRoles.map((role) => role.key));
+        const entries = Object.entries(roster).reduce((acc, [roleKey, personIds]) => {
+            const key = String(roleKey || '').trim();
+            if (!key) return acc;
+            if (validRoleKeys.size > 0 && !validRoleKeys.has(key)) return acc;
+            const uniqueIds = Array.from(new Set(
+                (Array.isArray(personIds) ? personIds : [personIds])
+                    .map((personId) => String(personId || '').trim())
+                    .filter(Boolean)
+            ));
+            acc.push({ key, personIds: uniqueIds });
+            return acc;
+        }, []);
+
+        nextRosterMap = normalizeRosterForType(
+            normalizedTypeSlug,
+            Object.fromEntries(entries.map((entry) => [entry.key, entry.personIds])),
+            notes.template.custom_roles
+        );
+        const defaultRoster = getDefaultRosterAssignments(normalizedTypeSlug);
+        Object.entries(defaultRoster).forEach(([roleKey, personIds]) => {
+            if (Array.isArray(nextRosterMap[roleKey]) && nextRosterMap[roleKey].length > 0) return;
+            nextRosterMap[roleKey] = personIds.slice();
+        });
+        if (isRegularSundayServiceType(existing.type_slug) && Object.prototype.hasOwnProperty.call(nextRosterMap, 'organist')) {
+            notes.template.default_overrides.organist_removed = nextRosterMap.organist.length === 0;
+        }
+    }
+
+    db.prepare('UPDATE event_occurrences SET notes = ?, building_id = ? WHERE id = ?').run(
+        JSON.stringify(notes),
+        resolvedBuildingId,
+        id
+    );
+    if (sharedSundayContext.linked) {
+        db.prepare('UPDATE event_occurrences SET notes = ?, building_id = ? WHERE id = ?').run(
+            JSON.stringify(notes),
+            resolvedBuildingId,
+            sharedSundayContext.assignmentOccurrenceId
+        );
+    }
+
+    if (nextRosterMap && tableExists('assignments')) {
+        replaceAllAssignmentsForOccurrence(sharedSundayContext.assignmentOccurrenceId, nextRosterMap);
+        if (sharedSundayContext.linked) {
+            syncLinkedSundayAliasOccurrences({
+                date: existing.date,
+                startTime: existing.start_time,
+                buildingId: resolvedBuildingId,
+                roles: nextRosterMap
+            });
+        }
+    }
+
+    if (existing.event_type_id) {
+        seedEventTasksForOccurrence({
+            occurrenceId: id,
+            eventTypeId: existing.event_type_id,
+            dateKey: existing.date
+        });
+        if (sharedSundayContext.linked && sharedSundayContext.assignmentOccurrenceId !== id) {
+            seedEventTasksForOccurrence({
+                occurrenceId: sharedSundayContext.assignmentOccurrenceId,
+                eventTypeId: existing.event_type_id,
+                dateKey: existing.date
+            });
+        }
+    }
+
+    const responsePlanning = buildWorshipPlanning({
+        typeSlug: existing.type_slug,
+        notes,
+        occurrenceId: sharedSundayContext.assignmentOccurrenceId,
+        dateKey: existing.date
+    });
+    if (responsePlanning && sharedSundayContext.linked) {
+        responsePlanning.shared_source = 'liturgical-schedule';
+    }
+    res.json({
+        success: true,
+        notes,
+        planning: responsePlanning
+    });
 });
 
 router.get('/event-occurrences/:id/documents', async (req, res) => {
@@ -242,11 +573,11 @@ router.post('/event-occurrences/:id/documents', eventDocUpload.single('file'), a
             await copyFile(file.path, targetPath);
         }
 
-        if (docType === 'contract') {
+        if (docType === 'contract' || docType === 'bulletin') {
             const existing = db.prepare(`
                 SELECT id, file_path FROM event_documents
-                WHERE occurrence_id = ? AND doc_type = 'contract'
-            `).all(occurrence.id);
+                WHERE occurrence_id = ? AND doc_type = ?
+            `).all(occurrence.id, docType);
             existing.forEach((row) => {
                 db.prepare('DELETE FROM event_documents WHERE id = ?').run(row.id);
                 if (row.file_path) {
@@ -376,41 +707,16 @@ router.post('/events', (req, res) => {
             return res.status(400).json({ error: 'title and date are required' });
         }
 
-        const eventId = `event-${randomUUID()}`;
-        const occurrenceId = `occ-${randomUUID()}`;
-        const now = new Date().toISOString();
         const parsedTypeId = type_id !== null && type_id !== '' ? Number(type_id) : null;
-
-        db.prepare(`
-            INSERT INTO events (id, title, description, event_type_id, source, metadata, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'manual', ?, ?, ?)
-        `).run(
-            eventId,
+        const normalizedTypeId = Number.isNaN(parsedTypeId) ? null : parsedTypeId;
+        const { eventId, occurrenceId } = createManualEvent({
             title,
             description,
-            Number.isNaN(parsedTypeId) ? null : parsedTypeId,
-            metadata ? JSON.stringify(metadata) : null,
-            now,
-            now
-        );
-
-        db.prepare(`
-            INSERT INTO event_occurrences (
-                id, event_id, date, start_time, end_time, building_id, rite, is_default, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, NULL)
-        `).run(
-            occurrenceId,
-            eventId,
             date,
-            time || null,
-            null,
-            location || null
-        );
-
-        seedEventTasksForOccurrence({
-            occurrenceId,
-            eventTypeId: Number.isNaN(parsedTypeId) ? null : parsedTypeId,
-            dateKey: date
+            time,
+            location,
+            parsedTypeId: normalizedTypeId,
+            metadata
         });
 
         res.json({
@@ -421,7 +727,7 @@ router.post('/events', (req, res) => {
             date,
             time: time || '',
             location: location || '',
-            type_id: Number.isNaN(parsedTypeId) ? null : parsedTypeId,
+            type_id: normalizedTypeId,
             source: 'manual'
         });
     } catch (error) {
@@ -455,3 +761,4 @@ router.get('/liturgical-days', (req, res) => {
 });
 
 export default router;
+

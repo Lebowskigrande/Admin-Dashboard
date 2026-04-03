@@ -15,6 +15,7 @@ import {
     applyRotationForDate,
     ensureSundayOccurrence,
     replaceAssignmentsForRole,
+    syncLinkedSundayAliasOccurrences,
     isSundayDate,
     buildUpcomingSundaySchedule,
     buildScheduleForMonths,
@@ -396,6 +397,20 @@ router.put('/sunday/roles/:date', (req, res) => {
                     if (roleKey === 'location' || roleKey === 'building_id' || roleKey === 'rite') return;
                     if (!ROLE_KEYS.includes(roleKey)) return;
                     replaceAssignmentsForRole(occId, roleKey, personIds);
+                });
+
+                const normalizedRoles = Object.entries(roles || {}).reduce((acc, [roleKey, personIds]) => {
+                    if (roleKey === 'location' || roleKey === 'building_id' || roleKey === 'rite') return acc;
+                    if (!ROLE_KEYS.includes(roleKey)) return acc;
+                    acc[roleKey] = Array.isArray(personIds) ? personIds : (personIds ? [personIds] : []);
+                    return acc;
+                }, {});
+
+                syncLinkedSundayAliasOccurrences({
+                    date,
+                    startTime: time,
+                    buildingId: location || null,
+                    roles: normalizedRoles
                 });
             });
         })();

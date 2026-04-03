@@ -24,12 +24,16 @@ const Todo = () => {
         taskDraft,
         taskNotesDraft,
         selectedOriginKey,
+        selectedSectionKey,
         selectedTaskId,
         selectedTaskKey,
         selectedOrigin,
+        selectedWorkPackage,
+        selectedSection,
         selectedOriginTitle,
         selectedOriginSubtitle,
         selectedTask,
+        focusTask,
         originLinks,
         nestedExpanded,
         nestedTasks,
@@ -44,6 +48,7 @@ const Todo = () => {
         setTaskDraft,
         setTaskNotesDraft,
         setSelectedOriginKey,
+        setSelectedSectionKey,
         setSelectedTaskId,
         addTask,
         addTaskWithDetails,
@@ -125,7 +130,7 @@ const Todo = () => {
             <header className="page-header-controls page-header-bar">
                 <div className="page-header-title">
                     <h1>Tasks</h1>
-                    <p className="page-header-subtitle">Checklist-first task cockpit with the current workload, completion shape, and next action in one view.</p>
+                    <p className="page-header-subtitle">Visual workboard for services, events, meetings, and ops packages with section-level focus instead of text-heavy task scanning.</p>
                 </div>
                 <div className="page-header-actions">
                     <TodoAddForm
@@ -193,8 +198,10 @@ const Todo = () => {
                         renderCountBadge={renderCountBadge}
                         useWrapper
                         selectedOriginKey={selectedOriginKey}
-                        onSelectRow={(originKey, taskId) => {
+                        selectedSectionKey={selectedSectionKey}
+                        onSelectRow={(originKey, sectionKey, taskId) => {
                             setSelectedOriginKey(originKey);
+                            setSelectedSectionKey(sectionKey || '');
                             setSelectedTaskId(taskId);
                         }}
                         formatOriginLabel={formatOriginLabel}
@@ -210,10 +217,13 @@ const Todo = () => {
 
                 <TodoDetailPanel
                     selectedOrigin={selectedOrigin}
+                    selectedWorkPackage={selectedWorkPackage}
+                    selectedSection={selectedSection}
                     selectedOriginTitle={selectedOriginTitle}
                     selectedOriginSubtitle={selectedOriginSubtitle}
+                    selectedSectionKey={selectedSectionKey}
                     selectedTaskKey={selectedTaskKey}
-                    selectedTask={selectedTask}
+                    selectedTask={focusTask || selectedTask}
                     taskNotesDraft={taskNotesDraft}
                     setTaskNotesDraft={setTaskNotesDraft}
                     saveTaskNotes={saveTaskNotes}
@@ -226,15 +236,11 @@ const Todo = () => {
                     originGroupMap={originGroupMap}
                     handleToggleNested={handleToggleNested}
                     setSelectedOriginKey={setSelectedOriginKey}
+                    setSelectedSectionKey={setSelectedSectionKey}
                     setSelectedTaskId={setSelectedTaskId}
-                    formatOriginSubtitle={formatOriginSubtitle}
                     formatTaskTitle={formatTaskTitle}
                     getDisplayClass={getDisplayClass}
                     getDisplayLabel={getDisplayLabel}
-                    getListProgressDisplay={getListProgressDisplay}
-                    getListChecklist={getListChecklist}
-                    getTopLevelTaskTitle={getTopLevelTaskTitle}
-                    getListRepresentativeTask={getListRepresentativeTask}
                     sortTasksForDetails={sortTasksForDetails}
                     getTaskProgressMeta={getTaskProgressMeta}
                     getOriginColorClass={getOriginColorClass}

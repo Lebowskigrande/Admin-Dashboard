@@ -13,8 +13,10 @@ const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 
 const app = createApp({ clientOrigin: CLIENT_ORIGIN });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
+    const poller = await startSharefilePoller();
     console.log(`API Server running on http://localhost:${PORT}`);
+    if (poller) {
+        console.log(`ShareFile poller active for labels: ${poller.labels.join(', ')}`);
+    }
 });
-
-startSharefilePoller();

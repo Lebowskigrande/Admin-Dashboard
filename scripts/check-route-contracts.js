@@ -73,6 +73,160 @@ const parseRouteMethods = (source) => {
     return routes;
 };
 
+const readBalancedCall = (source, openParenIndex) => {
+    let depth = 0;
+    let quote = '';
+    let escaped = false;
+
+    for (let index = openParenIndex; index < source.length; index += 1) {
+        const ch = source[index];
+
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch === '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch === quote) {
+                quote = '';
+            }
+            continue;
+        }
+
+        if (ch === '\'' || ch === '"' || ch === '`') {
+            quote = ch;
+            continue;
+        }
+
+        if (ch === '(') {
+            depth += 1;
+            continue;
+        }
+        if (ch === ')') {
+            depth -= 1;
+            if (depth === 0) {
+                return source.slice(openParenIndex + 1, index);
+            }
+        }
+    }
+
+    return '';
+};
+
+const splitTopLevelArgs = (argsSource) => {
+    const args = [];
+    let start = 0;
+    let parenDepth = 0;
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let quote = '';
+    let escaped = false;
+
+    for (let index = 0; index < argsSource.length; index += 1) {
+        const ch = argsSource[index];
+
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch === '\\') {
+                escaped = true;
+                continue;
+            }
+            if (ch === quote) {
+                quote = '';
+            }
+            continue;
+        }
+
+        if (ch === '\'' || ch === '"' || ch === '`') {
+            quote = ch;
+            continue;
+        }
+
+        if (ch === '(') {
+            parenDepth += 1;
+            continue;
+        }
+        if (ch === ')') {
+            parenDepth = Math.max(0, parenDepth - 1);
+            continue;
+        }
+        if (ch === '{') {
+            braceDepth += 1;
+            continue;
+        }
+        if (ch === '}') {
+            braceDepth = Math.max(0, braceDepth - 1);
+            continue;
+        }
+        if (ch === '[') {
+            bracketDepth += 1;
+            continue;
+        }
+        if (ch === ']') {
+            bracketDepth = Math.max(0, bracketDepth - 1);
+            continue;
+        }
+
+        if (ch === ',' && parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) {
+            args.push(argsSource.slice(start, index).trim());
+            start = index + 1;
+        }
+    }
+
+    const tail = argsSource.slice(start).trim();
+    if (tail) args.push(tail);
+    return args;
+};
+
+const parseStringLiteral = (value) => {
+    const trimmed = String(value || '').trim();
+    const quote = trimmed[0];
+    if (!quote || quote !== trimmed.at(-1) || !['"', '\'', '`'].includes(quote)) {
+        return null;
+    }
+    return trimmed.slice(1, -1);
+};
+
+const extractAppUseMounts = (source) => {
+    const mounts = [];
+    const token = 'app.use(';
+    let searchFrom = 0;
+
+    while (searchFrom < source.length) {
+        const start = source.indexOf(token, searchFrom);
+        if (start === -1) break;
+
+        const openParenIndex = start + token.length - 1;
+        const argsSource = readBalancedCall(source, openParenIndex);
+        if (!argsSource) {
+            searchFrom = start + token.length;
+            continue;
+        }
+
+        const args = splitTopLevelArgs(argsSource);
+        const mountLiteral = parseStringLiteral(args[0]);
+        const mount = mountLiteral == null ? '' : normalize(mountLiteral);
+        const startIndex = mountLiteral == null ? 0 : 1;
+
+        for (let index = startIndex; index < args.length; index += 1) {
+            const candidate = String(args[index] || '').trim();
+            if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(candidate)) {
+                mounts.push({ mount, varName: candidate });
+            }
+        }
+
+        searchFrom = openParenIndex + argsSource.length + 2;
+    }
+
+    return mounts;
+};
+
 const buildServerApiPatterns = async () => {
     const appPath = join(SERVER_DIR, 'app.js');
     const appRaw = await readFile(appPath, 'utf8');
@@ -87,28 +241,13 @@ const buildServerApiPatterns = async () => {
     }
 
     const mounts = new Map();
-    const useWithMountPattern = /app\.use\(\s*['"`]([^'"`]+)['"`]\s*,\s*([A-Za-z0-9_]+)\s*\)/g;
-    let mountMatch = useWithMountPattern.exec(appRaw);
-    while (mountMatch) {
-        const mount = normalize(mountMatch[1]);
-        const varName = mountMatch[2];
+    extractAppUseMounts(appRaw).forEach(({ mount, varName }) => {
         const current = mounts.get(varName) || [];
         current.push(mount);
         mounts.set(varName, current);
-        mountMatch = useWithMountPattern.exec(appRaw);
-    }
+    });
 
-    const useDirectPattern = /app\.use\(\s*([A-Za-z0-9_]+)\s*\)/g;
-    let directMatch = useDirectPattern.exec(appRaw);
-    while (directMatch) {
-        const varName = directMatch[1];
-        const current = mounts.get(varName) || [];
-        current.push('');
-        mounts.set(varName, current);
-        directMatch = useDirectPattern.exec(appRaw);
-    }
-
-    // Include direct app routes from index.js
+    // Include direct app routes declared in app.js itself.
     parseRouteMethods(appRaw)
         .filter((entry) => entry.scope === 'app')
         .forEach((entry) => {

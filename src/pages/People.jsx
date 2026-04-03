@@ -392,13 +392,21 @@ const People = () => {
                                 if (row.type === 'person') {
                                     const person = row.person;
                                     return (
-                                        <button
+                                        <div
                                             className={`people-list-item ${person.id === selectedId ? 'active' : ''}`}
                                             key={person.id}
-                                            type="button"
+                                            role="button"
+                                            tabIndex={0}
                                             onClick={() => {
                                                 setSelectedId(person.id);
                                                 setPanelMode('view');
+                                            }}
+                                            onKeyDown={(event) => {
+                                                if (event.key === 'Enter' || event.key === ' ') {
+                                                    event.preventDefault();
+                                                    setSelectedId(person.id);
+                                                    setPanelMode('view');
+                                                }
                                             }}
                                         >
                                             <div className="people-list-row">
@@ -424,20 +432,14 @@ const People = () => {
                                                     {person.email ? (
                                                         <span className="people-copy-inline">
                                                             <span>{person.email}</span>
-                                                            <span
-                                                                className="people-copy-icon"
-                                                                role="button"
-                                                                tabIndex={0}
+                                                            <button
+                                                                type="button"
+                                                                className="people-copy-button"
                                                                 aria-label="Copy email"
                                                                 onClick={(event) => handleInlineCopy(event, person.email, 'Email copied')}
-                                                                onKeyDown={(event) => {
-                                                                    if (event.key === 'Enter' || event.key === ' ') {
-                                                                        handleInlineCopy(event, person.email, 'Email copied');
-                                                                    }
-                                                                }}
                                                             >
                                                                 <FaCopy />
-                                                            </span>
+                                                            </button>
                                                         </span>
                                                     ) : ''}
                                                 </div>
@@ -448,20 +450,14 @@ const People = () => {
                                                         return (
                                                             <span className="people-copy-inline">
                                                                 <span>{phone}</span>
-                                                                <span
-                                                                    className="people-copy-icon"
-                                                                    role="button"
-                                                                    tabIndex={0}
+                                                                <button
+                                                                    type="button"
+                                                                    className="people-copy-button"
                                                                     aria-label="Copy phone"
                                                                     onClick={(event) => handleInlineCopy(event, phone, 'Phone copied')}
-                                                                    onKeyDown={(event) => {
-                                                                        if (event.key === 'Enter' || event.key === ' ') {
-                                                                            handleInlineCopy(event, phone, 'Phone copied');
-                                                                        }
-                                                                    }}
                                                                 >
                                                                     <FaCopy />
-                                                                </span>
+                                                                </button>
                                                             </span>
                                                         );
                                                     })()}
@@ -474,7 +470,7 @@ const People = () => {
                                                     )}
                                                 </div>
                                             </div>
-                                        </button>
+                                        </div>
                                     );
                                 }
 
@@ -501,7 +497,7 @@ const People = () => {
                                                     ) : null}
                                                 </div>
                                                 <div className="people-list-cell people-list-name people-list-family-name">
-                                                    <span className={`people-list-chevron${isExpanded ? ' expanded' : ''}`}>▶</span>
+                                                    <span className={`people-list-chevron${isExpanded ? ' expanded' : ''}`}>&#9656;</span>
                                                     <span>{family.label}</span>
                                                 </div>
                                                 <div className="people-list-cell people-list-email">
@@ -513,15 +509,23 @@ const People = () => {
                                         </button>
                                         {isExpanded &&
                                             family.members.map((member) => (
-                                                <button
+                                                <div
                                                     className={`people-list-item people-list-item--member ${
                                                         member.id === selectedId ? 'active' : ''
                                                     }`}
                                                     key={member.id}
-                                                    type="button"
+                                                    role="button"
+                                                    tabIndex={0}
                                                     onClick={() => {
                                                         setSelectedId(member.id);
                                                         setPanelMode('view');
+                                                    }}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === 'Enter' || event.key === ' ') {
+                                                            event.preventDefault();
+                                                            setSelectedId(member.id);
+                                                            setPanelMode('view');
+                                                        }
                                                     }}
                                                 >
                                                     <div className="people-list-row">
@@ -547,20 +551,14 @@ const People = () => {
                                                             {member.email ? (
                                                                 <span className="people-copy-inline">
                                                                     <span>{member.email}</span>
-                                                                    <span
-                                                                        className="people-copy-icon"
-                                                                        role="button"
-                                                                        tabIndex={0}
+                                                                    <button
+                                                                        type="button"
+                                                                        className="people-copy-button"
                                                                         aria-label="Copy email"
                                                                         onClick={(event) => handleInlineCopy(event, member.email, 'Email copied')}
-                                                                        onKeyDown={(event) => {
-                                                                            if (event.key === 'Enter' || event.key === ' ') {
-                                                                                handleInlineCopy(event, member.email, 'Email copied');
-                                                                            }
-                                                                        }}
                                                                     >
                                                                         <FaCopy />
-                                                                    </span>
+                                                                    </button>
                                                                 </span>
                                                             ) : ''}
                                                         </div>
@@ -573,20 +571,14 @@ const People = () => {
                                                                 return (
                                                                     <span className="people-copy-inline">
                                                                         <span>{phone}</span>
-                                                                        <span
-                                                                            className="people-copy-icon"
-                                                                            role="button"
-                                                                            tabIndex={0}
+                                                                        <button
+                                                                            type="button"
+                                                                            className="people-copy-button"
                                                                             aria-label="Copy phone"
                                                                             onClick={(event) => handleInlineCopy(event, phone, 'Phone copied')}
-                                                                            onKeyDown={(event) => {
-                                                                                if (event.key === 'Enter' || event.key === ' ') {
-                                                                                    handleInlineCopy(event, phone, 'Phone copied');
-                                                                                }
-                                                                            }}
                                                                         >
                                                                             <FaCopy />
-                                                                        </span>
+                                                                        </button>
                                                                     </span>
                                                                 );
                                                             })()}
@@ -599,7 +591,9 @@ const People = () => {
                                                             )}
                                                         </div>
                                                     </div>
-                                                </button>
+
+                                                </div>
+
                                             ))}
                                     </div>
                                 );
@@ -636,3 +630,4 @@ const People = () => {
 };
 
 export default People;
+

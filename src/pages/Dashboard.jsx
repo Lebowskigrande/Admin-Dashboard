@@ -6,7 +6,17 @@ import Card from '../components/Card';
 import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
 import { APP_ROUTES, getOriginRoute } from '../config/appRoutes';
-import { getTaskProgressLabel } from '../utils/taskProgress';
+import { getTaskProgressMeta } from '../utils/taskProgress';
+import {
+    getListKey,
+    getOriginColorClass,
+    getWorkPackageSubtitle,
+    getWorkPackageSummary,
+    getWorkPackageTitle,
+    normalizeOriginKey,
+    sortTasksByPriority
+} from './todo/todoHelpers';
+import { getSectionIconComponent } from './todo/todoVisuals';
 import './Dashboard.css';
 
 const REGULAR_SUNDAY_SERVICE_SLUGS = new Set(['weekly-service', 'rite-i-service', 'rite-ii-service']);
@@ -104,6 +114,92 @@ const eventSourceLabel = (event) => {
     if (event?.source === 'google') return 'Google';
     if (REGULAR_SUNDAY_SERVICE_SLUGS.has(event?.type_slug)) return 'Sunday';
     return event?.category_name || 'Event';
+};
+
+const buildFocusOrigins = (tasks = []) => {
+    const grouped = new Map();
+    tasks.forEach((task) => {
+        if (task?.archived_at) return;
+        const originKey = normalizeOriginKey(task.origin_type, task.origin_id);
+        if (!grouped.has(originKey)) {
+            grouped.set(originKey, {
+                key: originKey,
+                origin_type: task.origin_type || 'manual',
+                origin_id: task.origin_id || 'manual',
+                tasks: [],
+                lists: new Map(),
+                sample: task
+            });
+        }
+        const group = grouped.get(originKey);
+        group.tasks.push(task);
+        const listKey = getListKey(task);
+        if (!group.lists.has(listKey)) {
+            group.lists.set(listKey, {
+                key: listKey,
+                title: task.list_title || listKey,
+                mode: task.list_mode || 'sequential',
+                tasks: []
+            });
+        }
+        group.lists.get(listKey).tasks.push(task);
+    });
+
+    const groups = Array.from(grouped.values()).map((group) => {
+        const listSummaries = Array.from(group.lists.values()).map((list) => {
+            const listMode = String(list.mode || 'sequential').toLowerCase();
+            if (listMode === 'progressive') {
+                const task = list.tasks[0] || null;
+                const progressMeta = getTaskProgressMeta(task);
+                const isComplete = progressMeta?.isComplete || task?.completed;
+                return {
+                    ...list,
+                    nextTask: !isComplete && task ? { ...task, progress_meta: progressMeta } : null
+                };
+            }
+
+            const openListTasks = list.tasks.filter((task) => !task.completed);
+            let nextTask = null;
+            if (openListTasks.length) {
+                const hasSequence = listMode === 'sequential'
+                    || openListTasks.some((task) => task.rank != null || task.step_order != null);
+                if (hasSequence) {
+                    const sorted = [...openListTasks].sort((a, b) => {
+                        const rankA = a.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
+                        const rankB = b.rank == null ? Number.POSITIVE_INFINITY : Number(b.rank);
+                        if (rankA !== rankB) return rankA - rankB;
+                        const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : Number(a.step_order);
+                        const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : Number(b.step_order);
+                        if (orderA !== orderB) return orderA - orderB;
+                        const dueA = parseDateValue(a.due_at)?.getTime() ?? Number.POSITIVE_INFINITY;
+                        const dueB = parseDateValue(b.due_at)?.getTime() ?? Number.POSITIVE_INFINITY;
+                        if (dueA !== dueB) return dueA - dueB;
+                        return (b.priority_effective || 0) - (a.priority_effective || 0);
+                    });
+                    nextTask = sorted[0];
+                } else {
+                    nextTask = sortTasksByPriority(openListTasks)[0];
+                }
+            }
+            return { ...list, nextTask };
+        });
+
+        const listNext = listSummaries.map((list) => list.nextTask).filter(Boolean);
+        const nextTask = listNext.length ? sortTasksByPriority(listNext)[0] : null;
+        return {
+            ...group,
+            lists: listSummaries,
+            nextTask,
+            openCount: group.tasks.filter((task) => !task.completed).length
+        };
+    });
+
+    const withNext = groups.filter((group) => group.nextTask);
+    const withoutNext = groups.filter((group) => !group.nextTask);
+    const sortedWithNext = sortTasksByPriority(withNext.map((group) => group.nextTask))
+        .map((task) => withNext.find((group) => group.nextTask?.id === task.id))
+        .filter(Boolean);
+    return [...sortedWithNext, ...withoutNext];
 };
 
 const Dashboard = () => {
@@ -392,7 +488,7 @@ const Dashboard = () => {
         APP_ROUTES.todo
     ]);
 
-    const focusQueue = openTasks.slice(0, 6);
+    const focusQueue = useMemo(() => buildFocusOrigins(snapshot.tasks).slice(0, 4), [snapshot.tasks]);
     const issueCount = issues.length;
     const weeklyEventTotal = week.reduce((sum, day) => sum + day.items.length, 0);
     const kpis = [
@@ -495,43 +591,69 @@ const Dashboard = () => {
                         <div className="dashboard-panel-header">
                             <div>
                                 <h2>Focus Queue</h2>
-                                <p>The next tasks worth pulling forward across the whole platform.</p>
+                                <p>The next work packages worth pulling forward across the whole platform.</p>
                             </div>
                             <button type="button" className="dashboard-inline-link" onClick={() => navigate(APP_ROUTES.todo)}>
                                 Open to-do list
                             </button>
                         </div>
                         {focusQueue.length ? (
-                            <div className="dashboard-focus-list">
-                                {focusQueue.map((task) => {
-                                    const due = dueMeta(task, today);
+                            <div className="dashboard-focus-board">
+                                {focusQueue.map((origin) => {
+                                    const workPackage = getWorkPackageSummary(origin);
+                                    const primarySection = workPackage.primarySection;
+                                    const primaryTask = primarySection?.actionTask || origin.nextTask || origin.sample;
+                                    const due = dueMeta(primaryTask, today);
                                     return (
                                         <button
-                                            key={task.id}
+                                            key={origin.key}
                                             type="button"
-                                            className="dashboard-focus-row"
-                                            onClick={() => openOrigin(task)}
+                                            className={`dashboard-focus-card ${getOriginColorClass(origin.origin_type)}`}
+                                            onClick={() => openOrigin(primaryTask)}
                                         >
-                                            <div className="task-row-main">
-                                                <div className="task-row-title">
-                                                    <span className={`priority-dot ${priorityClass(task)}`} />
-                                                    <h4>{trimTaskText(task?.text) || 'Untitled task'}</h4>
-                                                </div>
-                                                <div className="task-row-meta">
-                                                    <span className={`priority-pill ${priorityClass(task)}`}>
-                                                        {String(task?.priority_tier || 'normal')}
-                                                    </span>
-                                                    <span className={`priority-pill ${due.className}`}>{due.label}</span>
-                                                    <span className="focus-origin-label">{originLabel(task?.origin_type)}</span>
-                                                    <span className="focus-progress-label">{getTaskProgressLabel(task)}</span>
-                                                </div>
+                                            <div className="dashboard-focus-card-topline">
+                                                <span className="dashboard-focus-origin-label">{originLabel(origin.origin_type)}</span>
+                                                <span className={`priority-pill ${due.className}`}>{due.label}</span>
+                                            </div>
+                                            <div className="dashboard-focus-card-title">{getWorkPackageTitle(origin)}</div>
+                                            <div className="dashboard-focus-card-subtitle">{getWorkPackageSubtitle(origin)}</div>
+                                            <div className="dashboard-focus-card-current">
+                                                <span className="dashboard-focus-current-label">Current friction</span>
+                                                <strong>
+                                                    {primarySection
+                                                        ? `${primarySection.title}: ${primarySection.currentLabel}`
+                                                        : 'Checklist complete'}
+                                                </strong>
+                                            </div>
+                                            <div className="dashboard-focus-section-strip">
+                                                {workPackage.sections.slice(0, 5).map((section) => {
+                                                    const Icon = getSectionIconComponent(section.iconKey);
+                                                    return (
+                                                        <span
+                                                            key={section.key}
+                                                            className={`dashboard-focus-node attention-${section.attention}`}
+                                                        >
+                                                            <span className={`dashboard-focus-node-icon state-${section.status}`}>
+                                                                <Icon />
+                                                            </span>
+                                                            <span className="dashboard-focus-node-label">{section.shortLabel}</span>
+                                                            <span className="dashboard-focus-node-meta">{section.completedCount}/{section.totalCount}</span>
+                                                        </span>
+                                                    );
+                                                })}
+                                            </div>
+                                            <div className="dashboard-focus-card-footer">
+                                                <span>{workPackage.doneSectionCount}/{workPackage.sections.length} sections closed</span>
+                                                <span className={`priority-pill ${priorityClass(primaryTask)}`}>
+                                                    {String(primaryTask?.priority_tier || 'normal')}
+                                                </span>
                                             </div>
                                         </button>
                                     );
                                 })}
                             </div>
                         ) : (
-                            <p className="dashboard-empty">No open tasks are waiting in the queue.</p>
+                            <p className="dashboard-empty">No open work packages are waiting in the queue.</p>
                         )}
                     </Card>
 

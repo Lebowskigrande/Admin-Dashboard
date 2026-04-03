@@ -11,13 +11,63 @@ export const categorizeGoogleEvent = (googleEvent, categories, eventTypes) => {
     const title = (googleEvent.summary || '').toLowerCase();
     const description = (googleEvent.description || '').toLowerCase();
     const content = `${title} ${description}`;
+    const riteIServiceType = eventTypes.find((t) => t.slug === 'rite-i-service');
+    const riteIIServiceType = eventTypes.find((t) => t.slug === 'rite-ii-service');
+    const eucharistServiceType = eventTypes.find((t) => t.slug === 'eucharist-service');
+    const specialServiceType = eventTypes.find((t) => t.slug === 'special-service');
+    const weeklyServiceType = eventTypes.find((t) => t.slug === 'weekly-service');
+    const maintenanceType = eventTypes.find((t) => t.slug === 'maintenance-closure');
+    const meetingType = eventTypes.find((t) => t.slug === 'meeting') || eventTypes[0];
 
     // Default fallback
-    let matchedType = eventTypes.find(t => t.slug === 'weekly-service') || eventTypes[0];
+    let matchedType = meetingType;
+
+    const startValue = googleEvent?.start?.dateTime || googleEvent?.start?.date || '';
+    const startDate = startValue ? new Date(startValue) : null;
+    const startHour = startDate instanceof Date && !Number.isNaN(startDate.getTime()) ? startDate.getHours() : null;
+    const isSundayMorningService = startDate instanceof Date
+        && !Number.isNaN(startDate.getTime())
+        && startDate.getDay() === 0
+        && [8, 10].includes(startHour);
+    const isWednesdayService = startDate instanceof Date
+        && !Number.isNaN(startDate.getTime())
+        && startDate.getDay() === 3;
+    const sundayServiceType = startHour === 8
+        ? (riteIServiceType || weeklyServiceType || specialServiceType || meetingType)
+        : (riteIIServiceType || weeklyServiceType || specialServiceType || meetingType);
+    const weekdayEucharistKeywords = [
+        'mid-week service',
+        'midweek service',
+        'weekday eucharist',
+        'weekday mass',
+        'eucharist',
+        'mass'
+    ];
+    const specialServiceKeywords = [
+        'holy week',
+        'maundy thursday',
+        'good friday',
+        'stations of the cross',
+        'easter vigil',
+        'great vigil',
+        'ash wednesday',
+        'palm sunday',
+        'evensong',
+        'tenebrae',
+        'compline',
+        'lessons and carols'
+    ];
+    const matchesSpecialService = specialServiceKeywords.some((keyword) => content.includes(keyword));
+    const matchesWeekdayEucharist = weekdayEucharistKeywords.some((keyword) => content.includes(keyword));
 
     // Priority 1: Explicit Hashtags (Overrides)
     const tags = {
-        '#service': 'weekly-service',
+        '#service': 'rite-ii-service',
+        '#rite1': 'rite-i-service',
+        '#rite-1': 'rite-i-service',
+        '#rite2': 'rite-ii-service',
+        '#rite-2': 'rite-ii-service',
+        '#eucharist': 'eucharist-service',
         '#special': 'special-service',
         '#wedding': 'wedding',
         '#funeral': 'funeral',
@@ -59,14 +109,24 @@ export const categorizeGoogleEvent = (googleEvent, categories, eventTypes) => {
             matchedType = eventTypes.find(t => t.slug === 'meeting');
         } else if (content.includes('rehearsal') || content.includes('choir')) {
             matchedType = eventTypes.find(t => t.slug === 'rehearsal');
-        } else if (content.includes('service') || content.includes('eucharist') || content.includes('mass')) {
-            matchedType = eventTypes.find(t => t.slug === 'weekly-service');
+        } else if (isSundayMorningService) {
+            matchedType = sundayServiceType;
+        } else if (isWednesdayService && matchesWeekdayEucharist) {
+            matchedType = eucharistServiceType || specialServiceType || matchedType;
+        } else if (matchesSpecialService) {
+            matchedType = specialServiceType || riteIIServiceType || weeklyServiceType || matchedType;
+        } else if (content.includes('service')) {
+            matchedType = isSundayMorningService
+                ? sundayServiceType
+                : ((isWednesdayService && (content.includes('mid-week') || content.includes('midweek')))
+                    ? (eucharistServiceType || specialServiceType || matchedType)
+                    : (specialServiceType || riteIIServiceType || weeklyServiceType || matchedType));
         } else if (content.includes('concert') || content.includes('recital')) {
             matchedType = eventTypes.find(t => t.slug === 'concert');
         } else if (content.includes('class') || content.includes('study') || content.includes('formation')) {
             matchedType = eventTypes.find(t => t.slug === 'class-formation');
-        } else if (content.includes('maintenance') || content.includes('repair') || content.includes('closure')) {
-            matchedType = eventTypes.find(t => t.slug === 'maintenance-closure');
+        } else if (content.includes('maintenance') || content.includes('repair') || content.includes('closure') || content.includes('pest control')) {
+            matchedType = maintenanceType || matchedType;
         } else if (content.includes('rental') || content.includes('lease')) {
             matchedType = eventTypes.find(t => t.slug === 'private-rental');
         } else if (content.includes('holy ghost kitchen') || content.includes('hgk')) {
@@ -227,7 +287,7 @@ const parseNotesWithText = (value) => {
 
 // tableExists, isSundayDate moved to helpers
 
-const resolveLocation = ({ locationTags, eventLocation, locationContext }) => {
+const resolveLocation = ({ locationTags, eventLocation, locationContext, textContent = '', typeSlug = '' }) => {
     if (locationTags?.length) {
         for (const tag of locationTags) {
             if (locationContext.roomBySlug.has(tag)) {
@@ -277,6 +337,18 @@ const resolveLocation = ({ locationTags, eventLocation, locationContext }) => {
         if (normalized) {
             return { roomId: null, buildingId: normalized, source: 'location' };
         }
+    }
+
+    const content = String(textContent || '').toLowerCase();
+    if (content.includes('chapel')) {
+        return { roomId: null, buildingId: 'chapel', source: 'text' };
+    }
+    if (
+        content.includes('church')
+        || content.includes('sanctuary')
+        || ['rite-i-service', 'rite-ii-service', 'eucharist-service', 'special-service', 'weekly-service'].includes(String(typeSlug || '').toLowerCase())
+    ) {
+        return { roomId: null, buildingId: 'sanctuary', source: 'default' };
     }
     return { roomId: null, buildingId: null, source: null };
 };
@@ -459,9 +531,9 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
 
         const globalId = event.iCalUID || event.id;
         const normalizedTime = time || '';
-        const isWeeklyService = categorization.type_slug === 'weekly-service';
+        const isCanonicalSundayService = ['weekly-service', 'rite-i-service', 'rite-ii-service'].includes(categorization.type_slug);
 
-        if (isWeeklyService && isSundayDate(date)) {
+        if (isCanonicalSundayService && isSundayDate(date)) {
             const timeValue = normalizedTime || null;
             const existing = timeValue
                 ? sqlite.prepare(`
@@ -485,12 +557,18 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
             const locationInfo = resolveLocation({
                 locationTags: tags.locations,
                 eventLocation: event.location,
-                locationContext
+                locationContext,
+                textContent: tagSource,
+                typeSlug: categorization.type_slug
             });
             const buildingId = locationInfo.buildingId || existing?.building_id || null;
-            const rite = normalizedTime.startsWith('08')
+            const rite = categorization.type_slug === 'rite-i-service'
                 ? 'Rite I'
-                : (normalizedTime.startsWith('10') ? 'Rite II' : null);
+                : (categorization.type_slug === 'rite-ii-service'
+                    ? 'Rite II'
+                    : (normalizedTime.startsWith('08')
+                        ? 'Rite I'
+                        : (normalizedTime.startsWith('10') ? 'Rite II' : null)));
 
             if (!existing) {
                 const occurrenceId = `occ-${hashId(`sunday-service-${date}-${normalizedTime || 'all-day'}`)}`;
@@ -530,7 +608,9 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
         const locationInfo = resolveLocation({
             locationTags: tags.locations,
             eventLocation: event.location,
-            locationContext
+            locationContext,
+            textContent: tagSource,
+            typeSlug: categorization.type_slug
         });
         const existingOccurrence = sqlite.prepare(`
             SELECT id, notes FROM event_occurrences WHERE id = ?

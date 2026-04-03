@@ -9,6 +9,13 @@ import {
     getDefaultPriorityBase
 } from '../helpers/task-utils.js';
 import { recordTaskProgressHistory } from '../helpers/task-progress-history.js';
+import { normalizeWorshipTypeSlug } from '../helpers/worship-service-utils.js';
+
+const DEFAULT_ORGANIST_ID = 'rob-hovencamp';
+const STATUS_PROGRESS_STEPS = [
+    { key: 'in-process', title: 'In Process', sort_order: 10 },
+    { key: 'done', title: 'Done', sort_order: 20 }
+];
 
 const ensureTaskInstanceNotes = () => {
     const table = db.prepare(`
@@ -183,106 +190,126 @@ const upsertRecurringTemplateDefinition = (definition) => {
     );
 };
 
-const ensureDefaultWorshipServiceTemplates = () => {
-    const worshipTypeIds = getEventTypeIdsBySlugs([
-        'rite-i-service',
-        'rite-ii-service',
-        'eucharist-service',
-        'special-service',
-        'weekly-service'
-    ]);
-    if (!worshipTypeIds.length) return;
-    const definitions = [
-        {
-            id: 'tmpl-event-worship-bulletin-draft',
+const getStatusTemplateDefinitions = ({
+    templateIdPrefix,
+    listKey,
+    listTitle,
+    dueOffsetDays,
+    priorityBase
+}) => STATUS_PROGRESS_STEPS.map((step, index) => ({
+    id: `${templateIdPrefix}-${listKey}-${step.key}`,
+    listKey,
+    listTitle,
+    listMode: 'progressive',
+    stepKey: `${listKey}-${step.key}`,
+    title: step.title,
+    sortOrder: step.sort_order,
+    dueOffsetDays: index === 0 ? dueOffsetDays : -1,
+    priorityBase
+}));
+
+const WORSHIP_TEMPLATE_SCHEMAS = {
+    'rite-i-service': [
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-ritei',
             listKey: 'bulletin',
             listTitle: 'Bulletin',
-            listMode: 'progressive',
-            stepKey: 'bulletin-draft',
-            title: 'Draft bulletin',
-            sortOrder: 10,
             dueOffsetDays: -5,
             priorityBase: 70
-        },
-        {
-            id: 'tmpl-event-worship-bulletin-review',
-            listKey: 'bulletin',
-            listTitle: 'Bulletin',
-            listMode: 'progressive',
-            stepKey: 'bulletin-review',
-            title: 'Review and finalize bulletin',
-            sortOrder: 20,
-            dueOffsetDays: -2,
-            priorityBase: 70
-        },
-        {
-            id: 'tmpl-event-worship-bulletin-print',
-            listKey: 'bulletin',
-            listTitle: 'Bulletin',
-            listMode: 'progressive',
-            stepKey: 'bulletin-print',
-            title: 'Print bulletin',
-            sortOrder: 30,
-            dueOffsetDays: -1,
-            priorityBase: 70
-        },
-        {
-            id: 'tmpl-event-worship-roster-plan',
-            listKey: 'roster',
-            listTitle: 'Liturgical Roster',
-            listMode: 'progressive',
-            stepKey: 'roster-plan',
-            title: 'Build liturgical roster',
-            sortOrder: 10,
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-ritei',
+            listKey: 'music',
+            listTitle: 'Music',
             dueOffsetDays: -7,
-            priorityBase: 68
-        },
-        {
-            id: 'tmpl-event-worship-roster-confirm',
-            listKey: 'roster',
-            listTitle: 'Liturgical Roster',
-            listMode: 'progressive',
-            stepKey: 'roster-confirm',
-            title: 'Confirm liturgical roster',
-            sortOrder: 20,
+            priorityBase: 62
+        })
+    ],
+    'rite-ii-service': [
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-riteii',
+            listKey: 'bulletin',
+            listTitle: 'Bulletin',
+            dueOffsetDays: -5,
+            priorityBase: 70
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-riteii',
+            listKey: 'insert',
+            listTitle: 'Insert',
             dueOffsetDays: -4,
             priorityBase: 68
-        },
-        {
-            id: 'tmpl-event-worship-music-plan',
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-riteii',
             listKey: 'music',
             listTitle: 'Music',
-            listMode: 'progressive',
-            stepKey: 'music-plan',
-            title: 'Confirm regular musicians and guests',
-            sortOrder: 10,
+            dueOffsetDays: -7,
+            priorityBase: 62
+        })
+    ],
+    'weekly-service': [
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-weekly',
+            listKey: 'bulletin',
+            listTitle: 'Bulletin',
+            dueOffsetDays: -5,
+            priorityBase: 70
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-weekly',
+            listKey: 'insert',
+            listTitle: 'Insert',
+            dueOffsetDays: -4,
+            priorityBase: 68
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-weekly',
+            listKey: 'music',
+            listTitle: 'Music',
+            dueOffsetDays: -7,
+            priorityBase: 62
+        })
+    ],
+    'special-service': [
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-special',
+            listKey: 'bulletin',
+            listTitle: 'Bulletin',
+            dueOffsetDays: -5,
+            priorityBase: 70
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-special',
+            listKey: 'clergy',
+            listTitle: 'Clergy & Roles',
+            dueOffsetDays: -7,
+            priorityBase: 68
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-worship-special',
+            listKey: 'music',
+            listTitle: 'Music',
             dueOffsetDays: -7,
             priorityBase: 66
-        },
-        {
-            id: 'tmpl-event-worship-music-final',
-            listKey: 'music',
-            listTitle: 'Music',
-            listMode: 'progressive',
-            stepKey: 'music-finalize',
-            title: 'Finalize music details',
-            sortOrder: 20,
-            dueOffsetDays: -3,
-            priorityBase: 66
-        },
-        {
-            id: 'tmpl-event-worship-logistics',
-            listKey: 'service',
-            listTitle: 'Service Ready',
-            listMode: 'parallel',
-            stepKey: 'service-ready',
-            title: 'Confirm location, time, and service setup',
-            sortOrder: 10,
-            dueOffsetDays: -1,
-            priorityBase: 65
-        }
-    ];
+        })
+    ],
+    'eucharist-service': []
+};
+
+const ensureDefaultWorshipServiceTemplates = () => {
+    const worshipTypeIds = getEventTypeIdsBySlugs(Object.keys(WORSHIP_TEMPLATE_SCHEMAS));
+    if (!worshipTypeIds.length) return;
+    const originIds = worshipTypeIds.map((row) => String(row.id));
+    const placeholders = originIds.map(() => '?').join(', ');
+    db.prepare(`
+        DELETE FROM recurring_task_templates
+        WHERE origin_type = 'event'
+          AND origin_id IN (${placeholders})
+    `).run(...originIds);
+
     worshipTypeIds.forEach(({ slug, id }) => {
+        const definitions = WORSHIP_TEMPLATE_SCHEMAS[slug] || [];
         definitions.forEach((definition) => upsertRecurringTemplateDefinition({
             ...definition,
             id: `${definition.id}-${slug}`,
@@ -500,6 +527,88 @@ const getEventTaskSchedule = ({ dateKey, dueOffsets = [] } = {}) => {
     };
 };
 
+const parseJsonObject = (value, fallback = {}) => {
+    if (!value) return fallback;
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' ? parsed : fallback;
+    } catch {
+        return fallback;
+    }
+};
+
+const getEventSeedContext = (occurrenceId) => {
+    if (!occurrenceId || !tableExists('event_occurrences') || !tableExists('events')) return null;
+    return db.prepare(`
+        SELECT
+            o.id AS occurrence_id,
+            o.date,
+            o.start_time,
+            o.notes,
+            e.id AS event_id,
+            e.title,
+            t.slug AS type_slug
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        LEFT JOIN event_types t ON t.id = e.event_type_id
+        WHERE o.id = ?
+        LIMIT 1
+    `).get(occurrenceId);
+};
+
+const hasAnyAssignmentForRole = (occurrenceId, roleKey) => {
+    if (!tableExists('assignments')) return false;
+    const row = db.prepare(`
+        SELECT 1
+        FROM assignments
+        WHERE occurrence_id = ?
+          AND role_key = ?
+        LIMIT 1
+    `).get(occurrenceId, roleKey);
+    return !!row;
+};
+
+const shouldSeedRegularServiceMusicTask = (occurrenceId) => !hasAnyAssignmentForRole(occurrenceId, 'organist');
+
+const getAllowedWorshipTaskListKeys = ({ occurrenceId, typeSlug }) => {
+    const normalizedType = normalizeWorshipTypeSlug(typeSlug);
+    if (normalizedType === 'rite-i-service') {
+        return shouldSeedRegularServiceMusicTask(occurrenceId)
+            ? new Set(['bulletin', 'music'])
+            : new Set(['bulletin']);
+    }
+    if (normalizedType === 'rite-ii-service') {
+        return shouldSeedRegularServiceMusicTask(occurrenceId)
+            ? new Set(['bulletin', 'insert', 'music'])
+            : new Set(['bulletin', 'insert']);
+    }
+    if (normalizedType === 'special-service') {
+        return new Set(['bulletin', 'clergy', 'music']);
+    }
+    if (normalizedType === 'eucharist-service') {
+        return new Set();
+    }
+    return null;
+};
+
+const pruneSeededEventTasksForOccurrence = ({ occurrenceId, allowedListKeys }) => {
+    if (!occurrenceId || !allowedListKeys || !tableExists('task_instances') || !tableExists('task_origins')) return;
+    const rows = db.prepare(`
+        SELECT ti.id AS task_instance_id, COALESCE(ti.list_key, '') AS list_key
+        FROM task_instances ti
+        JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+        WHERE src.origin_type = 'event'
+          AND src.origin_id = ?
+          AND ti.generated_from = 'seed'
+          AND ti.archived_at IS NULL
+    `).all(occurrenceId);
+
+    rows.forEach((row) => {
+        if (allowedListKeys.has(row.list_key)) return;
+        deleteTaskInstance(row.task_instance_id);
+    });
+};
+
 const parseMonthdays = (value, fallback = []) => {
     if (!value) return fallback;
     const monthdays = String(value)
@@ -701,7 +810,7 @@ const syncSeededTaskInstance = ({
 } = {}) => {
     if (!generationKey || !tableHasColumn('task_instances', 'generation_key')) return null;
     const existing = db.prepare(`
-        SELECT ti.id, ti.task_id, ti.completed_at
+        SELECT ti.id, ti.task_id, ti.completed_at, ti.progress_key
         FROM task_instances ti
         WHERE ti.generation_key = ?
         LIMIT 1
@@ -709,6 +818,15 @@ const syncSeededTaskInstance = ({
     if (!existing) return null;
 
     const now = new Date().toISOString();
+    const normalizedSteps = Array.isArray(progressSteps) ? progressSteps : [];
+    const stepKeys = new Set(normalizedSteps.map((step) => String(step?.key || '').trim()).filter(Boolean));
+    const firstStepKey = normalizedSteps[0]?.key || '';
+    const nextProgressKey = stepKeys.size === 0
+        ? existing.progress_key || ''
+        : (stepKeys.has(String(existing.progress_key || '').trim())
+            ? String(existing.progress_key || '').trim()
+            : (existing.progress_key ? firstStepKey : ''));
+
     db.prepare(`
         UPDATE tasks_new
         SET title = ?, priority_base = ?, task_type = ?, updated_at = ?
@@ -723,6 +841,7 @@ const syncSeededTaskInstance = ({
             list_key = ?,
             list_title = ?,
             list_mode = ?,
+            progress_key = ?,
             progress_steps = ?,
             archived_at = CASE WHEN completed_at IS NULL THEN NULL ELSE archived_at END
         WHERE id = ?
@@ -733,6 +852,7 @@ const syncSeededTaskInstance = ({
         listKey,
         listTitle,
         listMode || 'sequential',
+        nextProgressKey,
         progressSteps ? JSON.stringify(progressSteps) : null,
         existing.id
     );
@@ -1369,9 +1489,25 @@ export const seedOperationsTasksFromTemplates = ({ now = new Date(), rehydrate =
 export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey }) => {
     if (!tableExists('recurring_task_templates')) return;
     if (!occurrenceId || !eventTypeId || !dateKey) return;
+    const context = getEventSeedContext(occurrenceId);
+    const allowedWorshipListKeys = context?.type_slug
+        ? getAllowedWorshipTaskListKeys({
+            occurrenceId,
+            typeSlug: context.type_slug
+        })
+        : null;
+    if (allowedWorshipListKeys) {
+        pruneSeededEventTasksForOccurrence({
+            occurrenceId,
+            allowedListKeys: allowedWorshipListKeys
+        });
+    }
     const templates = listRecurringTemplates('event', String(eventTypeId));
-    if (!templates.length) return;
-    const grouped = templates.reduce((acc, template) => {
+    const filteredTemplates = allowedWorshipListKeys
+        ? templates.filter((template) => allowedWorshipListKeys.has(template.list_key || ''))
+        : templates;
+    if (!filteredTemplates.length) return;
+    const grouped = filteredTemplates.reduce((acc, template) => {
         const listKey = template.list_key || 'list';
         const listMode = template.list_mode || 'sequential';
         const groupKey = `${listKey}:${listMode}`;

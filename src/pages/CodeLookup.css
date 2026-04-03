@@ -25,6 +25,26 @@
     background: #f8fafc;
 }
 
+.code-lookup-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex: 1;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.code-lookup-detail-btn {
+    border: 1px solid #bae6fd;
+    background: #e0f2fe;
+    color: #075985;
+    border-radius: 999px;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
 .code-lookup-tabs button {
     border: none;
     background: transparent;
@@ -99,6 +119,10 @@
     background: #eff6ff;
 }
 
+.code-lookup-table-ap tbody tr {
+    cursor: pointer;
+}
+
 .code-copy-btn {
     border: 1px solid #7dd3fc;
     background: #e0f2fe;
@@ -125,12 +149,210 @@
     font-size: 0.9rem;
 }
 
+.code-lookup-line-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+}
+
+.code-lookup-bucket-label {
+    color: #64748b;
+    font-size: 0.76rem;
+}
+
+.budget-status-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    min-width: 220px;
+}
+
+.budget-status-cell.compact {
+    min-width: 160px;
+}
+
+.budget-status-topline {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.82rem;
+}
+
+.budget-status-percent {
+    color: #475569;
+    font-weight: 700;
+}
+
+.budget-progress-track {
+    position: relative;
+    height: 0.55rem;
+    border-radius: 999px;
+    background: var(--budget-bar-track);
+    overflow: hidden;
+}
+
+.budget-progress-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: var(--budget-bar-width);
+    background: var(--budget-bar-fill);
+    border-radius: inherit;
+}
+
+.budget-status-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    color: #64748b;
+    font-size: 0.74rem;
+}
+
+.budget-detail-modal .modal-content {
+    padding: 1rem;
+}
+
+.budget-detail-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.budget-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.8rem;
+}
+
+.budget-summary-card {
+    border: 1px solid #dbe4ef;
+    border-radius: 12px;
+    padding: 0.9rem;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.budget-summary-card span {
+    color: #64748b;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.budget-summary-card strong {
+    color: #0f172a;
+    font-size: 1.15rem;
+}
+
+.budget-detail-section {
+    border: 1px solid #dbe4ef;
+    border-radius: 14px;
+    background: #fff;
+    padding: 0.95rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+}
+
+.budget-detail-section-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.budget-detail-section-header h4,
+.budget-source-list h5 {
+    margin: 0 0 0.2rem;
+    color: #0f172a;
+}
+
+.budget-detail-section-header p {
+    margin: 0;
+    color: #64748b;
+    font-size: 0.84rem;
+}
+
+.budget-source-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.budget-source-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.8rem;
+    align-items: center;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 0.7rem 0.8rem;
+}
+
+.budget-source-item.read-only {
+    background: #f8fafc;
+}
+
+.budget-source-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.budget-source-copy span {
+    color: #64748b;
+    font-size: 0.78rem;
+    word-break: break-all;
+}
+
+.budget-source-actions {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+
+.budget-source-actions button {
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    color: #334155;
+    border-radius: 999px;
+    padding: 0.38rem 0.75rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.budget-source-actions button.is-danger {
+    border-color: #fecaca;
+    color: #b91c1c;
+    background: #fef2f2;
+}
+
+.budget-detail-table-wrap {
+    max-height: 340px;
+}
+
 @media (max-width: 840px) {
     .code-lookup-search {
         min-width: 100%;
     }
 
+    .code-lookup-actions {
+        justify-content: stretch;
+    }
+
     .code-lookup-table-wrap {
         max-height: calc(100vh - 330px);
+    }
+
+    .budget-source-item,
+    .budget-detail-section-header,
+    .budget-status-meta,
+    .budget-status-topline {
+        flex-direction: column;
+        align-items: flex-start;
     }
 }

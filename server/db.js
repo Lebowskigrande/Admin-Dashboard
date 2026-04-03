@@ -13,97 +13,133 @@ const dbPath = join(__dirname, 'church.db');
 const sqlite = new Database(dbPath);
 const db = drizzle(sqlite, { schema });
 
-sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS vestry_checklist (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        month INTEGER,
-        month_name TEXT,
-        phase TEXT,
-        task TEXT,
-        notes TEXT,
-        sort_order INTEGER
-    );
+const ensureRuntimeTables = () => {
+    sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS vestry_checklist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            month INTEGER,
+            month_name TEXT,
+            phase TEXT,
+            task TEXT,
+            notes TEXT,
+            sort_order INTEGER
+        );
 
-    CREATE TABLE IF NOT EXISTS constant_contact_tokens (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        access_token TEXT,
-        refresh_token TEXT,
-        expires_at TEXT,
-        scope TEXT,
-        token_type TEXT,
-        created_at TEXT
-    );
+        CREATE TABLE IF NOT EXISTS constant_contact_tokens (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            access_token TEXT,
+            refresh_token TEXT,
+            expires_at TEXT,
+            scope TEXT,
+            token_type TEXT,
+            created_at TEXT
+        );
 
-    CREATE TABLE IF NOT EXISTS event_template_fields (
-        id TEXT PRIMARY KEY,
-        event_type_id INTEGER NOT NULL,
-        field_key TEXT NOT NULL,
-        label TEXT NOT NULL,
-        field_type TEXT NOT NULL,
-        options_json TEXT,
-        placeholder TEXT,
-        help_text TEXT,
-        sort_order INTEGER NOT NULL DEFAULT 0,
-        required INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(event_type_id, field_key)
-    );
+        CREATE TABLE IF NOT EXISTS event_template_fields (
+            id TEXT PRIMARY KEY,
+            event_type_id INTEGER NOT NULL,
+            field_key TEXT NOT NULL,
+            label TEXT NOT NULL,
+            field_type TEXT NOT NULL,
+            options_json TEXT,
+            placeholder TEXT,
+            help_text TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            required INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(event_type_id, field_key)
+        );
 
-    CREATE TABLE IF NOT EXISTS event_documents (
-        id TEXT PRIMARY KEY,
-        occurrence_id TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        doc_type TEXT NOT NULL,
-        label TEXT,
-        file_name TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    );
+        CREATE TABLE IF NOT EXISTS event_documents (
+            id TEXT PRIMARY KEY,
+            occurrence_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            label TEXT,
+            file_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
 
-    CREATE TABLE IF NOT EXISTS sharefile_job_events (
-        id TEXT PRIMARY KEY,
-        attempt_id TEXT,
-        job_id TEXT,
-        message_id TEXT,
-        thread_id TEXT,
-        code_type TEXT,
-        code_value TEXT,
-        status TEXT NOT NULL,
-        error_text TEXT,
-        output_json TEXT,
-        created_at TEXT NOT NULL
-    );
+        CREATE TABLE IF NOT EXISTS sharefile_job_events (
+            id TEXT PRIMARY KEY,
+            attempt_id TEXT,
+            job_id TEXT,
+            message_id TEXT,
+            thread_id TEXT,
+            code_type TEXT,
+            code_value TEXT,
+            status TEXT NOT NULL,
+            error_text TEXT,
+            output_json TEXT,
+            created_at TEXT NOT NULL
+        );
 
-    CREATE TABLE IF NOT EXISTS sharefile_routing_accounts (
-        user_id TEXT PRIMARY KEY,
-        is_default INTEGER NOT NULL DEFAULT 0,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL
-    );
+        CREATE TABLE IF NOT EXISTS sharefile_routing_accounts (
+            user_id TEXT PRIMARY KEY,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
 
-    CREATE TABLE IF NOT EXISTS routing_attempts (
-        id TEXT PRIMARY KEY,
-        job_id TEXT,
-        message_id TEXT,
-        thread_id TEXT,
-        code_type TEXT,
-        code_value TEXT,
-        source TEXT,
-        status TEXT NOT NULL,
-        error_text TEXT,
-        output_json TEXT,
-        written_files_json TEXT,
-        started_at TEXT NOT NULL,
-        completed_at TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
+        CREATE TABLE IF NOT EXISTS routing_attempts (
+            id TEXT PRIMARY KEY,
+            job_id TEXT,
+            message_id TEXT,
+            thread_id TEXT,
+            code_type TEXT,
+            code_value TEXT,
+            source TEXT,
+            status TEXT NOT NULL,
+            error_text TEXT,
+            output_json TEXT,
+            written_files_json TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
 
-    CREATE INDEX IF NOT EXISTS idx_routing_attempts_created_at ON routing_attempts(created_at);
-    CREATE INDEX IF NOT EXISTS idx_routing_attempts_job_id ON routing_attempts(job_id);
-`);
+        CREATE TABLE IF NOT EXISTS budget_scan_sources (
+            id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            folder_path TEXT NOT NULL UNIQUE,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS task_progress_history (
+            id TEXT PRIMARY KEY,
+            task_instance_id TEXT NOT NULL,
+            task_id TEXT,
+            title TEXT,
+            action TEXT NOT NULL,
+            source TEXT NOT NULL,
+            actor TEXT,
+            from_state TEXT,
+            to_state TEXT,
+            from_progress_key TEXT,
+            to_progress_key TEXT,
+            from_completed_at TEXT,
+            to_completed_at TEXT,
+            changed_fields_json TEXT,
+            before_json TEXT,
+            after_json TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_routing_attempts_created_at ON routing_attempts(created_at);
+        CREATE INDEX IF NOT EXISTS idx_routing_attempts_job_id ON routing_attempts(job_id);
+        CREATE INDEX IF NOT EXISTS idx_budget_scan_sources_enabled ON budget_scan_sources(enabled);
+        CREATE INDEX IF NOT EXISTS idx_task_progress_history_task_instance
+            ON task_progress_history(task_instance_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_task_progress_history_created_at
+            ON task_progress_history(created_at);
+    `);
+};
 
 const ensureSharefileJobEventsColumns = () => {
     const table = sqlite.prepare(`
@@ -125,8 +161,6 @@ const ensureSharefileJobEventsColumns = () => {
     `);
 };
 
-ensureSharefileJobEventsColumns();
-
 const ensureRecurringTaskTemplateColumns = () => {
     const table = sqlite.prepare(`
         SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'recurring_task_templates'
@@ -142,8 +176,6 @@ const ensureRecurringTaskTemplateColumns = () => {
         sqlite.exec('ALTER TABLE recurring_task_templates ADD COLUMN schedule_rule TEXT');
     }
 };
-
-ensureRecurringTaskTemplateColumns();
 
 const seedVestryChecklist = () => {
     const count = sqlite.prepare('SELECT count(*) as count FROM vestry_checklist').get().count;
@@ -166,8 +198,6 @@ const seedVestryChecklist = () => {
         );
     });
 };
-
-seedVestryChecklist();
 
 const ensurePeopleColumns = () => {
     const table = sqlite.prepare(`
@@ -194,10 +224,18 @@ const ensurePeopleColumns = () => {
     addColumn('is_pledger');
 };
 
-ensurePeopleColumns();
-syncPledgerFlagsInPeople(sqlite);
+export const initializeDatabaseRuntime = () => {
+    ensureRuntimeTables();
+    ensureSharefileJobEventsColumns();
+    ensureRecurringTaskTemplateColumns();
+    ensurePeopleColumns();
+    console.log('Database runtime initialized at', dbPath);
+};
 
-console.log('Database initialized at', dbPath);
+export const syncDatabaseDerivedState = () => {
+    seedVestryChecklist();
+    syncPledgerFlagsInPeople(sqlite);
+};
 
 export { sqlite, db };
 export default sqlite;

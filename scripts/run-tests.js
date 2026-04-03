@@ -4,11 +4,19 @@ import { join } from 'path';
 
 import { __TEST__ } from '../server/services/sharefileEmailRouter.js';
 import { __TEST__ as AP_VENDOR_TEST } from '../server/services/apVendorExtractor.js';
+import {
+    buildTaskProgressAudit,
+    listTaskProgressHistory,
+    recordTaskProgressHistory
+} from '../server/helpers/task-progress-history.js';
+import { buildOriginRollups } from '../server/services/taskEngine.js';
 import { sqlite as db } from '../server/db.js';
 
 const fixturesDir = join(process.cwd(), 'tests', 'fixtures');
+const TEST_TASK_HISTORY_PREFIX = 'test-taskhist-';
 
 const readFixture = async (name) => readFile(join(fixturesDir, name), 'utf8');
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const rawArgs = process.argv.slice(2).map((arg) => String(arg || '').trim());
 const cliArgs = new Set(rawArgs.map((arg) => arg.toLowerCase()));
 const vendorOnlyMode = cliArgs.has('--vendor-only') || cliArgs.has('vendor');
@@ -16,6 +24,225 @@ const nameFilterArg = rawArgs.find((arg) => arg.toLowerCase().startsWith('--matc
 const testNameFilter = nameFilterArg ? nameFilterArg.slice('--match='.length).trim().toLowerCase() : '';
 
 const tests = [
+    {
+        name: 'Task origin rollups choose the best next task across separate lists',
+        run: async () => {
+            const [rollup] = buildOriginRollups([
+                {
+                    id: 'task-bulletin-draft',
+                    text: 'Draft bulletin',
+                    completed: false,
+                    state: 'open',
+                    origin_type: 'event',
+                    origin_id: 'occ-rollup-test',
+                    list_key: 'bulletin',
+                    list_mode: 'progressive',
+                    step_order: 10,
+                    priority_effective: 35,
+                    created_at: '2026-04-01T09:00:00.000Z'
+                },
+                {
+                    id: 'task-bulletin-review',
+                    text: 'Review bulletin',
+                    completed: false,
+                    state: 'open',
+                    origin_type: 'event',
+                    origin_id: 'occ-rollup-test',
+                    list_key: 'bulletin',
+                    list_mode: 'progressive',
+                    step_order: 20,
+                    priority_effective: 40,
+                    created_at: '2026-04-01T09:05:00.000Z'
+                },
+                {
+                    id: 'task-service-setup',
+                    text: 'Confirm service setup',
+                    completed: false,
+                    state: 'open',
+                    origin_type: 'event',
+                    origin_id: 'occ-rollup-test',
+                    list_key: 'service',
+                    list_mode: 'parallel',
+                    priority_effective: 80,
+                    created_at: '2026-04-01T09:10:00.000Z'
+                }
+            ]);
+
+            assert.ok(rollup);
+            assert.equal(rollup.open_count, 3);
+            assert.equal(rollup.next_task?.id, 'task-service-setup');
+            assert.equal(rollup.next_task?.text, 'Confirm service setup');
+        }
+    },
+    {
+        name: 'Task progress history skips unchanged snapshots',
+        run: async () => {
+            const taskInstanceId = `${TEST_TASK_HISTORY_PREFIX}no-change`;
+            const snapshot = {
+                id: taskInstanceId,
+                task_id: 'taskdef-no-change',
+                title: 'Draft bulletin',
+                state: 'open',
+                blocked: 0,
+                progress_key: 'bulletin-draft',
+                progress_steps: [
+                    { key: 'bulletin-draft', title: 'Draft bulletin', sort_order: 10 },
+                    { key: 'bulletin-review', title: 'Review bulletin', sort_order: 20 }
+                ],
+                list_key: 'bulletin',
+                list_title: 'Bulletin',
+                list_mode: 'progressive',
+                origin_type: 'event',
+                origin_id: 'occ-test-no-change',
+                origin_event: 'seed'
+            };
+
+            db.prepare('DELETE FROM task_progress_history WHERE task_instance_id = ?').run(taskInstanceId);
+            try {
+                const result = recordTaskProgressHistory({
+                    before: snapshot,
+                    after: { ...snapshot },
+                    source: 'test',
+                    actor: 'run-tests'
+                });
+                assert.equal(result, null);
+                assert.equal(listTaskProgressHistory(taskInstanceId).length, 0);
+            } finally {
+                db.prepare('DELETE FROM task_progress_history WHERE task_instance_id = ?').run(taskInstanceId);
+            }
+        }
+    },
+    {
+        name: 'Task progress history records progress and completion transitions',
+        run: async () => {
+            const taskInstanceId = `${TEST_TASK_HISTORY_PREFIX}transitions`;
+            const progressSteps = [
+                { key: 'bulletin-draft', title: 'Draft bulletin', sort_order: 10 },
+                { key: 'bulletin-review', title: 'Review bulletin', sort_order: 20 },
+                { key: 'bulletin-print', title: 'Print bulletin', sort_order: 30 }
+            ];
+            const before = {
+                id: taskInstanceId,
+                task_id: 'taskdef-transitions',
+                title: 'Finalize bulletin',
+                state: 'open',
+                blocked: 0,
+                progress_key: 'bulletin-draft',
+                progress_steps: progressSteps,
+                list_key: 'bulletin',
+                list_title: 'Bulletin',
+                list_mode: 'progressive',
+                origin_type: 'event',
+                origin_id: 'occ-test-transitions',
+                origin_event: 'bulletin-draft'
+            };
+            const afterProgress = {
+                ...before,
+                progress_key: 'bulletin-review'
+            };
+            const completedAt = new Date().toISOString();
+            const afterComplete = {
+                ...afterProgress,
+                state: 'done',
+                completed_at: completedAt
+            };
+
+            db.prepare('DELETE FROM task_progress_history WHERE task_instance_id = ?').run(taskInstanceId);
+            try {
+                const progressEntry = recordTaskProgressHistory({
+                    before,
+                    after: afterProgress,
+                    source: 'test',
+                    actor: 'run-tests'
+                });
+                await wait(15);
+                const completionEntry = recordTaskProgressHistory({
+                    before: afterProgress,
+                    after: afterComplete,
+                    source: 'test',
+                    actor: 'run-tests'
+                });
+
+                assert.equal(progressEntry?.action, 'progress');
+                assert.equal(progressEntry?.changed_fields.includes('progress_key'), true);
+                assert.equal(completionEntry?.action, 'completed');
+
+                const history = listTaskProgressHistory(taskInstanceId, 10);
+                assert.equal(history.length, 2);
+                assert.equal(history[0].action, 'completed');
+                assert.equal(history[0].to_completed_at, completedAt);
+                assert.equal(history[1].action, 'progress');
+                assert.equal(history[1].changed_fields.includes('progress_key'), true);
+                assert.equal(history[1].to_progress_key, 'bulletin-review');
+            } finally {
+                db.prepare('DELETE FROM task_progress_history WHERE task_instance_id = ?').run(taskInstanceId);
+            }
+        }
+    },
+    {
+        name: 'Task progress audit flags repetitive final-step clusters',
+        run: async () => {
+            const now = Date.now();
+            const progressSteps = [
+                { key: 'draft', title: 'Draft', sort_order: 10 },
+                { key: 'review', title: 'Review', sort_order: 20 },
+                { key: 'proof', title: 'Proof', sort_order: 30 },
+                { key: 'approve', title: 'Approve', sort_order: 40 },
+                { key: 'print', title: 'Print', sort_order: 50 }
+            ];
+            const tasks = [
+                {
+                    title: 'Finalize bulletin',
+                    list_key: 'bulletin',
+                    list_title: 'Bulletin',
+                    progress_key: 'print',
+                    progress_steps: progressSteps,
+                    completed_at: new Date(now - (4 * 60 * 1000)).toISOString(),
+                    origin_type: 'event',
+                    origin_id: 'occ-a'
+                },
+                {
+                    title: 'Finalize bulletin',
+                    list_key: 'bulletin',
+                    list_title: 'Bulletin',
+                    progress_key: 'print',
+                    progress_steps: progressSteps,
+                    completed_at: new Date(now - (2 * 60 * 1000)).toISOString(),
+                    origin_type: 'event',
+                    origin_id: 'occ-b'
+                },
+                {
+                    title: 'Finalize bulletin',
+                    list_key: 'bulletin',
+                    list_title: 'Bulletin',
+                    progress_key: 'print',
+                    progress_steps: progressSteps,
+                    completed_at: new Date(now - (60 * 1000)).toISOString(),
+                    origin_type: 'event',
+                    origin_id: 'occ-c'
+                }
+            ];
+
+            const audit = buildTaskProgressAudit(tasks, {
+                days: 30,
+                cluster_window_minutes: 5,
+                min_cluster_size: 3
+            });
+
+            assert.equal(audit.suspicious_clusters.length, 1);
+            assert.equal(audit.suspicious_clusters[0].progressive_finals.length, 3);
+            const recommendation = audit.recommendations.find((entry) => (
+                entry.title === 'Finalize bulletin' && entry.list_key === 'bulletin'
+            ));
+            assert.ok(recommendation);
+            assert.equal(recommendation.severity, 'high');
+            assert.deepEqual(recommendation.suggested_step_groups, [
+                'Draft + Review',
+                'Proof + Approve',
+                'Print'
+            ]);
+        }
+    },
     {
         name: 'Website contribution format parses donor + normalized designation',
         run: async () => {
@@ -535,12 +762,33 @@ const ensureTestSchema = () => {
             display_name TEXT NOT NULL,
             envelope_number TEXT,
             tags TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS task_progress_history (
+            id TEXT PRIMARY KEY,
+            task_instance_id TEXT NOT NULL,
+            task_id TEXT,
+            title TEXT,
+            action TEXT NOT NULL,
+            source TEXT NOT NULL,
+            actor TEXT,
+            from_state TEXT,
+            to_state TEXT,
+            from_progress_key TEXT,
+            to_progress_key TEXT,
+            from_completed_at TEXT,
+            to_completed_at TEXT,
+            changed_fields_json TEXT,
+            before_json TEXT,
+            after_json TEXT,
+            created_at TEXT NOT NULL
         )
     `);
     const columns = db.prepare('PRAGMA table_info(people)').all().map((row) => row.name);
     if (!columns.includes('tags')) {
         db.exec('ALTER TABLE people ADD COLUMN tags TEXT');
     }
+    db.prepare('DELETE FROM task_progress_history WHERE task_instance_id LIKE ?').run(`${TEST_TASK_HISTORY_PREFIX}%`);
 };
 
 const run = async () => {

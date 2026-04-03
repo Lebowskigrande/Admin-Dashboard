@@ -126,6 +126,12 @@
       "when": 1773226800000,
       "tag": "0020_timesheet_schedule_rules",
       "breakpoints": false
+    },
+    {
+      "idx": 21,
+      "when": 1774569600000,
+      "tag": "0021_reduce_progressive_task_steps",
+      "breakpoints": false
     }
   ]
 }

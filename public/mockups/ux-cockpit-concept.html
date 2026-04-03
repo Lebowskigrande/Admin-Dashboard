@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Dashboard UX Concept</title>
+  <style>
+    :root {
+      --bg-0: #f4f8f7;
+      --bg-1: #e8f0ee;
+      --surface: #fbfdfc;
+      --surface-2: #f3f7f5;
+      --text: #142322;
+      --muted: #5d6f6d;
+      --brand: #1f6f63;
+      --brand-2: #2b8d7d;
+      --accent: #c89b2d;
+      --danger: #b93f3f;
+      --border: rgba(20, 35, 34, 0.14);
+      --shadow-1: 0 6px 20px rgba(18, 43, 39, 0.08);
+      --shadow-2: 0 14px 40px rgba(16, 39, 36, 0.15);
+      --radius-lg: 18px;
+      --radius-md: 12px;
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", "Trebuchet MS", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 8%, #ffffff 0%, transparent 28%),
+        radial-gradient(circle at 88% 14%, #dcece8 0%, transparent 24%),
+        linear-gradient(180deg, var(--bg-0), var(--bg-1));
+      min-height: 100vh;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 84px 1fr;
+      min-height: 100vh;
+    }
+
+    .rail {
+      padding: 18px 10px;
+      border-right: 1px solid var(--border);
+      background: linear-gradient(180deg, #153a34, #102f2a);
+      color: #e9f4f1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-dot {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(145deg, #3aa996, #2a7f70);
+      font-weight: 700;
+      box-shadow: 0 8px 24px rgba(7, 22, 19, 0.4);
+    }
+
+    .rail-btn {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      transition: transform .18s var(--ease), background .22s var(--ease);
+    }
+    .rail-btn:hover { background: rgba(233, 244, 241, 0.12); transform: translateY(-2px); }
+    .rail-btn.active { background: rgba(233, 244, 241, 0.22); }
+
+    .main {
+      padding: 24px 26px 34px;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 18px;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 12px;
+    }
+    .title h1 {
+      margin: 0;
+      font-family: "Franklin Gothic Medium", "Avenir Next Condensed", sans-serif;
+      letter-spacing: .4px;
+      font-size: clamp(1.4rem, 2.1vw, 2rem);
+    }
+    .title p { margin: 4px 0 0; color: var(--muted); }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .chip {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid var(--border);
+      color: #34514d;
+      font-size: .85rem;
+      font-weight: 600;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: transform .18s var(--ease), box-shadow .2s var(--ease), filter .2s var(--ease);
+    }
+    .btn:hover { transform: translateY(-1px); filter: brightness(1.02); }
+    .btn:active { transform: translateY(0); }
+    .btn.primary {
+      color: #fff;
+      background: linear-gradient(135deg, var(--brand), var(--brand-2));
+      box-shadow: 0 10px 24px rgba(34, 105, 93, 0.32);
+    }
+    .btn.ghost {
+      background: #fff;
+      color: #194a42;
+      border: 1px solid var(--border);
+    }
+
+    .segmented {
+      display: flex;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 6px;
+      width: fit-content;
+      backdrop-filter: blur(7px);
+    }
+    .seg-btn {
+      border: 0;
+      padding: 8px 11px;
+      border-radius: 10px;
+      background: transparent;
+      color: #355652;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s var(--ease), color .2s var(--ease), transform .16s var(--ease);
+    }
+    .seg-btn.active {
+      background: #163b35;
+      color: #ecf7f4;
+      transform: translateY(-1px);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr;
+      gap: 14px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, var(--surface), var(--surface-2));
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 14px;
+      box-shadow: var(--shadow-1);
+      transition: box-shadow .2s var(--ease), transform .2s var(--ease);
+    }
+    .card:hover { box-shadow: var(--shadow-2); transform: translateY(-2px); }
+    .card h2 {
+      margin: 0;
+      font-size: 1.02rem;
+      letter-spacing: .2px;
+    }
+
+    .kpi {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(90px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .kpi-item {
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: var(--radius-md);
+      padding: 9px 10px;
+    }
+    .kpi-item strong { display: block; font-size: 1.2rem; }
+    .kpi-item span { color: var(--muted); font-size: .82rem; }
+
+    .timeline { margin-top: 10px; display: grid; gap: 9px; }
+    .step {
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 12px;
+      padding: 10px;
+      cursor: pointer;
+      transition: transform .18s var(--ease), border-color .2s var(--ease);
+    }
+    .step:hover { transform: translateX(2px); border-color: #6ca598; }
+    .step-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-weight: 700;
+      font-size: .93rem;
+    }
+    .step small { color: var(--muted); display: block; margin-top: 4px; }
+
+    .bar {
+      margin-top: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #dce8e5;
+      overflow: hidden;
+    }
+    .bar > i {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, #2b8d7d, #5ab7a7);
+      transition: width .65s var(--ease);
+    }
+
+    .task-list { margin-top: 10px; display: grid; gap: 8px; }
+    .task {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-left: 5px solid transparent;
+      border-radius: 11px;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 24px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      transition: transform .18s var(--ease), border-color .2s var(--ease), background .2s var(--ease);
+    }
+    .task:hover { transform: translateX(2px); }
+    .task.high { border-left-color: #b93f3f; }
+    .task.med { border-left-color: #c89b2d; }
+    .task.done { opacity: .62; background: #eff6f3; text-decoration: line-through; }
+
+    .check {
+      width: 18px;
+      height: 18px;
+      border-radius: 6px;
+      border: 2px solid #70938d;
+      display: inline-grid;
+      place-items: center;
+      cursor: pointer;
+      font-size: 12px;
+      color: transparent;
+      transition: all .18s var(--ease);
+    }
+    .task.done .check {
+      background: #2a8c7c;
+      border-color: #2a8c7c;
+      color: #fff;
+    }
+
+    .pill {
+      font-size: .72rem;
+      font-weight: 700;
+      border-radius: 999px;
+      padding: 5px 8px;
+      border: 1px solid var(--border);
+      background: #f4faf8;
+      color: #345652;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      margin-top: 10px;
+    }
+    .mini {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+      min-height: 120px;
+    }
+    .mini h3 {
+      margin: 0 0 8px;
+      font-size: .88rem;
+      color: #264b45;
+      letter-spacing: .1px;
+    }
+    .line { margin: 6px 0; font-size: .85rem; color: #33524e; }
+    .line strong { color: #142322; }
+
+    .fab {
+      position: fixed;
+      right: 26px;
+      bottom: 24px;
+      width: 58px;
+      height: 58px;
+      border: 0;
+      border-radius: 50%;
+      color: #fff;
+      font-size: 1.7rem;
+      background: linear-gradient(135deg, #bc8f28, #d8af4d);
+      box-shadow: 0 16px 28px rgba(117, 89, 24, 0.32);
+      cursor: pointer;
+      transition: transform .2s var(--ease), box-shadow .2s var(--ease);
+    }
+    .fab:hover { transform: translateY(-3px) scale(1.04); box-shadow: 0 20px 34px rgba(117, 89, 24, 0.4); }
+
+    .drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: min(420px, 95vw);
+      height: 100vh;
+      background: #f8fcfa;
+      border-left: 1px solid var(--border);
+      box-shadow: -18px 0 40px rgba(12, 31, 28, 0.18);
+      padding: 18px;
+      transform: translateX(100%);
+      transition: transform .32s var(--ease);
+      z-index: 40;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 10px;
+    }
+    .drawer.open { transform: translateX(0); }
+    .drawer h3 { margin: 0; }
+    .drawer p { color: var(--muted); margin: 4px 0 0; }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(11, 31, 27, 0.34);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .28s var(--ease);
+      z-index: 35;
+    }
+    .overlay.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .ripple {
+      position: absolute;
+      border-radius: 50%;
+      transform: scale(0);
+      background: rgba(255, 255, 255, 0.45);
+      animation: ripple .6s var(--ease);
+      pointer-events: none;
+    }
+    @keyframes ripple {
+      to { transform: scale(5); opacity: 0; }
+    }
+
+    .fade-up {
+      opacity: 0;
+      transform: translateY(14px);
+      animation: reveal .6s var(--ease) forwards;
+    }
+    @keyframes reveal {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 820px) {
+      .app { grid-template-columns: 1fr; }
+      .rail {
+        flex-direction: row;
+        justify-content: space-between;
+        border-right: 0;
+        border-bottom: 1px solid rgba(233, 244, 241, 0.2);
+        padding: 12px;
+      }
+      .layout { grid-template-columns: 1fr; }
+      .main { padding: 16px; }
+      .fab { right: 18px; bottom: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <div class="brand-dot">SE</div>
+      <button class="rail-btn active" title="Overview">◈</button>
+      <button class="rail-btn" title="Sunday">☀</button>
+      <button class="rail-btn" title="Calendar">🗓</button>
+      <button class="rail-btn" title="People">👥</button>
+      <button class="rail-btn" title="Buildings">▦</button>
+      <button class="rail-btn" title="Finance">$</button>
+    </aside>
+
+    <main class="main">
+      <header class="topbar fade-up" style="animation-delay:.04s">
+        <div class="title">
+          <h1>Operations Cockpit Concept</h1>
+          <p>Material-informed layout with richer motion and cross-module context.</p>
+        </div>
+        <div class="actions">
+          <div class="chip" id="statusChip">Live sync: 4m ago</div>
+          <button class="btn ghost">Quick Filter</button>
+          <button class="btn primary">Save Snapshot</button>
+        </div>
+      </header>
+
+      <section class="segmented fade-up" style="animation-delay:.08s">
+        <button class="seg-btn active" data-view="ops">Operations</button>
+        <button class="seg-btn" data-view="sunday">Sunday Readiness</button>
+        <button class="seg-btn" data-view="finance">Finance Pulse</button>
+      </section>
+
+      <section class="layout">
+        <article class="card fade-up" style="animation-delay:.12s">
+          <h2>Sunday Readiness</h2>
+          <div class="kpi">
+            <div class="kpi-item"><strong id="kpiRoles">7/10</strong><span>Roles Assigned</span></div>
+            <div class="kpi-item"><strong id="kpiDocs">2/3</strong><span>Docs Ready</span></div>
+            <div class="kpi-item"><strong id="kpiTasks">68%</strong><span>Tasks Complete</span></div>
+          </div>
+          <div class="timeline">
+            <div class="step" data-step="bulletin">
+              <div class="step-head"><span>Bulletin Flow</span><span class="pill">Behind</span></div>
+              <small>Draft approved, print queue not started</small>
+              <div class="bar"><i data-fill="56"></i></div>
+            </div>
+            <div class="step" data-step="roster">
+              <div class="step-head"><span>Liturgical Roster</span><span class="pill">Active</span></div>
+              <small>Usher + LEM gaps remain for 10 AM</small>
+              <div class="bar"><i data-fill="74"></i></div>
+            </div>
+            <div class="step" data-step="stream">
+              <div class="step-head"><span>Livestream Email</span><span class="pill">Ready</span></div>
+              <small>Template complete, waiting send window</small>
+              <div class="bar"><i data-fill="92"></i></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="card fade-up" style="animation-delay:.16s">
+          <h2>Cross-Origin Tasks</h2>
+          <div class="task-list" id="taskList">
+            <div class="task high">
+              <span class="check" role="button" aria-label="toggle">✓</span>
+              <div><strong>Confirm HVAC ticket vendor ETA</strong><br><small>Buildings</small></div>
+              <span class="pill">High</span>
+            </div>
+            <div class="task med">
+              <span class="check" role="button" aria-label="toggle">✓</span>
+              <div><strong>Approve Tuesday event contract upload</strong><br><small>Calendar</small></div>
+              <span class="pill">Med</span>
+            </div>
+            <div class="task">
+              <span class="check" role="button" aria-label="toggle">✓</span>
+              <div><strong>Review envelope merge duplicate cluster</strong><br><small>People</small></div>
+              <span class="pill">Normal</span>
+            </div>
+            <div class="task">
+              <span class="check" role="button" aria-label="toggle">✓</span>
+              <div><strong>Attach AP receipt missing budget code</strong><br><small>Finance</small></div>
+              <span class="pill">Normal</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="card fade-up" style="animation-delay:.2s">
+          <h2>People + Finance Sidecar</h2>
+          <div class="split">
+            <section class="mini">
+              <h3>People Signals</h3>
+              <div class="line"><strong>3</strong> family clusters need merge review</div>
+              <div class="line"><strong>12</strong> clergy/staff role conflicts in March</div>
+              <div class="line"><strong>5</strong> contacts missing mobile</div>
+            </section>
+            <section class="mini">
+              <h3>Finance Signals</h3>
+              <div class="line"><strong>$4,328</strong> pending AP approvals</div>
+              <div class="line"><strong>2</strong> checks missing budget tag</div>
+              <div class="line"><strong>Deposit packet</strong> draft saved</div>
+            </section>
+          </div>
+          <div class="split">
+            <section class="mini">
+              <h3>Interactive Direction</h3>
+              <div class="line">Hover cards for context actions</div>
+              <div class="line">Click milestone rows to open side drawer</div>
+              <div class="line">Keep keyboard focus ring visible</div>
+            </section>
+            <section class="mini">
+              <h3>Design Language</h3>
+              <div class="line">Material surfaces + stronger gradients</div>
+              <div class="line">Animated progress + motion-safe defaults</div>
+              <div class="line">Compact data density with clear hierarchy</div>
+            </section>
+          </div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <button class="fab" id="fab" title="Compose">+</button>
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer">
+    <header>
+      <h3 id="drawerTitle">Milestone Details</h3>
+      <p id="drawerDesc">Select a milestone to inspect blockers and quick actions.</p>
+    </header>
+    <section id="drawerBody">
+      <div class="mini">
+        <h3>Suggested Actions</h3>
+        <div class="line">Assign remaining roster gaps from People pool.</div>
+        <div class="line">Auto-generate Sunday task list dependencies.</div>
+      </div>
+    </section>
+    <footer style="display:flex; gap:8px; justify-content:flex-end;">
+      <button class="btn ghost" id="closeDrawer">Close</button>
+      <button class="btn primary">Apply Changes</button>
+    </footer>
+  </aside>
+
+  <script>
+    const views = {
+      ops: { roles: "7/10", docs: "2/3", tasks: "68%", status: "Live sync: 4m ago" },
+      sunday: { roles: "8/10", docs: "3/3", tasks: "81%", status: "Sunday mode: focused" },
+      finance: { roles: "6/10", docs: "2/3", tasks: "54%", status: "Finance mode: review lock" }
+    };
+
+    const segButtons = document.querySelectorAll(".seg-btn");
+    const kpiRoles = document.getElementById("kpiRoles");
+    const kpiDocs = document.getElementById("kpiDocs");
+    const kpiTasks = document.getElementById("kpiTasks");
+    const statusChip = document.getElementById("statusChip");
+
+    segButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        segButtons.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        const state = views[btn.dataset.view] || views.ops;
+        kpiRoles.textContent = state.roles;
+        kpiDocs.textContent = state.docs;
+        kpiTasks.textContent = state.tasks;
+        statusChip.textContent = state.status;
+      });
+    });
+
+    document.querySelectorAll(".bar > i").forEach((el) => {
+      requestAnimationFrame(() => {
+        el.style.width = el.dataset.fill + "%";
+      });
+    });
+
+    document.getElementById("taskList").addEventListener("click", (event) => {
+      const check = event.target.closest(".check");
+      if (!check) return;
+      const task = check.closest(".task");
+      task.classList.toggle("done");
+      const remaining = [...document.querySelectorAll(".task")].filter((t) => !t.classList.contains("done")).length;
+      kpiTasks.textContent = Math.max(0, Math.round((4 - remaining) / 4 * 100)) + "%";
+    });
+
+    const drawer = document.getElementById("drawer");
+    const overlay = document.getElementById("overlay");
+    const drawerTitle = document.getElementById("drawerTitle");
+    const drawerDesc = document.getElementById("drawerDesc");
+
+    const stepInfo = {
+      bulletin: {
+        title: "Bulletin Flow",
+        desc: "Print queue is pending. Linked to Sunday + task origin dependencies."
+      },
+      roster: {
+        title: "Liturgical Roster",
+        desc: "Open person assignment shortlist with role-fit recommendations."
+      },
+      stream: {
+        title: "Livestream Email",
+        desc: "Content complete. Triggered send timing and checklist audit available."
+      }
+    };
+
+    document.querySelectorAll(".step").forEach((step) => {
+      step.addEventListener("click", () => {
+        const info = stepInfo[step.dataset.step];
+        drawerTitle.textContent = info.title;
+        drawerDesc.textContent = info.desc;
+        drawer.classList.add("open");
+        overlay.classList.add("show");
+      });
+    });
+
+    function closeDrawer() {
+      drawer.classList.remove("open");
+      overlay.classList.remove("show");
+    }
+
+    document.getElementById("closeDrawer").addEventListener("click", closeDrawer);
+    overlay.addEventListener("click", closeDrawer);
+
+    function addRipple(event) {
+      const btn = event.currentTarget;
+      const circle = document.createElement("span");
+      const diameter = Math.max(btn.clientWidth, btn.clientHeight);
+      const rect = btn.getBoundingClientRect();
+      circle.style.width = circle.style.height = diameter + "px";
+      circle.style.left = event.clientX - rect.left - diameter / 2 + "px";
+      circle.style.top = event.clientY - rect.top - diameter / 2 + "px";
+      circle.classList.add("ripple");
+      const old = btn.querySelector(".ripple");
+      if (old) old.remove();
+      btn.appendChild(circle);
+    }
+
+    document.querySelectorAll(".btn, .fab").forEach((el) => el.addEventListener("click", addRipple));
+
+    document.getElementById("fab").addEventListener("click", () => {
+      drawerTitle.textContent = "Quick Create";
+      drawerDesc.textContent = "Launch a new task, event template, or AP entry from one command.";
+      drawer.classList.add("open");
+      overlay.classList.add("show");
+    });
+  </script>
+</body>
+</html>

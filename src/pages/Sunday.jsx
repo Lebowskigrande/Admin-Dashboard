@@ -15,6 +15,8 @@ import SundayRosterPanel from './sunday/SundayRosterPanel';
 import './Sunday.css';
 import './People.css';
 
+const REGULAR_SUNDAY_SERVICE_SLUGS = new Set(['weekly-service', 'rite-i-service', 'rite-ii-service']);
+
 const serializeDate = (date) => date.toISOString().slice(0, 10);
 const toDateKey = (date) => (date ? date.toISOString().slice(0, 10) : '');
 
@@ -36,6 +38,7 @@ const TEN_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist', 'lem', 
 const MULTI_ASSIGNMENT_ROLES = new Set(['lector', 'lem', 'acolyte', 'usher', 'sound', 'coffeeHour', 'childcare']);
 const isEightAmService = (time = '') => /^0?8:/.test(time.trim());
 const getServiceRoleKeys = (service) => (isEightAmService(service?.time || '') ? EIGHT_AM_ROLE_KEYS : TEN_AM_ROLE_KEYS);
+const roleAllowsMultiple = (serviceTime, roleKey) => !isEightAmService(serviceTime || '') && MULTI_ASSIGNMENT_ROLES.has(roleKey);
 const formatServiceTime = (time) => {
     const trimmed = (time || '').trim();
     if (trimmed.startsWith('08')) return '8:00 AM';
@@ -204,7 +207,7 @@ const Sunday = () => {
                         return person && (person.roles || []).includes(roleKey);
                     });
 
-                    roleValues[roleKey] = MULTI_ASSIGNMENT_ROLES.has(roleKey)
+                    roleValues[roleKey] = roleAllowsMultiple(service.time, roleKey)
                         ? eligibleIds
                         : (eligibleIds[0] || '');
                 });
@@ -829,6 +832,10 @@ const Sunday = () => {
     };
 
     const toggleTeamSelection = (serviceTime, roleKey, teamMemberIds) => {
+        if (!roleAllowsMultiple(serviceTime, roleKey)) {
+            updateRoleDraft(serviceTime, roleKey, teamMemberIds[0] || '');
+            return;
+        }
         updateRoleDraft(serviceTime, roleKey, (prevValue) => {
             const current = new Set(Array.isArray(prevValue) ? prevValue : (prevValue ? [prevValue] : []));
             const allSelected = teamMemberIds.every((id) => current.has(id));
@@ -841,7 +848,8 @@ const Sunday = () => {
         });
     };
 
-    const togglePersonSelection = (serviceTime, roleKey, personId, isMulti) => {
+    const togglePersonSelection = (serviceTime, roleKey, personId) => {
+        const isMulti = roleAllowsMultiple(serviceTime, roleKey);
         if (isMulti) {
             updateRoleDraft(serviceTime, roleKey, (prevValue) => {
                 const current = new Set(Array.isArray(prevValue) ? prevValue : (prevValue ? [prevValue] : []));
@@ -1148,7 +1156,7 @@ const Sunday = () => {
                 if (!event?.date) return false;
                 if (!isSameDay(event.date, currentDate)) return false;
                 if (event.source === 'liturgical') return false;
-                if (event.type_slug === 'weekly-service') return false;
+                if (REGULAR_SUNDAY_SERVICE_SLUGS.has(event.type_slug)) return false;
                 if (event.id === 'sunday-service') return false;
                 return true;
             })
@@ -1731,7 +1739,7 @@ const Sunday = () => {
                 getServiceRoleKeys={getServiceRoleKeys}
                 defaultLocationForTime={defaultLocationForTime}
                 formatServiceTime={formatServiceTime}
-                multiAssignmentRoles={MULTI_ASSIGNMENT_ROLES}
+                roleAllowsMultiple={roleAllowsMultiple}
                 roleDefinitions={ROLE_DEFINITIONS}
                 onTooltipToggle={handleTooltipToggle}
             />

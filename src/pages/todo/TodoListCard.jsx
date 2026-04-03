@@ -1,4 +1,16 @@
 import Card from '../../components/Card';
+import { getSectionIconComponent } from './todoVisuals';
+
+const getActionLabel = (section, task) => {
+    if (!task) return '';
+    if (section?.checklist?.mode !== 'progressive') {
+        return task.completed ? 'Undo' : 'Complete';
+    }
+    const currentLabel = String(section?.currentLabel || '').trim().toLowerCase();
+    if (!currentLabel || currentLabel === 'not started') return 'Start';
+    if (currentLabel === 'in process') return 'Mark Done';
+    return 'Advance';
+};
 
 const TodoListCard = ({
     title,
@@ -10,6 +22,7 @@ const TodoListCard = ({
     countLabel,
     renderCountBadge,
     selectedOriginKey,
+    selectedSectionKey,
     onSelectRow,
     formatOriginLabel,
     getWorkPackageTitle,
@@ -38,15 +51,16 @@ const TodoListCard = ({
             <div className="empty-state">{emptyLabel}</div>
         )}
         {!tasksLoading && !error && rows.length > 0 && (
-            <div className="queue-card-list">
+            <div className="workboard-grid">
                 {rows.map((row) => {
                     const task = row.task;
                     const origin = row.origin;
                     const originLabel = formatOriginLabel(origin.sample);
-                    const originSubtitle = getWorkPackageSubtitle(origin);
-                    const taskTitle = getWorkPackageTitle(origin);
+                    const packageSubtitle = getWorkPackageSubtitle(origin);
+                    const packageTitle = getWorkPackageTitle(origin);
                     const workPackage = getWorkPackageSummary(origin);
                     const primarySection = workPackage.primarySection;
+                    const primaryTask = primarySection?.actionTask || task;
                     const isActive = row.originKey === selectedOriginKey;
                     const bucketLabel = row.bucket === 'this_week'
                         ? 'This Week'
@@ -55,131 +69,105 @@ const TodoListCard = ({
                             : row.bucket === 'later'
                                 ? 'Later'
                                 : '';
-                    const currentLabel = primarySection
-                        ? `${primarySection.title}: ${primarySection.currentLabel}`
-                        : 'Checklist complete';
-                    const actionTask = primarySection?.actionTask || task;
 
                     return (
-                        <div
+                        <article
                             key={row.originKey}
                             role="button"
                             tabIndex={0}
-                            className={`queue-card ${getOriginColorClass(origin.sample?.origin_type)} ${isActive ? 'active' : ''}`}
-                            onClick={() => onSelectRow(row.originKey, task?.id || '')}
+                            className={`package-card ${getOriginColorClass(origin.sample?.origin_type)} ${isActive ? 'active' : ''}`}
+                            onClick={() => onSelectRow(
+                                row.originKey,
+                                primarySection?.key || '',
+                                primaryTask?.id || ''
+                            )}
                             onKeyDown={(event) => {
                                 if (event.key === 'Enter' || event.key === ' ') {
                                     event.preventDefault();
-                                    onSelectRow(row.originKey, task?.id || '');
+                                    onSelectRow(
+                                        row.originKey,
+                                        primarySection?.key || '',
+                                        primaryTask?.id || ''
+                                    );
                                 }
                             }}
                         >
-                            <div className="queue-card-topline">
-                                <div className="queue-card-heading">
-                                    <div className="queue-card-title">{taskTitle}</div>
-                                    <div className="origin-meta">
-                                        {originLabel}
-                                        {originSubtitle ? ` - ${originSubtitle}` : ''}
-                                        {bucketLabel ? <span className="origin-bucket-pill">{bucketLabel}</span> : null}
-                                    </div>
+                            <div className="package-card-accent" aria-hidden="true" />
+                            <div className="package-card-head">
+                                <div className="package-card-kicker">
+                                    <span className="package-origin-label">{originLabel}</span>
+                                    {bucketLabel ? <span className="package-bucket-pill">{bucketLabel}</span> : null}
                                 </div>
-                                <div className="queue-card-pills">
-                                    {task ? (
-                                        <span className={`priority-pill ${getDisplayClass(task)}`}>
-                                            {getDisplayLabel(task)}
-                                        </span>
-                                    ) : null}
-                                    <span className="queue-progress-pill">
-                                        {workPackage.completedCount}/{workPackage.totalCount}
-                                    </span>
-                                </div>
+                                <div className="package-card-title">{packageTitle}</div>
+                                <div className="package-card-subtitle">{packageSubtitle}</div>
                             </div>
 
-                            <div className="queue-card-summary">
-                                <div className="queue-card-current">
-                                    <span className="queue-card-current-label">Current</span>
-                                    <strong>{currentLabel}</strong>
+                            <div className="package-card-statusline">
+                                <div className="package-status-copy">
+                                    <span className="package-status-label">Current friction</span>
+                                    <strong>
+                                        {primarySection
+                                            ? `${primarySection.title}: ${primarySection.currentLabel}`
+                                            : 'Checklist complete'}
+                                    </strong>
                                 </div>
-                                {actionTask ? (
-                                    <button
-                                        type="button"
-                                        className="queue-complete-btn"
-                                        disabled={!primarySection?.actionTask}
-                                        onClick={(event) => {
-                                            event.stopPropagation();
-                                            toggleTask(actionTask);
-                                        }}
-                                    >
-                                        {primarySection?.checklist?.mode === 'progressive' ? 'Advance Checklist' : 'Complete Next'}
-                                    </button>
+                                {primaryTask ? (
+                                    <span className={`priority-pill ${getDisplayClass(primaryTask)}`}>
+                                        {getDisplayLabel(primaryTask)}
+                                    </span>
                                 ) : null}
                             </div>
 
-                            <div className="queue-progress-bar" aria-hidden="true">
-                                <div
-                                    className="queue-progress-fill"
-                                    style={{ width: `${Math.round(workPackage.progress * 100)}%` }}
-                                />
-                            </div>
-
-                            <div className="queue-mini-checklist">
-                                {workPackage.sections.slice(0, 4).map((section) => (
-                                    <span key={section.key} className={`mini-checklist-chip status-${section.status}`}>
-                                        {section.title} {section.completedCount}/{section.totalCount}
-                                    </span>
-                                ))}
-                                {workPackage.sections.length > 4 && (
-                                    <span className="mini-checklist-chip overflow">+{workPackage.sections.length - 4}</span>
-                                )}
-                            </div>
-
-                            {isActive && (
-                                <div className="queue-expanded-checklist">
-                                    {workPackage.sections.map((section) => (
-                                        <div
+                            <div className="package-section-strip">
+                                {workPackage.sections.map((section) => {
+                                    const Icon = getSectionIconComponent(section.iconKey);
+                                    const isFocused = isActive && section.key === selectedSectionKey;
+                                    return (
+                                        <button
                                             key={section.key}
-                                            className={`queue-checklist-row status-${section.status}`}
-                                            role={section.actionTask ? 'button' : undefined}
-                                            tabIndex={section.actionTask ? 0 : undefined}
-                                            onClick={section.actionTask ? (event) => {
+                                            type="button"
+                                            className={`section-node attention-${section.attention} ${isFocused ? 'is-focused' : ''}`}
+                                            onClick={(event) => {
                                                 event.stopPropagation();
-                                                onSelectRow(row.originKey, section.actionTask.id || '');
-                                            } : undefined}
-                                            onKeyDown={section.actionTask ? (event) => {
-                                                if (event.key === 'Enter' || event.key === ' ') {
-                                                    event.preventDefault();
-                                                    event.stopPropagation();
-                                                    onSelectRow(row.originKey, section.actionTask.id || '');
-                                                }
-                                            } : undefined}
+                                                onSelectRow(
+                                                    row.originKey,
+                                                    section.key,
+                                                    section.actionTask?.id || section.currentTask?.id || ''
+                                                );
+                                            }}
                                         >
-                                            <div className={`queue-checklist-marker status-${section.status}`}>
-                                                {section.status === 'done' ? '\u2713' : ''}
-                                            </div>
-                                            <div className="queue-checklist-copy">
-                                                <div className="queue-checklist-title">{section.title}</div>
-                                                <div className="queue-checklist-meta">
-                                                    {section.completedCount}/{section.totalCount} complete
-                                                    {section.currentLabel ? ` - ${section.currentLabel}` : ''}
-                                                </div>
-                                            </div>
-                                            {section.actionTask ? (
-                                                <button
-                                                    type="button"
-                                                    className="queue-checklist-action"
-                                                    onClick={(event) => {
-                                                        event.stopPropagation();
-                                                        toggleTask(section.actionTask);
-                                                    }}
-                                                >
-                                                    {section.checklist.mode === 'progressive' ? 'Advance' : (section.actionTask.completed ? 'Undo' : 'Done')}
-                                                </button>
-                                            ) : null}
-                                        </div>
-                                    ))}
+                                            <span className={`section-node-icon state-${section.status}`}>
+                                                <Icon />
+                                                {section.status === 'done' ? <span className="section-node-check">v</span> : null}
+                                            </span>
+                                            <span className="section-node-label">{section.shortLabel}</span>
+                                            <span className="section-node-meta">
+                                                {section.completedCount}/{section.totalCount}
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+
+                            <div className="package-card-footer">
+                                <div className="package-progress-copy">
+                                    <span>{workPackage.doneSectionCount}/{workPackage.sections.length} sections closed</span>
+                                    <span>{workPackage.completedCount}/{workPackage.totalCount} checklist items</span>
                                 </div>
-                            )}
-                        </div>
+                                {primaryTask ? (
+                                    <button
+                                        type="button"
+                                        className="package-advance-btn"
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            toggleTask(primaryTask);
+                                        }}
+                                    >
+                                        {getActionLabel(primarySection, primaryTask)}
+                                    </button>
+                                ) : null}
+                            </div>
+                        </article>
                     );
                 })}
             </div>

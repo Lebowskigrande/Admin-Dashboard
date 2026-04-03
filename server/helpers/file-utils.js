@@ -1,5 +1,5 @@
-import { join, extname } from 'path';
-import { access, mkdir, readdir, stat } from 'fs/promises';
+import { join, extname, isAbsolute, relative, resolve } from 'path';
+import { access, mkdir, readdir, stat, realpath } from 'fs/promises';
 import { homedir } from 'os';
 
 export const DROPBOX_ROOT = process.env.DROPBOX_ROOT
@@ -11,6 +11,28 @@ export const DROPBOX_EVENT_DOCS_DIR = 'Events';
 export const sanitizeFileName = (value) => String(value || '')
     .replace(/[<>:"/\\|?*]/g, '')
     .trim();
+
+export const isPathWithinRoot = (candidatePath, rootPath) => {
+    const relativePath = relative(resolve(rootPath), resolve(candidatePath));
+    return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
+};
+
+export const resolvePathWithinRoots = (rawPath, roots = []) => {
+    if (!rawPath || typeof rawPath !== 'string') return null;
+    const candidate = resolve(rawPath);
+    return roots.some((root) => isPathWithinRoot(candidate, root)) ? candidate : null;
+};
+
+export const resolveExistingPathWithinRoots = async (rawPath, roots = []) => {
+    const candidate = resolvePathWithinRoots(rawPath, roots);
+    if (!candidate) return null;
+    try {
+        const actualPath = await realpath(candidate);
+        return roots.some((root) => isPathWithinRoot(actualPath, root)) ? actualPath : null;
+    } catch {
+        return null;
+    }
+};
 
 export const ensureEventDocDir = async (eventId, occurrenceId) => {
     const safeEvent = sanitizeFileName(eventId || 'event');
@@ -135,7 +157,9 @@ export const findBulletinFile = async (dateStr, timeToken = '10am') => {
     }));
 
     scored.sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
+        if (b.score !== a.score) {
+            return b.score - a.score;
+        }
         return b.modified - a.modified;
     });
 

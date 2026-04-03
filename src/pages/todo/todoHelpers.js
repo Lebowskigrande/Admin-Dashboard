@@ -433,7 +433,7 @@ export const getWorkPackageSubtitle = (originOrTask) => {
             : '';
         const timeLabel = sample.event_time ? ` at ${sample.event_time}` : '';
         const typeLabel = sample.event_type_name || 'Event';
-        return [typeLabel, `${dateLabel}${timeLabel}`.trim()].filter(Boolean).join(' · ');
+        return [typeLabel, `${dateLabel}${timeLabel}`.trim()].filter(Boolean).join(' - ');
     }
     if (originType === 'sunday') {
         return formatOriginSubtitle(sample) || 'Sunday planning package';
@@ -447,12 +447,100 @@ export const getWorkPackageSubtitle = (originOrTask) => {
     return formatOriginSubtitle(sample);
 };
 
+const GENERIC_SECTION_TITLES = new Set([
+    'weekly ops',
+    'weekly operations',
+    'operations',
+    'tasks',
+    'task',
+    'weekly'
+]);
+
+const normalizeDisplayText = (value) => String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const isGenericSectionTitle = (value) => {
+    const normalized = normalizeDisplayText(value).toLowerCase();
+    return GENERIC_SECTION_TITLES.has(normalized);
+};
+
+const toCompactPhrase = (value, maxWords = 2) => {
+    const words = normalizeDisplayText(value)
+        .split(' ')
+        .filter(Boolean);
+    if (!words.length) return 'Section';
+    return words.slice(0, maxWords).join(' ');
+};
+
+const getOperationsSectionTitle = (list, task) => {
+    const listTitle = normalizeDisplayText(list?.title || '');
+    if (!isGenericSectionTitle(listTitle)) return listTitle || normalizeDisplayText(task?.text || '') || 'Operations';
+    return normalizeDisplayText(task?.text || '') || listTitle || 'Operations';
+};
+
+const getOperationsShortLabel = (title, task) => {
+    const raw = `${title} ${task?.text || ''}`.toLowerCase();
+    if (/(bill|invoice|expense|ap |accounts payable)/.test(raw)) return 'Bills';
+    if (/(deposit|check|bank)/.test(raw)) return 'Deposits';
+    if (/(timesheet|payroll|staff hours)/.test(raw)) return 'Payroll';
+    if (/(email|newsletter|communication|announcement)/.test(raw)) return 'Comms';
+    if (/(record|archive|scan|filing|file)/.test(raw)) return 'Records';
+    if (/(budget|finance|payment|reconcile)/.test(raw)) return 'Finance';
+    return toCompactPhrase(title, 3);
+};
+
+const getSectionVisualConfig = (list, currentTask, sectionTitle = '') => {
+    const raw = `${list?.key || ''} ${sectionTitle || list?.title || ''} ${currentTask?.text || ''}`.toLowerCase();
+
+    if (/(bulletin|packet|certificate|contract|document|print|file|doc)/.test(raw)) {
+        return { iconKey: 'documents', shortLabel: /(packet)/.test(raw) ? 'Packet' : /(certificate)/.test(raw) ? 'Certificates' : 'Docs' };
+    }
+    if (/(roster|contact|people|guest|clergy|vestry|minister|leader|attendee)/.test(raw)) {
+        return { iconKey: 'people', shortLabel: /(roster)/.test(raw) ? 'Roster' : 'People' };
+    }
+    if (/(music|musician|organ|choir|hymn|anthem)/.test(raw)) {
+        return { iconKey: 'music', shortLabel: 'Music' };
+    }
+    if (/(setup|ready|logistics|building|facility|room|site|campus|sacristy)/.test(raw)) {
+        return { iconKey: 'setup', shortLabel: 'Setup' };
+    }
+    if (/(email|communication|invite|announcement|newsletter|outreach)/.test(raw)) {
+        return { iconKey: 'communications', shortLabel: 'Comms' };
+    }
+    if (/(follow|post |minutes|recap|close|archive|thank)/.test(raw)) {
+        return { iconKey: 'followup', shortLabel: 'Follow-up' };
+    }
+    if (/(hospitality|food|kitchen|refreshment|supply)/.test(raw)) {
+        return { iconKey: 'hospitality', shortLabel: 'Hospitality' };
+    }
+    if (/(budget|finance|deposit|payment|invoice|expense)/.test(raw)) {
+        return { iconKey: 'finance', shortLabel: 'Finance' };
+    }
+    return { iconKey: 'general', shortLabel: sectionTitle || list?.title || 'Section' };
+};
+
+const getSectionAttention = (task, status) => {
+    if (status === 'done') return 'done';
+    const dueInfo = getDueInfo(task);
+    if (dueInfo?.rank === 0) return 'urgent';
+    if (dueInfo?.rank === 1) return 'today';
+    if (status === 'current') return 'active';
+    return 'idle';
+};
+
 export const getWorkPackageSummary = (origin) => {
     const sections = (origin?.lists || [])
         .map((list) => {
             const checklist = getListChecklist(list);
             const representativeTask = getListRepresentativeTask(list);
+            const progressMeta = checklist.mode === 'progressive'
+                ? getTaskProgressMeta(checklist.representativeTask)
+                : null;
             const currentTask = checklist.currentItem?.task || representativeTask || null;
+            const effectiveTitle = origin?.origin_type === 'operations'
+                ? getOperationsSectionTitle(list, currentTask || representativeTask)
+                : (list.title || getTopLevelTaskTitle(list, currentTask));
             const isDone = checklist.totalCount > 0 && checklist.completedCount >= checklist.totalCount;
             const status = isDone
                 ? 'done'
@@ -462,18 +550,27 @@ export const getWorkPackageSummary = (origin) => {
             const actionTask = checklist.mode === 'progressive'
                 ? checklist.representativeTask
                 : (checklist.currentItem?.task || representativeTask || null);
+            const visual = getSectionVisualConfig(list, currentTask || actionTask, effectiveTitle);
+            const shortLabel = origin?.origin_type === 'operations'
+                ? getOperationsShortLabel(effectiveTitle, currentTask || actionTask)
+                : visual.shortLabel;
 
             return {
                 key: list.key,
-                title: list.title || getTopLevelTaskTitle(list, currentTask),
-                currentLabel: checklist.currentItem?.label || (checklist.totalCount ? 'Checklist complete' : 'No checklist items'),
+                title: effectiveTitle,
+                shortLabel,
+                iconKey: visual.iconKey,
+                currentLabel: progressMeta?.currentLabel
+                    || checklist.currentItem?.label
+                    || (checklist.totalCount ? 'Checklist complete' : 'No checklist items'),
                 completedCount: checklist.completedCount,
                 totalCount: checklist.totalCount,
                 progress: checklist.progress,
                 checklist,
                 currentTask,
                 actionTask,
-                status
+                status,
+                attention: getSectionAttention(currentTask || actionTask, status)
             };
         })
         .sort((a, b) => compareTasksIgnoreState(a.currentTask || a.actionTask || {}, b.currentTask || b.actionTask || {}));
@@ -488,6 +585,7 @@ export const getWorkPackageSummary = (origin) => {
         completedCount,
         progress: totalCount ? completedCount / totalCount : 0,
         primarySection,
-        openSectionCount: sections.filter((section) => section.status !== 'done').length
+        openSectionCount: sections.filter((section) => section.status !== 'done').length,
+        doneSectionCount: sections.filter((section) => section.status === 'done').length
     };
 };

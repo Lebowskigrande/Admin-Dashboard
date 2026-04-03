@@ -26,11 +26,35 @@ export const ROLE_FIELD_MAP = {
     childcare: 'childcare'
 };
 
+const SUNDAY_SERVICE_TITLE_PATTERNS = [
+    /holy eucharist/i,
+    /choral holy eucharist/i
+];
+
 export const formatDateKey = (date) => format(date, 'yyyy-MM-dd');
 
 export const isSundayDate = (dateStr) => {
     const d = new Date(`${dateStr}T00:00:00`);
     return d.getDay() === 0;
+};
+
+export const normalizeServiceTime = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const match = raw.match(/^(\d{1,2}):(\d{2})/);
+    if (!match) return raw;
+    const hours = match[1].padStart(2, '0');
+    return `${hours}:${match[2]}`;
+};
+
+export const isLinkedSundayScheduleService = ({ eventId, date, startTime, title }) => {
+    if (String(eventId || '').trim() === 'sunday-service') return true;
+    if (!isSundayDate(date)) return false;
+    const normalizedTime = normalizeServiceTime(startTime);
+    if (!['08:00', '10:00'].includes(normalizedTime)) return false;
+    const normalizedTitle = String(title || '').trim();
+    if (!normalizedTitle) return false;
+    return SUNDAY_SERVICE_TITLE_PATTERNS.some((pattern) => pattern.test(normalizedTitle));
 };
 
 export const getSundayIndex = (dateStr) => {
@@ -65,12 +89,13 @@ export const getRotationAssignmentsForDate = (dateStr, roleKeys) => {
 };
 
 export const ensureSundayOccurrence = (date, serviceTime) => {
+    const normalizedTime = normalizeServiceTime(serviceTime);
     const existing = db.prepare(`
         SELECT id FROM event_occurrences
         WHERE event_id = 'sunday-service' AND date = ? AND start_time = ?
-    `).get(date, serviceTime);
+    `).get(date, normalizedTime);
     if (existing?.id) return existing.id;
-    const rite = serviceTime.startsWith('08') ? 'Rite I' : 'Rite II';
+    const rite = normalizedTime.startsWith('08') ? 'Rite I' : 'Rite II';
     const occurrenceId = `occ-${randomUUID()}`;
     db.prepare(`
         INSERT INTO event_occurrences (
@@ -79,11 +104,42 @@ export const ensureSundayOccurrence = (date, serviceTime) => {
     `).run(
         occurrenceId,
         date,
-        serviceTime,
-        DEFAULT_LOCATION_BY_TIME[serviceTime] || '',
+        normalizedTime,
+        DEFAULT_LOCATION_BY_TIME[normalizedTime] || '',
         rite
     );
     return occurrenceId;
+};
+
+export const getLinkedSundayScheduleOccurrence = ({ eventId, date, startTime, title }) => {
+    if (!isLinkedSundayScheduleService({ eventId, date, startTime, title })) return null;
+    const normalizedTime = normalizeServiceTime(startTime);
+    if (!normalizedTime) return null;
+    const occurrenceId = ensureSundayOccurrence(date, normalizedTime);
+    const occurrence = db.prepare(`
+        SELECT id, building_id, rite, start_time
+        FROM event_occurrences
+        WHERE id = ?
+        LIMIT 1
+    `).get(occurrenceId);
+    return occurrence || null;
+};
+
+export const listLinkedSundayAliasOccurrences = (date, startTime) => {
+    const normalizedTime = normalizeServiceTime(startTime);
+    if (!normalizedTime || !isSundayDate(date)) return [];
+    const rows = db.prepare(`
+        SELECT o.id, o.event_id, o.date, o.start_time, e.title
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        WHERE o.date = ? AND o.start_time = ? AND e.id <> 'sunday-service'
+    `).all(date, normalizedTime);
+    return rows.filter((row) => isLinkedSundayScheduleService({
+        eventId: row.event_id,
+        date: row.date,
+        startTime: row.start_time,
+        title: row.title
+    }));
 };
 
 export const replaceAssignmentsForRole = (occurrenceId, roleKey, personIds) => {
@@ -95,6 +151,33 @@ export const replaceAssignmentsForRole = (occurrenceId, roleKey, personIds) => {
             INSERT INTO assignments (id, occurrence_id, role_key, person_id)
             VALUES (?, ?, ?, ?)
         `).run(`asgn-${randomUUID()}`, occurrenceId, roleKey, personId);
+    });
+};
+
+export const replaceAllAssignmentsForOccurrence = (occurrenceId, roles = {}) => {
+    db.prepare('DELETE FROM assignments WHERE occurrence_id = ?').run(occurrenceId);
+    Object.entries(roles || {}).forEach(([roleKey, personIds]) => {
+        const key = String(roleKey || '').trim();
+        if (!key) return;
+        const uniquePeople = Array.from(new Set((Array.isArray(personIds) ? personIds : [personIds]).filter(Boolean)));
+        uniquePeople.forEach((personId) => {
+            db.prepare(`
+                INSERT INTO assignments (id, occurrence_id, role_key, person_id)
+                VALUES (?, ?, ?, ?)
+            `).run(`asgn-${randomUUID()}`, occurrenceId, key, personId);
+        });
+    });
+};
+
+export const syncLinkedSundayAliasOccurrences = ({ date, startTime, buildingId, roles }) => {
+    const aliases = listLinkedSundayAliasOccurrences(date, startTime);
+    aliases.forEach((alias) => {
+        if (buildingId !== undefined) {
+            db.prepare('UPDATE event_occurrences SET building_id = ? WHERE id = ?').run(buildingId || null, alias.id);
+        }
+        if (roles && typeof roles === 'object') {
+            replaceAllAssignmentsForOccurrence(alias.id, roles);
+        }
     });
 };
 

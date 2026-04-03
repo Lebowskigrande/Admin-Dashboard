@@ -214,6 +214,26 @@ export const taskInstances = sqliteTable('task_instances', {
     notes: text('notes')
 });
 
+export const taskProgressHistory = sqliteTable('task_progress_history', {
+    id: text('id').primaryKey(),
+    taskInstanceId: text('task_instance_id').notNull(),
+    taskId: text('task_id'),
+    title: text('title'),
+    action: text('action').notNull(),
+    source: text('source').notNull(),
+    actor: text('actor'),
+    fromState: text('from_state'),
+    toState: text('to_state'),
+    fromProgressKey: text('from_progress_key'),
+    toProgressKey: text('to_progress_key'),
+    fromCompletedAt: text('from_completed_at'),
+    toCompletedAt: text('to_completed_at'),
+    changedFieldsJson: text('changed_fields_json'),
+    beforeJson: text('before_json'),
+    afterJson: text('after_json'),
+    createdAt: text('created_at').notNull()
+});
+
 export const entityLinks = sqliteTable('entity_links', {
     id: text('id').primaryKey(),
     fromType: text('from_type').notNull(),
