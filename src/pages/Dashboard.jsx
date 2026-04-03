@@ -1,777 +1,699 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { addDays, format, isSameDay, startOfDay } from 'date-fns';
+import { FaArrowRight, FaBuilding, FaCalendarAlt, FaChurch, FaCog, FaExclamationTriangle, FaFileInvoiceDollar, FaSyncAlt, FaTasks, FaUsers } from 'react-icons/fa';
 import Card from '../components/Card';
-import { format, isSameDay, addDays, startOfDay } from 'date-fns';
 import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
+import { APP_ROUTES, getOriginRoute } from '../config/appRoutes';
 import { getTaskProgressLabel } from '../utils/taskProgress';
 import './Dashboard.css';
 
-const WEATHER_CENTER = {
-    zip: '91108',
-    latitude: 34.122,
-    longitude: -118.114
+const REGULAR_SUNDAY_SERVICE_SLUGS = new Set(['weekly-service', 'rite-i-service', 'rite-ii-service']);
+
+const EMPTY = {
+    tasks: [],
+    origins: [],
+    people: [],
+    buildings: [],
+    vendors: [],
+    tickets: [],
+    records: null,
+    engine: null,
+    google: { connected: false },
+    sharefile: { connected: false, accounts: [] },
+    cc: { connected: false },
+    ap: { entries: [] },
+    ar: { entries: [] },
+    warnings: []
 };
 
-const WEATHER_CODE_MAP = [
-    { codes: [0], label: 'Clear', kind: 'sun' },
-    { codes: [1, 2], label: 'Partly Cloudy', kind: 'partly' },
-    { codes: [3], label: 'Cloudy', kind: 'cloud' },
-    { codes: [45, 48], label: 'Fog', kind: 'fog' },
-    { codes: [51, 53, 55, 56, 57], label: 'Drizzle', kind: 'drizzle' },
-    { codes: [61, 63, 65, 66, 67, 80, 81, 82], label: 'Rain', kind: 'rain' },
-    { codes: [71, 73, 75, 77, 85, 86], label: 'Snow', kind: 'snow' },
-    { codes: [95, 96, 99], label: 'Storm', kind: 'storm' }
-];
-
-const getWeatherMeta = (code) => {
-    const match = WEATHER_CODE_MAP.find((entry) => entry.codes.includes(code));
-    return match || { label: 'Cloudy', kind: 'cloud' };
-};
-
-const toLocalDate = (dateString) => new Date(`${dateString}T00:00:00`);
-
-const getNextWeekday = (date, targetDay) => {
-    const offset = (targetDay - date.getDay() + 7) % 7;
-    return addDays(date, offset);
-};
-
-const getMode = (values) => {
-    const counts = new Map();
-    values.forEach((value) => {
-        counts.set(value, (counts.get(value) || 0) + 1);
-    });
-    let bestValue = values[0];
-    let bestCount = 0;
-    counts.forEach((count, value) => {
-        if (count > bestCount) {
-            bestCount = count;
-            bestValue = value;
-        }
-    });
-    return bestValue;
-};
-
-const formatTemp = (value) => (Number.isFinite(value) ? `${Math.round(value)}°` : '--');
-
-const WEATHER_CACHE_KEY = 'dashboardWeatherCacheV1';
-
-const getWeatherCacheKey = () => {
-    const now = new Date();
-    now.setMinutes(0, 0, 0);
-    return now.getTime();
-};
-
-const readWeatherCache = () => {
-    try {
-        const raw = localStorage.getItem(WEATHER_CACHE_KEY);
-        if (!raw) return null;
-        const parsed = JSON.parse(raw);
-        if (!parsed?.data?.daily) return parsed;
-        const hydrated = parsed.data.daily.map((record) => ({
-            ...record,
-            date: record?.date ? new Date(record.date) : record?.date
-        }));
-        return {
-            ...parsed,
-            data: {
-                ...parsed.data,
-                daily: hydrated
-            }
-        };
-    } catch {
-        return null;
+const readJson = async (path) => {
+    const response = await fetch(`${API_URL}${path}`, { credentials: 'include' });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(payload?.error || path);
     }
+    return payload;
 };
 
-const writeWeatherCache = (payload) => {
-    try {
-        localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify(payload));
-    } catch {
-        // Ignore storage errors (private mode, quota, etc.)
-    }
+const toDateKey = (date) => format(date, 'yyyy-MM-dd');
+
+const parseDateValue = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    const parsed = raw.includes('T') ? new Date(raw) : new Date(`${raw}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? null : startOfDay(parsed);
 };
 
-const WeatherIcon = ({ kind, size = 20 }) => {
-    const props = {
-        width: size,
-        height: size,
-        viewBox: '0 0 24 24',
-        fill: 'none',
-        stroke: 'currentColor',
-        strokeWidth: 1.6,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round'
-    };
+const getNextSundayDate = (date) => {
+    const base = startOfDay(date);
+    const offset = (7 - base.getDay()) % 7;
+    return addDays(base, offset === 0 ? 7 : offset);
+};
 
-    switch (kind) {
-        case 'sun':
-            return (
-                <svg {...props} aria-hidden="true">
-                    <circle cx="12" cy="12" r="4" />
-                    <line x1="12" y1="2" x2="12" y2="5" />
-                    <line x1="12" y1="19" x2="12" y2="22" />
-                    <line x1="2" y1="12" x2="5" y2="12" />
-                    <line x1="19" y1="12" x2="22" y2="12" />
-                    <line x1="4.5" y1="4.5" x2="6.5" y2="6.5" />
-                    <line x1="17.5" y1="17.5" x2="19.5" y2="19.5" />
-                    <line x1="17.5" y1="6.5" x2="19.5" y2="4.5" />
-                    <line x1="4.5" y1="19.5" x2="6.5" y2="17.5" />
-                </svg>
-            );
-        case 'partly':
-            return (
-                <svg {...props} aria-hidden="true">
-                    <circle cx="8" cy="9" r="3" />
-                    <path d="M5 16a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.2A4 4 0 1 1 18 16H5z" />
-                </svg>
-            );
-        case 'fog':
-            return (
-                <svg {...props} aria-hidden="true">
-                    <path d="M5 14a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.2A4 4 0 1 1 18 14H5z" />
-                    <line x1="4" y1="18" x2="20" y2="18" />
-                    <line x1="6" y1="21" x2="18" y2="21" />
-                </svg>
-            );
-        case 'drizzle':
-            return (
-                <svg {...props} aria-hidden="true">
-                    <path d="M5 13a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.2A4 4 0 1 1 18 13H5z" />
-                    <circle cx="8" cy="18" r="0.9" />
-                    <circle cx="12" cy="19" r="0.9" />
-                    <circle cx="16" cy="18" r="0.9" />
-                </svg>
-            );
-        case 'rain':
-            return (
-                <svg {...props} aria-hidden="true">
-                    <path d="M5 13a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.2A4 4 0 1 1 18 13H5z" />
-                    <line x1="8" y1="17" x2="8" y2="21" />
-                    <line x1="12" y1="17" x2="12" y2="21" />
-                    <line x1="16" y1="17" x2="16" y2="21" />
-                </svg>
-            );
-        case 'snow':
-            return (
-                <svg {...props} aria-hidden="true">
-                    <path d="M5 13a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.2A4 4 0 1 1 18 13H5z" />
-                    <line x1="8" y1="18" x2="8" y2="20.5" />
-                    <line x1="12" y1="17.5" x2="12" y2="20" />
-                    <line x1="16" y1="18" x2="16" y2="20.5" />
-                    <line x1="7" y1="19.5" x2="9" y2="19.5" />
-                    <line x1="11" y1="19" x2="13" y2="19" />
-                    <line x1="15" y1="19.5" x2="17" y2="19.5" />
-                </svg>
-            );
-        case 'storm':
-            return (
-                <svg {...props} aria-hidden="true">
-                    <path d="M5 13a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.2A4 4 0 1 1 18 13H5z" />
-                    <path d="M12 16l-3 4h3l-1 4 4-6h-3l1-2z" />
-                </svg>
-            );
-        default:
-            return (
-                <svg {...props} aria-hidden="true">
-                    <path d="M5 16a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.2A4 4 0 1 1 18 16H5z" />
-                </svg>
-            );
+const originLabel = (type) => ({
+    sunday: 'Sunday Planner',
+    event: 'Calendar',
+    operations: 'Operations',
+    ticket: 'Buildings',
+    vestry: 'Vestry'
+}[String(type || '').trim().toLowerCase()] || 'Origin');
+
+const priorityClass = (task) => {
+    const tier = String(task?.priority_tier || '').toLowerCase();
+    if (tier === 'critical') return 'priority-critical';
+    if (tier === 'high') return 'priority-high';
+    if (tier === 'low') return 'priority-low';
+    if (tier === 'someday') return 'priority-someday';
+    return 'priority-normal';
+};
+
+const dueMeta = (task, today) => {
+    const due = parseDateValue(task?.due_at);
+    if (!due) return { label: 'No due date', className: 'due-pill-neutral', rank: 5 };
+    const delta = Math.round((due.getTime() - today.getTime()) / 86400000);
+    if (delta < 0) return { label: 'Overdue', className: 'due-pill-overdue', rank: 0 };
+    if (delta === 0) return { label: 'Today', className: 'due-pill-today', rank: 1 };
+    if (delta === 1) return { label: 'Tomorrow', className: 'due-pill-tomorrow', rank: 2 };
+    return { label: format(due, 'MMM d'), className: 'due-pill-future', rank: 3 };
+};
+
+const compareTasks = (a, b, today) => {
+    const dueA = dueMeta(a, today);
+    const dueB = dueMeta(b, today);
+    if (dueA.rank !== dueB.rank) return dueA.rank - dueB.rank;
+    if (Number(a?.blocked) !== Number(b?.blocked)) return Number(b?.blocked) - Number(a?.blocked);
+    if (Number(a?.priority_effective || 0) !== Number(b?.priority_effective || 0)) {
+        return Number(b?.priority_effective || 0) - Number(a?.priority_effective || 0);
     }
+    return (parseDateValue(a?.due_at)?.getTime() ?? Number.POSITIVE_INFINITY)
+        - (parseDateValue(b?.due_at)?.getTime() ?? Number.POSITIVE_INFINITY);
+};
+
+const trimTaskText = (value) => String(value || '').trim().replace(/[\s.,;:!?]+$/, '');
+
+const formatStamp = (value) => {
+    const parsed = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(parsed.getTime())) return 'Unavailable';
+    return parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+};
+
+const eventSourceLabel = (event) => {
+    if (event?.source === 'liturgical') return 'Liturgical';
+    if (event?.source === 'google') return 'Google';
+    if (REGULAR_SUNDAY_SERVICE_SLUGS.has(event?.type_slug)) return 'Sunday';
+    return event?.category_name || 'Event';
 };
 
 const Dashboard = () => {
     const navigate = useNavigate();
-    const { events } = useEvents();
-    const [tasks, setTasks] = useState([]);
-    const [tasksLoading, setTasksLoading] = useState(true);
-    const [detailTasks, setDetailTasks] = useState([]);
-    const [detailLoading, setDetailLoading] = useState(false);
-    const [taskFilter, setTaskFilter] = useState('all');
-    const [weatherState, setWeatherState] = useState({ loading: true, data: null, error: null });
-
+    const { events, loading: eventsLoading, lastSynced, refreshEvents } = useEvents();
+    const [snapshot, setSnapshot] = useState(EMPTY);
+    const [loading, setLoading] = useState(true);
+    const [busy, setBusy] = useState('');
+    const [updatedAt, setUpdatedAt] = useState(null);
     const today = useMemo(() => startOfDay(new Date()), []);
-    useEffect(() => {
-        let active = true;
-        const loadTasks = async () => {
-            setTasksLoading(true);
-            try {
-                const response = await fetch(`${API_URL}/tasks?rollup=1`);
-                if (!response.ok) throw new Error('Failed to load tasks');
-                const data = await response.json();
-                if (active) setTasks(Array.isArray(data) ? data : []);
-            } catch (error) {
-                console.error('Failed to load tasks:', error);
-                if (active) setTasks([]);
-            } finally {
-                if (active) setTasksLoading(false);
+    const todayKey = useMemo(() => toDateKey(today), [today]);
+
+    const loadSnapshot = useCallback(async () => {
+        setLoading(true);
+        const defs = [
+            ['tasks', 'task queue', '/tasks', []],
+            ['origins', 'origin rollups', '/task-origins', []],
+            ['people', 'people', '/people', []],
+            ['buildings', 'buildings', '/buildings', []],
+            ['vendors', 'preferred vendors', '/vendors', []],
+            ['tickets', 'building tickets', '/tickets', []],
+            ['records', 'architectural records', '/buildings/records/overview', null],
+            ['engine', 'task engine', '/tasks/engine/health', null],
+            ['google', 'Google Calendar', '/google/status', { connected: false }],
+            ['sharefile', 'ShareFile Gmail', '/sharefile/google/status', { connected: false, accounts: [] }],
+            ['cc', 'Constant Contact', '/constant-contact/status', { connected: false }],
+            ['ap', 'AP routing', `/deposit-slip/routing-log?type=ap&date=${todayKey}`, { entries: [] }],
+            ['ar', 'AR routing', `/deposit-slip/routing-log?type=ar&date=${todayKey}`, { entries: [] }]
+        ];
+        const settled = await Promise.allSettled(defs.map(([, , path]) => readJson(path)));
+        const next = { ...EMPTY };
+        const warnings = [];
+        defs.forEach(([key, label, , fallback], index) => {
+            const result = settled[index];
+            if (result.status === 'fulfilled') next[key] = result.value;
+            else {
+                next[key] = fallback;
+                warnings.push(label);
+                console.error(`Dashboard snapshot failed for ${key}:`, result.reason);
             }
-        };
-        loadTasks();
-        return () => {
-            active = false;
-        };
-    }, []);
+        });
+        next.warnings = warnings;
+        setSnapshot(next);
+        setUpdatedAt(new Date());
+        setLoading(false);
+    }, [todayKey]);
 
-    useEffect(() => {
-        const controller = new AbortController();
-        const loadWeather = async () => {
-            const cacheKey = getWeatherCacheKey();
-            const cached = readWeatherCache();
-            if (cached?.cacheKey === cacheKey && cached?.data) {
-                setWeatherState({ loading: false, data: cached.data, error: null });
-                return;
-            }
+    useEffect(() => { loadSnapshot(); }, [loadSnapshot]);
 
-            setWeatherState({ loading: true, data: null, error: null });
-            try {
-                const url = new URL('https://api.open-meteo.com/v1/forecast');
-                url.searchParams.set('latitude', WEATHER_CENTER.latitude);
-                url.searchParams.set('longitude', WEATHER_CENTER.longitude);
-                url.searchParams.set('daily', 'weathercode,temperature_2m_max,temperature_2m_min');
-                url.searchParams.set('current', 'temperature_2m,weathercode');
-                url.searchParams.set('temperature_unit', 'fahrenheit');
-                url.searchParams.set('timezone', 'America/Los_Angeles');
-                url.searchParams.set('forecast_days', '16');
-                const response = await fetch(url.toString(), { signal: controller.signal });
-                if (!response.ok) throw new Error('Failed to load weather');
-                const payload = await response.json();
-                if (!payload?.daily?.time?.length) throw new Error('Weather data unavailable');
+    const runAction = useCallback(async (mode, action) => {
+        setBusy(mode);
+        try {
+            await action();
+            await loadSnapshot();
+        } finally {
+            setBusy('');
+        }
+    }, [loadSnapshot]);
 
-                const daily = payload.daily;
-                const dailyRecords = daily.time.map((dateString, index) => ({
-                    date: toLocalDate(dateString),
-                    weatherCode: daily.weathercode?.[index],
-                    tempMax: daily.temperature_2m_max?.[index],
-                    tempMin: daily.temperature_2m_min?.[index]
-                }));
-
-                setWeatherState({
-                    loading: false,
-                    error: null,
-                    data: {
-                        current: payload.current || null,
-                        daily: dailyRecords
-                    }
-                });
-                writeWeatherCache({
-                    cacheKey,
-                    data: {
-                        current: payload.current || null,
-                        daily: dailyRecords
-                    }
-                });
-            } catch (error) {
-                if (error.name === 'AbortError') return;
-                console.error('Failed to load weather:', error);
-                setWeatherState({ loading: false, data: null, error });
-            }
-        };
-
-        loadWeather();
-        return () => controller.abort();
-    }, []);
+    const visibleEvents = useMemo(() => (
+        events.filter((event) => event?.date instanceof Date && !Number.isNaN(event.date.getTime()))
+    ), [events]);
 
     const todayEvents = useMemo(() => (
-        events.filter((event) => {
-            if (!event?.date) return false;
-            return isSameDay(event.date, today);
-        })
-    ), [events, today]);
+        visibleEvents.filter((event) => isSameDay(event.date, today))
+    ), [today, visibleEvents]);
 
-    const taskList = useMemo(() => (
-        tasks.filter((task) => !task.completed)
-    ), [tasks]);
+    const week = useMemo(() => Array.from({ length: 7 }, (_, index) => {
+        const date = addDays(today, index);
+        const items = visibleEvents
+            .filter((event) => isSameDay(event.date, date))
+            .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+        return { date, items };
+    }), [today, visibleEvents]);
 
-    const [selectedTaskId, setSelectedTaskId] = useState('');
+    const openTasks = useMemo(() => snapshot.tasks
+        .filter((task) => !task?.completed && !task?.archived_at)
+        .slice()
+        .sort((a, b) => compareTasks(a, b, today)), [snapshot.tasks, today]);
 
-    useEffect(() => {
-        if (taskList.length && !selectedTaskId) {
-            setSelectedTaskId(taskList[0].id);
-        }
-    }, [taskList, selectedTaskId]);
+    const overdue = useMemo(() => openTasks.filter((task) => dueMeta(task, today).rank === 0), [openTasks, today]);
+    const dueToday = useMemo(() => openTasks.filter((task) => dueMeta(task, today).rank === 1), [openTasks, today]);
+    const blocked = useMemo(() => openTasks.filter((task) => Number(task?.blocked) || String(task?.instance_state || '').toLowerCase() === 'blocked'), [openTasks]);
+    const routing = useMemo(() => ([...(snapshot.ap?.entries || []), ...(snapshot.ar?.entries || [])]), [snapshot.ap?.entries, snapshot.ar?.entries]);
+    const routingFailures = useMemo(() => routing.filter((entry) => entry?.status === 'failure'), [routing]);
+    const openTickets = useMemo(() => snapshot.tickets.filter((ticket) => !['done', 'wont_do'].includes(String(ticket?.status || '').toLowerCase())), [snapshot.tickets]);
+    const blockedTickets = useMemo(() => openTickets.filter((ticket) => String(ticket?.status || '').toLowerCase() === 'blocked'), [openTickets]);
 
-    const selectedTask = useMemo(() => (
-        taskList.find((task) => task.id === selectedTaskId) || null
-    ), [taskList, selectedTaskId]);
+    const nextSundayOrigin = useMemo(() => {
+        const rows = snapshot.origins
+            .filter((origin) => origin?.origin_type === 'sunday' && /^\d{4}-\d{2}-\d{2}$/.test(String(origin?.origin_id || '')))
+            .slice()
+            .sort((a, b) => String(a.origin_id).localeCompare(String(b.origin_id)));
+        return rows.find((row) => String(row.origin_id) >= todayKey) || rows[0] || null;
+    }, [snapshot.origins, todayKey]);
 
-    useEffect(() => {
-        const loadDetails = async () => {
-            if (!selectedTask?.origin_type || !selectedTask?.origin_id) {
-                setDetailTasks([]);
-                return;
-            }
-            setDetailLoading(true);
-            try {
-                const params = new URLSearchParams({
-                    origin_type: selectedTask.origin_type,
-                    origin_id: selectedTask.origin_id
-                });
-                const response = await fetch(`${API_URL}/tasks?${params.toString()}`);
-                if (!response.ok) throw new Error('Failed to load origin tasks');
-                const data = await response.json();
-                setDetailTasks(Array.isArray(data) ? data : []);
-            } catch (error) {
-                console.error('Failed to load origin tasks:', error);
-                setDetailTasks([]);
-            } finally {
-                setDetailLoading(false);
-            }
-        };
-        loadDetails();
-    }, [selectedTask]);
+    const nextSundayId = nextSundayOrigin?.origin_id || toDateKey(getNextSundayDate(today));
+    const nextSundayDate = parseDateValue(nextSundayId) || getNextSundayDate(today);
+    const sundayEvents = useMemo(() => visibleEvents.filter((event) => isSameDay(event.date, nextSundayDate)), [nextSundayDate, visibleEvents]);
+    const sundayServices = useMemo(() => sundayEvents.filter((event) => event?.source === 'liturgical' || REGULAR_SUNDAY_SERVICE_SLUGS.has(event?.type_slug)).length, [sundayEvents]);
+    const sundayOverdue = openTasks.filter((task) => task?.origin_type === 'sunday' && task?.origin_id === nextSundayId && dueMeta(task, today).rank === 0).length;
 
-    const formatPriorityLabel = useCallback((task) => {
-        const tier = task?.priority_tier || 'Normal';
-        return tier;
-    }, []);
+    const systems = [
+        ['google', 'Google Calendar', snapshot.google?.connected, snapshot.google?.connected ? 'Calendar sync is available.' : 'Calendar sync needs attention.', APP_ROUTES.settings],
+        ['sharefile', 'ShareFile Gmail', snapshot.sharefile?.connected, snapshot.sharefile?.connected ? `${Number(snapshot.sharefile?.accounts?.length || 0)} routing account${Number(snapshot.sharefile?.accounts?.length || 0) === 1 ? '' : 's'} linked.` : 'Routing inbox is disconnected.', APP_ROUTES.settings],
+        ['cc', 'Constant Contact', snapshot.cc?.connected, snapshot.cc?.connected ? 'Sunday email automation is ready.' : 'Livestream email scheduling is offline.', APP_ROUTES.settings],
+        ['engine', 'Task Engine', !!snapshot.engine, snapshot.engine?.runtime?.lastSeedAt ? `Last seeded ${formatStamp(snapshot.engine.runtime.lastSeedAt)}.` : 'No recent task engine activity recorded.', APP_ROUTES.taskOrigins]
+    ];
+    const disconnected = systems.filter(([, , connected]) => !connected).length;
+    const sourceRows = Array.isArray(snapshot.engine?.byOriginType)
+        ? snapshot.engine.byOriginType.filter((row) => Number(row?.active || 0) > 0).slice().sort((a, b) => Number(b?.active || 0) - Number(a?.active || 0)).slice(0, 5)
+        : [];
 
-    const getPriorityClass = useCallback((task) => {
-        const tier = (task?.priority_tier || '').toLowerCase();
-        if (tier === 'critical') return 'priority-critical';
-        if (tier === 'high') return 'priority-high';
-        if (tier === 'low') return 'priority-low';
-        if (tier === 'someday') return 'priority-someday';
-        return 'priority-normal';
-    }, []);
-
-    const formatOriginLabel = useCallback((task) => {
-        const rawType = task?.origin_type;
-        if (!rawType) return 'Task Origin';
-        const type = rawType.toLowerCase();
-        if (type.includes('sunday')) return 'Sunday Planner';
-        if (type.includes('vestry')) return 'Vestry';
-        if (type.includes('event')) return 'Event';
-        if (type.includes('project')) return 'Project';
-        if (type.includes('general')) return 'General Operations';
-        if (type.includes('operation')) return 'Operations';
-        return rawType;
-    }, []);
-
-    const formatTaskText = useCallback((text) => {
-        const raw = (text || '').trim();
-        const cleaned = raw.replace(/[\s.,;:!?]+$/, '');
-        return cleaned || raw;
-    }, []);
-
-    const getDueMeta = useCallback((task) => {
-        if (!task?.due_at) return { label: 'No due date', className: 'due-pill-neutral', rank: 5 };
-        const due = startOfDay(new Date(task.due_at));
-        if (Number.isNaN(due.getTime())) return { label: 'No due date', className: 'due-pill-neutral', rank: 5 };
-        const delta = Math.round((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-        if (delta < 0) return { label: 'Overdue', className: 'due-pill-overdue', rank: 0 };
-        if (delta === 0) return { label: 'Today', className: 'due-pill-today', rank: 1 };
-        if (delta === 1) return { label: 'Tomorrow', className: 'due-pill-tomorrow', rank: 2 };
-        return { label: format(due, 'MMM d'), className: 'due-pill-future', rank: 3 };
-    }, [today]);
-
-    const sortedTaskList = useMemo(() => {
-        const rows = taskList.map((task) => ({ task, due: getDueMeta(task) }));
-        rows.sort((a, b) => {
-            if (a.due.rank !== b.due.rank) return a.due.rank - b.due.rank;
-            const pA = Number(a.task?.priority_effective || 0);
-            const pB = Number(b.task?.priority_effective || 0);
-            if (pA !== pB) return pB - pA;
-            const dA = a.task?.due_at ? new Date(a.task.due_at).getTime() : Number.POSITIVE_INFINITY;
-            const dB = b.task?.due_at ? new Date(b.task.due_at).getTime() : Number.POSITIVE_INFINITY;
-            return dA - dB;
-        });
-        return rows;
-    }, [taskList, getDueMeta]);
-
-    const filteredTaskRows = useMemo(() => {
-        if (taskFilter === 'all') return sortedTaskList;
-        if (taskFilter === 'overdue') return sortedTaskList.filter((row) => row.due.rank === 0);
-        if (taskFilter === 'today') return sortedTaskList.filter((row) => row.due.rank === 1);
-        if (taskFilter === 'this_week') {
-            const end = addDays(today, 6);
-            return sortedTaskList.filter((row) => {
-                if (!row.task?.due_at) return false;
-                const due = startOfDay(new Date(row.task.due_at));
-                if (Number.isNaN(due.getTime())) return false;
-                return due >= today && due <= end;
-            });
-        }
-        return sortedTaskList;
-    }, [sortedTaskList, taskFilter, today]);
-
-    useEffect(() => {
-        if (!filteredTaskRows.length) return;
-        const inFilter = filteredTaskRows.some((row) => row.task.id === selectedTaskId);
-        if (!inFilter) setSelectedTaskId(filteredTaskRows[0].task.id);
-    }, [filteredTaskRows, selectedTaskId]);
-
-    const dashboardKpis = useMemo(() => {
-        const overdue = sortedTaskList.filter((row) => row.due.rank === 0).length;
-        const dueToday = sortedTaskList.filter((row) => row.due.rank === 1).length;
-        return {
-            openTasks: taskList.length,
-            overdue,
-            dueToday
-        };
-    }, [sortedTaskList, taskList.length]);
-
-    const openTaskOrigin = useCallback((task) => {
-        if (!task) return;
-        if (task.origin_type === 'sunday') return navigate(`/sunday?date=${encodeURIComponent(task.origin_id || '')}`);
-        if (task.origin_type === 'vestry') return navigate('/vestry');
-        if (task.origin_type === 'event') return navigate('/calendar');
-        if (task.origin_type === 'ticket') return navigate('/buildings');
-        if (task.origin_type === 'operations') return navigate('/tasks');
-        return null;
+    const openOrigin = useCallback((task) => {
+        const href = getOriginRoute({ originType: task?.origin_type, originId: task?.origin_id, taskId: task?.id });
+        if (href) navigate(href);
     }, [navigate]);
 
+    const nextSundayRoute = useMemo(() => {
+        const params = new URLSearchParams();
+        if (nextSundayId) params.set('date', nextSundayId);
+        const query = params.toString();
+        return `${APP_ROUTES.sunday}${query ? `?${query}` : ''}`;
+    }, [nextSundayId]);
 
+    const sundayTasks = useMemo(() => (
+        openTasks.filter((task) => task?.origin_type === 'sunday' && task?.origin_id === nextSundayId)
+    ), [nextSundayId, openTasks]);
 
-    const weekSchedule = useMemo(() => {
-        const days = Array.from({ length: 7 }, (_, idx) => addDays(today, idx));
-        return days.map((date) => {
-            const items = events.filter((event) => {
-                if (!event?.date) return false;
-                if (event.source === 'liturgical') return false;
-                if (event.type_slug === 'weekly-service') return false;
-                return isSameDay(event.date, date);
-            }).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-            return { date, items };
-        });
-    }, [events, today]);
+    const sundayBlocked = useMemo(() => (
+        sundayTasks.filter((task) => Number(task?.blocked) || String(task?.instance_state || '').toLowerCase() === 'blocked').length
+    ), [sundayTasks]);
 
-    const weatherDisplay = useMemo(() => {
-        if (!weatherState.data?.daily?.length) return null;
-
-        const daily = weatherState.data.daily;
-        const todayRecord = daily.find((record) => isSameDay(record.date, today)) || daily[0];
-        const nextSaturday = getNextWeekday(today, 6);
-        const upcomingSunday = addDays(nextSaturday, 1);
-        const upcomingStart = addDays(today, 1);
-        let upcomingDays = daily.filter((record) => record.date >= upcomingStart && record.date <= upcomingSunday);
-
-        if (!upcomingDays.length) {
-            upcomingDays = daily.filter((record) => record.date >= nextSaturday && record.date <= upcomingSunday);
+    const workstreams = useMemo(() => ([
+        {
+            key: 'sunday',
+            label: 'Sunday Planner',
+            icon: <FaChurch />,
+            route: nextSundayRoute,
+            accent: 'accent-sunday',
+            value: `${sundayTasks.length} open`,
+            detail: `${sundayServices} services · ${sundayEvents.length} events`,
+            note: `Next service ${format(nextSundayDate, 'MMM d')}`
+        },
+        {
+            key: 'calendar',
+            label: 'Calendar',
+            icon: <FaCalendarAlt />,
+            route: APP_ROUTES.calendar,
+            accent: 'accent-calendar',
+            value: `${visibleEvents.length} live`,
+            detail: `${todayEvents.length} today · ${week.reduce((sum, day) => sum + day.items.length, 0)} this week`,
+            note: lastSynced ? `Synced ${formatStamp(lastSynced)}` : 'Waiting for first sync'
+        },
+        {
+            key: 'finance',
+            label: 'Finance',
+            icon: <FaFileInvoiceDollar />,
+            route: APP_ROUTES.finance,
+            accent: 'accent-finance',
+            value: `${routingFailures.length} failures`,
+            detail: `${routing.length} routing entr${routing.length === 1 ? 'y' : 'ies'} today`,
+            note: routingFailures.length ? 'Review AP and AR routing log' : 'Routing queue is clean'
+        },
+        {
+            key: 'buildings',
+            label: 'Buildings',
+            icon: <FaBuilding />,
+            route: APP_ROUTES.buildings,
+            accent: 'accent-buildings',
+            value: `${openTickets.length} open`,
+            detail: `${blockedTickets.length} blocked · ${snapshot.buildings.length} mapped areas`,
+            note: `${Number(snapshot.records?.summary?.documentCount || 0)} records on file`
+        },
+        {
+            key: 'people',
+            label: 'People',
+            icon: <FaUsers />,
+            route: APP_ROUTES.people,
+            accent: 'accent-people',
+            value: `${snapshot.people.length} people`,
+            detail: `${snapshot.vendors.length} vendors in network`,
+            note: 'Directory and contact data are available'
+        },
+        {
+            key: 'tasks',
+            label: 'Task Engine',
+            icon: <FaTasks />,
+            route: APP_ROUTES.todo,
+            accent: 'accent-tasks',
+            value: `${openTasks.length} open`,
+            detail: `${overdue.length} overdue · ${blocked.length} blocked`,
+            note: snapshot.engine?.runtime?.lastSeedAt ? `Last seeded ${formatStamp(snapshot.engine.runtime.lastSeedAt)}` : 'No seed telemetry yet'
         }
+    ]), [
+        blocked,
+        blockedTickets.length,
+        lastSynced,
+        nextSundayDate,
+        nextSundayRoute,
+        openTasks.length,
+        openTickets.length,
+        overdue.length,
+        routing.length,
+        routingFailures.length,
+        snapshot.buildings.length,
+        snapshot.engine?.runtime?.lastSeedAt,
+        snapshot.people.length,
+        snapshot.records?.summary?.documentCount,
+        snapshot.vendors.length,
+        sundayEvents.length,
+        sundayServices,
+        sundayTasks.length,
+        todayEvents.length,
+        visibleEvents.length,
+        week
+    ]);
 
-        const nextWeekStart = addDays(upcomingSunday, 1);
-        const nextWeekEnd = addDays(nextWeekStart, 6);
-        const nextWeek = daily.filter((record) => record.date >= nextWeekStart && record.date <= nextWeekEnd);
+    const issues = useMemo(() => {
+        const rows = [];
+        if (snapshot.warnings.length) {
+            rows.push({
+                key: 'warnings',
+                title: 'Partial snapshot',
+                detail: `${snapshot.warnings.length} data source${snapshot.warnings.length === 1 ? '' : 's'} failed during refresh.`,
+                route: APP_ROUTES.settings,
+                tone: 'warning'
+            });
+        }
+        if (routingFailures.length) {
+            rows.push({
+                key: 'routing',
+                title: 'Finance routing failures',
+                detail: `${routingFailures.length} AP or AR entr${routingFailures.length === 1 ? 'y is' : 'ies are'} failing today.`,
+                route: APP_ROUTES.finance,
+                tone: 'danger'
+            });
+        }
+        if (disconnected) {
+            rows.push({
+                key: 'systems',
+                title: 'Integration attention required',
+                detail: `${disconnected} service${disconnected === 1 ? '' : 's'} disconnected or stale.`,
+                route: APP_ROUTES.settings,
+                tone: 'warning'
+            });
+        }
+        if (blocked.length) {
+            rows.push({
+                key: 'blocked-tasks',
+                title: 'Blocked tasks',
+                detail: `${blocked.length} task${blocked.length === 1 ? '' : 's'} cannot move forward yet.`,
+                route: APP_ROUTES.todo,
+                tone: 'warning'
+            });
+        }
+        if (overdue.length) {
+            rows.push({
+                key: 'overdue',
+                title: 'Overdue task load',
+                detail: `${overdue.length} task${overdue.length === 1 ? '' : 's'} slipped past due date.`,
+                route: APP_ROUTES.todo,
+                tone: 'danger'
+            });
+        }
+        if (blockedTickets.length) {
+            rows.push({
+                key: 'blocked-tickets',
+                title: 'Blocked building tickets',
+                detail: `${blockedTickets.length} facilities ticket${blockedTickets.length === 1 ? '' : 's'} waiting on a dependency.`,
+                route: APP_ROUTES.buildings,
+                tone: 'warning'
+            });
+        }
+        return rows.slice(0, 6);
+    }, [
+        blocked.length,
+        blockedTickets.length,
+        disconnected,
+        overdue.length,
+        routingFailures.length,
+        snapshot.warnings.length,
+        APP_ROUTES.buildings,
+        APP_ROUTES.finance,
+        APP_ROUTES.settings,
+        APP_ROUTES.todo
+    ]);
 
-        const nextWeekCode = nextWeek.length
-            ? getMode(nextWeek.map((record) => record.weatherCode).filter((code) => Number.isFinite(code)))
-            : null;
-
-        const todayMeta = getWeatherMeta(todayRecord?.weatherCode);
-        const nextWeekMeta = Number.isFinite(nextWeekCode) ? getWeatherMeta(nextWeekCode) : null;
-        const currentTemp = weatherState.data.current?.temperature_2m;
-
-        return {
-            today: todayRecord,
-            todayMeta,
-            upcomingDays,
-            nextWeekMeta,
-            currentTemp
-        };
-    }, [weatherState.data, today]);
+    const focusQueue = openTasks.slice(0, 6);
+    const issueCount = issues.length;
+    const weeklyEventTotal = week.reduce((sum, day) => sum + day.items.length, 0);
+    const kpis = [
+        { label: 'Open Tasks', value: openTasks.length, tone: 'neutral' },
+        { label: 'Overdue', value: overdue.length, tone: overdue.length ? 'danger' : 'good' },
+        { label: 'Blocked', value: blocked.length + blockedTickets.length, tone: blocked.length + blockedTickets.length ? 'warning' : 'good' },
+        { label: 'Today', value: dueToday.length, tone: dueToday.length ? 'warning' : 'neutral' },
+        { label: 'Week Events', value: weeklyEventTotal, tone: 'neutral' },
+        { label: 'Exceptions', value: issueCount, tone: issueCount ? 'danger' : 'good' }
+    ];
 
     return (
         <div className="page-dashboard">
-            <header className="dashboard-header page-header-bar">
-                <div className="dashboard-header-main page-header-title">
-                    <h1>Dashboard Overview</h1>
-                    <p className="welcome-text page-header-subtitle">Operational snapshot, top priorities, and weekly schedule in one view.</p>
+            <header className="dashboard-hero">
+                <div className="dashboard-hero-copy">
+                    <span className="dashboard-eyebrow">Operations Cockpit</span>
+                    <h1>Command Deck</h1>
+                    <p>
+                        One surface for platform status, upcoming Sunday pressure, workstream load, and the exceptions
+                        that actually need intervention.
+                    </p>
+                    <div className="dashboard-hero-meta">
+                        <span>{format(today, 'EEEE, MMMM d')}</span>
+                        <span>{loading ? 'Refreshing snapshot...' : `Snapshot ${formatStamp(updatedAt)}`}</span>
+                        <span>{lastSynced ? `Calendar ${formatStamp(lastSynced)}` : 'Calendar sync pending'}</span>
+                    </div>
                 </div>
-                <div className="dashboard-weather" aria-live="polite">
-                    {weatherState.loading && (
-                        <div className="weather-status">Loading 91108 weather...</div>
-                    )}
-                    {!weatherState.loading && weatherState.error && (
-                        <div className="weather-status">Weather unavailable</div>
-                    )}
-                    {!weatherState.loading && !weatherState.error && weatherDisplay && (
-                        <>
-                            <div className="weather-row">
-                                <div className="weather-today">
-                                    <div className="weather-section-label">Today in San Marino</div>
-                                    <div className="weather-today-body">
-                                        <div
-                                            className="weather-icon weather-icon-lg"
-                                            aria-hidden="true"
-                                            title={weatherDisplay.todayMeta.label}
-                                        >
-                                            <WeatherIcon kind={weatherDisplay.todayMeta.kind} size={36} />
-                                        </div>
-                                        <div className="weather-today-main">
-                                            <div className="weather-temp">
-                                                {Number.isFinite(weatherDisplay.currentTemp)
-                                                    ? `${Math.round(weatherDisplay.currentTemp)}°`
-                                                    : `${formatTemp(weatherDisplay.today.tempMax)}`}
-                                            </div>
-                                            <div className="weather-range">
-                                                <span>H {formatTemp(weatherDisplay.today.tempMax)}</span>
-                                                <span>L {formatTemp(weatherDisplay.today.tempMin)}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="weather-upcoming">
-                                    <div className="weather-upcoming-header">
-                                        {weatherDisplay.upcomingDays.map((day) => (
-                                            <div key={day.date.toISOString()} className="weather-upcoming-day-label">
-                                                {format(day.date, 'EEE')}
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <div className="weather-upcoming-body">
-                                        <div className="weather-days">
-                                            {weatherDisplay.upcomingDays.map((day) => {
-                                                const meta = getWeatherMeta(day.weatherCode);
-                                                return (
-                                                    <div key={day.date.toISOString()} className="weather-day">
-                                                        <div
-                                                            className="weather-icon"
-                                                            aria-hidden="true"
-                                                            title={`${format(day.date, 'EEE')}: ${meta.label}`}
-                                                        >
-                                                            <WeatherIcon kind={meta.kind} size={22} />
-                                                        </div>
-                                                        <div className="weather-day-temp">
-                                                            {formatTemp(day.tempMax)} / {formatTemp(day.tempMin)}
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="weather-next-week">
-                                    <div className="weather-section-label">Next Week</div>
-                                    <div className="weather-next-week-body">
-                                        {weatherDisplay.nextWeekMeta ? (
-                                            <div
-                                                className="weather-next-week-icon"
-                                                aria-hidden="true"
-                                                title={`Next week: ${weatherDisplay.nextWeekMeta.label}`}
-                                            >
-                                                <WeatherIcon kind={weatherDisplay.nextWeekMeta.kind} size={28} />
-                                            </div>
-                                        ) : (
-                                            <div className="weather-next-week-icon weather-next-week-empty">--</div>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-                        </>
-                    )}
-                </div>
-                <div className="date-display page-header-meta">
-                    {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                <div className="dashboard-hero-actions">
+                    <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={busy === 'snapshot'}
+                        onClick={() => runAction('snapshot', loadSnapshot)}
+                    >
+                        <FaSyncAlt />
+                        {busy === 'snapshot' ? 'Refreshing...' : 'Refresh cockpit'}
+                    </button>
+                    <button
+                        type="button"
+                        className="btn-primary"
+                        disabled={busy === 'calendar' || eventsLoading}
+                        onClick={() => runAction('calendar', refreshEvents)}
+                    >
+                        <FaCalendarAlt />
+                        {busy === 'calendar' || eventsLoading ? 'Syncing...' : 'Sync calendar'}
+                    </button>
+                    <button
+                        type="button"
+                        className="dashboard-settings-link"
+                        onClick={() => navigate(APP_ROUTES.settings)}
+                    >
+                        <FaCog />
+                        Settings
+                    </button>
                 </div>
             </header>
 
-            <section className="dashboard-kpi-strip">
-                <Card className="dashboard-kpi-card">
-                    <div className="dashboard-kpi-label">Open Tasks</div>
-                    <div className="dashboard-kpi-value">{dashboardKpis.openTasks}</div>
-                </Card>
-                <Card className="dashboard-kpi-card">
-                    <div className="dashboard-kpi-label">Overdue</div>
-                    <div className="dashboard-kpi-value">{dashboardKpis.overdue}</div>
-                </Card>
-                <Card className="dashboard-kpi-card">
-                    <div className="dashboard-kpi-label">Due Today</div>
-                    <div className="dashboard-kpi-value">{dashboardKpis.dueToday}</div>
-                </Card>
-                <Card className="dashboard-kpi-card">
-                    <div className="dashboard-kpi-label">Events Today</div>
-                    <div className="dashboard-kpi-value">{todayEvents.length}</div>
-                </Card>
-                <Card className="dashboard-kpi-card">
-                    <div className="dashboard-kpi-label">Events This Week</div>
-                    <div className="dashboard-kpi-value">{weekSchedule.reduce((sum, day) => sum + day.items.length, 0)}</div>
-                </Card>
+            <section className="dashboard-kpi-strip" aria-label="Operational highlights">
+                {kpis.map((item) => (
+                    <Card key={item.label} className={`dashboard-kpi-card tone-${item.tone}`}>
+                        <span className="dashboard-kpi-label">{item.label}</span>
+                        <strong className="dashboard-kpi-value">{item.value}</strong>
+                    </Card>
+                ))}
             </section>
 
-            <div className="dashboard-columns">
-                <div className="dashboard-column">
-                    <Card className="dashboard-card today-card">
-                        <div className="dashboard-card-header">
-                            <h2>Today at a Glance</h2>
-                            <span className="muted">{format(today, 'EEEE, MMMM d')}</span>
+            <div className="dashboard-grid">
+                <div className="dashboard-main-column">
+                    <Card className="dashboard-panel dashboard-workstreams-card">
+                        <div className="dashboard-panel-header">
+                            <div>
+                                <h2>Workstreams</h2>
+                                <p>Jump directly into the places where the platform is carrying real load.</p>
+                            </div>
                         </div>
-                        {todayEvents.length === 0 ? (
-                            <p className="no-events">No events scheduled for today.</p>
-                        ) : (
-                            <ul className="today-list">
-                                {todayEvents.map((event) => (
-                                    <li key={event.id} className="today-item">
-                                        <span className="today-time">{event.time || 'All day'}</span>
-                                        <span className="today-title">{event.title}</span>
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
-                    </Card>
-                    <Card className="dashboard-card">
-                        <div className="dashboard-card-header badge-corner">
-                            <h2>Focus Queue</h2>
-                            <span className="count-badge" aria-label={`${filteredTaskRows.length} tasks`}>
-                                {filteredTaskRows.length}
-                            </span>
-                        </div>
-                        <div className="dashboard-filter-chips">
-                            {[
-                                { key: 'all', label: 'All' },
-                                { key: 'overdue', label: 'Overdue' },
-                                { key: 'today', label: 'Today' },
-                                { key: 'this_week', label: 'This Week' }
-                            ].map((filter) => (
+                        <div className="dashboard-workstream-grid">
+                            {workstreams.map((stream) => (
                                 <button
-                                    key={filter.key}
+                                    key={stream.key}
                                     type="button"
-                                    className={`dashboard-filter-chip ${taskFilter === filter.key ? 'active' : ''}`}
-                                    onClick={() => setTaskFilter(filter.key)}
+                                    className={`dashboard-workstream ${stream.accent}`}
+                                    onClick={() => navigate(stream.route)}
                                 >
-                                    {filter.label}
+                                    <div className="dashboard-workstream-icon">{stream.icon}</div>
+                                    <div className="dashboard-workstream-body">
+                                        <div className="dashboard-workstream-topline">
+                                            <span>{stream.label}</span>
+                                            <FaArrowRight />
+                                        </div>
+                                        <strong>{stream.value}</strong>
+                                        <p>{stream.detail}</p>
+                                        <span className="dashboard-workstream-note">{stream.note}</span>
+                                    </div>
                                 </button>
                             ))}
                         </div>
-                        {tasksLoading ? (
-                            <p className="loading-text">Loading tasks...</p>
-                        ) : filteredTaskRows.length === 0 ? (
-                            <p className="no-events">No tasks in this filter.</p>
-                        ) : (
-                            <div className="dashboard-ticket-list dashboard-task-list">
-                                {filteredTaskRows.map(({ task, due }) => {
-                                    const progressLabel = getTaskProgressLabel(task);
+                    </Card>
+
+                    <Card className="dashboard-panel">
+                        <div className="dashboard-panel-header">
+                            <div>
+                                <h2>Focus Queue</h2>
+                                <p>The next tasks worth pulling forward across the whole platform.</p>
+                            </div>
+                            <button type="button" className="dashboard-inline-link" onClick={() => navigate(APP_ROUTES.todo)}>
+                                Open to-do list
+                            </button>
+                        </div>
+                        {focusQueue.length ? (
+                            <div className="dashboard-focus-list">
+                                {focusQueue.map((task) => {
+                                    const due = dueMeta(task, today);
                                     return (
                                         <button
                                             key={task.id}
                                             type="button"
-                                            className={`ticket-row task-row ${task.id === selectedTaskId ? 'active' : ''}`}
-                                            onClick={() => setSelectedTaskId(task.id)}
+                                            className="dashboard-focus-row"
+                                            onClick={() => openOrigin(task)}
                                         >
                                             <div className="task-row-main">
                                                 <div className="task-row-title">
-                                                    <span className={`priority-dot ${getPriorityClass(task)}`} aria-hidden="true" />
-                                                    <h4>{formatTaskText(task.text)}</h4>
+                                                    <span className={`priority-dot ${priorityClass(task)}`} />
+                                                    <h4>{trimTaskText(task?.text) || 'Untitled task'}</h4>
                                                 </div>
                                                 <div className="task-row-meta">
-                                                    <span className={`priority-pill ${due.className}`}>
-                                                        {due.label}
+                                                    <span className={`priority-pill ${priorityClass(task)}`}>
+                                                        {String(task?.priority_tier || 'normal')}
                                                     </span>
-                                                    <span className={`priority-pill ${getPriorityClass(task)}`}>
-                                                        {formatPriorityLabel(task)}
-                                                    </span>
-                                                    {task.list_title && (
-                                                        <span className="ticket-area-chip pill pill-neutral">{task.list_title}</span>
-                                                    )}
-                                                    {progressLabel && (
-                                                        <span className="ticket-area-chip pill pill-neutral">{progressLabel}</span>
-                                                    )}
+                                                    <span className={`priority-pill ${due.className}`}>{due.label}</span>
+                                                    <span className="focus-origin-label">{originLabel(task?.origin_type)}</span>
+                                                    <span className="focus-progress-label">{getTaskProgressLabel(task)}</span>
                                                 </div>
                                             </div>
                                         </button>
                                     );
                                 })}
                             </div>
-                        )}
-                    </Card>
-                </div>
-
-                <div className="dashboard-column">
-                    <Card className="dashboard-card task-detail-card">
-                        <div className="dashboard-card-header">
-                            <h2>Selected Task</h2>
-                        </div>
-                        {!selectedTask ? (
-                            <p className="no-events">Select a task to see details.</p>
                         ) : (
-                            <div className="task-detail-body">
-                                <div className="task-detail-header">
-                                    <div>
-                                        <div className="task-detail-title">{selectedTask.text}</div>
-                                        <div className="task-detail-meta">
-                                            <span className={`priority-pill ${getDueMeta(selectedTask).className}`}>
-                                                {getDueMeta(selectedTask).label}
-                                            </span>
-                                            <span className={`priority-pill ${getPriorityClass(selectedTask)}`}>
-                                                {formatPriorityLabel(selectedTask)}
-                                            </span>
-                                            {getTaskProgressLabel(selectedTask) && (
-                                                <span className="ticket-area-chip pill pill-neutral">
-                                                    {getTaskProgressLabel(selectedTask)}
-                                                </span>
-                                            )}
-                                            {selectedTask.due_at && (
-                                                <span className="muted">Due {format(new Date(selectedTask.due_at), 'MMM d')}</span>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="task-origin-panel">
-                                    <div className="task-origin-header">
-                                        <h3>{formatOriginLabel(selectedTask)}</h3>
-                                        {selectedTask.origin_id && (
-                                            <span className="muted">{selectedTask.origin_id}</span>
-                                        )}
-                                    </div>
-                                    {selectedTask.list_title && (
-                                        <div className="muted">List: {selectedTask.list_title}</div>
-                                    )}
-                                    <button
-                                        className="btn-secondary"
-                                        type="button"
-                                        onClick={() => openTaskOrigin(selectedTask)}
-                                    >
-                                        Open Origin
-                                    </button>
-                                </div>
-                                <div className="task-origin-list">
-                                    <div className="task-origin-title">Tasks in this origin</div>
-                                    {detailLoading ? (
-                                        <p className="text-muted">Loading origin tasks...</p>
-                                    ) : detailTasks.length === 0 ? (
-                                        <p className="text-muted">No additional tasks found.</p>
-                                    ) : (
-                                        <ul className="simple-list">
-                                            {detailTasks.map((task) => {
-                                                const title = formatTaskText(task.text);
-                                                const progressLabel = getTaskProgressLabel(task);
-                                                return (
-                                                    <li key={task.id} className="simple-item">
-                                                        <span className="simple-title">
-                                                            {progressLabel ? `${title} - ${progressLabel}` : title}
-                                                        </span>
-                                                        <span className={`priority-pill ${getPriorityClass(task)}`}>
-                                                            {formatPriorityLabel(task)}
-                                                        </span>
-                                                    </li>
-                                                );
-                                            })}
-                                        </ul>
-                                    )}
-                                </div>
-                            </div>
+                            <p className="dashboard-empty">No open tasks are waiting in the queue.</p>
                         )}
                     </Card>
-                    <Card className="dashboard-card">
-                        <div className="dashboard-card-header">
-                            <h2>Schedule This Week</h2>
+
+                    <Card className="dashboard-panel">
+                        <div className="dashboard-panel-header">
+                            <div>
+                                <h2>Week Runway</h2>
+                                <p>Everything scheduled over the next seven days, grouped by day.</p>
+                            </div>
+                            <button type="button" className="dashboard-inline-link" onClick={() => navigate(APP_ROUTES.calendar)}>
+                                Open calendar
+                            </button>
                         </div>
                         <div className="week-grid">
-                            {weekSchedule.map((day) => (
-                                <div key={day.date.toISOString()} className="week-day">
-                                    <div className="week-date">{format(day.date, 'EEE MMM d')}</div>
-                                    {day.items.length === 0 ? (
-                                        <div className="week-empty">No events</div>
-                                    ) : (
-                                        day.items.map((event) => (
-                                            <div key={event.id} className="week-event">
+                            {week.map((day) => (
+                                <div key={toDateKey(day.date)} className="week-day">
+                                    <div className="week-date">{format(day.date, 'EEE, MMM d')}</div>
+                                    {day.items.length ? (
+                                        day.items.slice(0, 3).map((event) => (
+                                            <div key={event.id || `${event.title}-${event.time}`} className="week-event">
                                                 <span className="week-time">{event.time || 'All day'}</span>
-                                                <span className="week-title">{event.title}</span>
+                                                <span className="week-title">{event.title || 'Untitled event'}</span>
+                                                <span className="week-tag">{eventSourceLabel(event)}</span>
                                             </div>
                                         ))
+                                    ) : (
+                                        <span className="week-empty">No scheduled events</span>
+                                    )}
+                                    {day.items.length > 3 && (
+                                        <button
+                                            type="button"
+                                            className="dashboard-inline-link week-more-link"
+                                            onClick={() => navigate(APP_ROUTES.calendar)}
+                                        >
+                                            +{day.items.length - 3} more
+                                        </button>
                                     )}
                                 </div>
                             ))}
+                        </div>
+                    </Card>
+                </div>
+
+                <div className="dashboard-side-column">
+                    <Card className="dashboard-panel">
+                        <div className="dashboard-panel-header">
+                            <div>
+                                <h2>Platform Status</h2>
+                                <p>Critical integrations and task engine telemetry.</p>
+                            </div>
+                            <button type="button" className="dashboard-inline-link" onClick={() => navigate(APP_ROUTES.settings)}>
+                                Manage integrations
+                            </button>
+                        </div>
+                        <div className="dashboard-status-list">
+                            {systems.map(([key, label, connected, detail, route]) => (
+                                <button
+                                    key={key}
+                                    type="button"
+                                    className={`dashboard-status-row ${connected ? 'is-healthy' : 'is-warning'}`}
+                                    onClick={() => navigate(route)}
+                                >
+                                    <div className="dashboard-status-pill">
+                                        {connected ? 'Ready' : 'Attention'}
+                                    </div>
+                                    <div className="dashboard-status-copy">
+                                        <strong>{label}</strong>
+                                        <span>{detail}</span>
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                        {sourceRows.length ? (
+                            <div className="dashboard-engine-panel">
+                                <div className="dashboard-subsection-label">Most active task sources</div>
+                                <div className="dashboard-engine-list">
+                                    {sourceRows.map((row) => (
+                                        <div key={`${row.origin_type}-${row.active}`} className="dashboard-engine-row">
+                                            <span>{originLabel(row.origin_type)}</span>
+                                            <strong>{Number(row.active || 0)} active</strong>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ) : null}
+                    </Card>
+
+                    <Card className="dashboard-panel">
+                        <div className="dashboard-panel-header">
+                            <div>
+                                <h2>Exception Center</h2>
+                                <p>Anything that deserves executive attention before the rest of the queue.</p>
+                            </div>
+                        </div>
+                        {issues.length ? (
+                            <div className="dashboard-issue-list">
+                                {issues.map((issue) => (
+                                    <button
+                                        key={issue.key}
+                                        type="button"
+                                        className={`dashboard-issue-row tone-${issue.tone}`}
+                                        onClick={() => navigate(issue.route)}
+                                    >
+                                        <FaExclamationTriangle />
+                                        <div>
+                                            <strong>{issue.title}</strong>
+                                            <span>{issue.detail}</span>
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="dashboard-empty-block">
+                                <strong>No critical exceptions</strong>
+                                <span>Integrations, routing, and blocking queues are currently stable.</span>
+                            </div>
+                        )}
+                    </Card>
+
+                    <Card className="dashboard-panel">
+                        <div className="dashboard-panel-header">
+                            <div>
+                                <h2>Sunday Flight Deck</h2>
+                                <p>Readiness for the next service cycle and the tasks anchored to it.</p>
+                            </div>
+                            <button type="button" className="dashboard-inline-link" onClick={() => navigate(nextSundayRoute)}>
+                                Open Sunday planner
+                            </button>
+                        </div>
+                        <div className="dashboard-sunday-hero">
+                            <strong>{format(nextSundayDate, 'MMMM d')}</strong>
+                            <span>{nextSundayOrigin ? `${nextSundayOrigin.open_count} open tasks in origin` : 'Sunday origin not seeded yet'}</span>
+                        </div>
+                        <div className="dashboard-sunday-metrics">
+                            <div>
+                                <span className="dashboard-subsection-label">Services</span>
+                                <strong>{sundayServices}</strong>
+                            </div>
+                            <div>
+                                <span className="dashboard-subsection-label">Open tasks</span>
+                                <strong>{sundayTasks.length}</strong>
+                            </div>
+                            <div>
+                                <span className="dashboard-subsection-label">Overdue</span>
+                                <strong>{sundayOverdue}</strong>
+                            </div>
+                            <div>
+                                <span className="dashboard-subsection-label">Blocked</span>
+                                <strong>{sundayBlocked}</strong>
+                            </div>
+                        </div>
+                        <div className="dashboard-sunday-list">
+                            {sundayEvents.length ? (
+                                sundayEvents.slice(0, 4).map((event) => (
+                                    <div key={event.id || `${event.title}-${event.time}`} className="dashboard-sunday-event">
+                                        <span>{event.time || 'All day'}</span>
+                                        <strong>{event.title || 'Untitled event'}</strong>
+                                    </div>
+                                ))
+                            ) : (
+                                <span className="dashboard-empty">No Sunday events are loaded yet.</span>
+                            )}
                         </div>
                     </Card>
                 </div>

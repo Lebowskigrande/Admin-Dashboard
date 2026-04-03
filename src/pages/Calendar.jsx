@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     format,
@@ -12,26 +12,50 @@ import {
     addMonths,
     subMonths
 } from 'date-fns';
-import { FaChevronLeft, FaChevronRight, FaEye, FaExternalLinkAlt, FaFolderOpen, FaPaperclip, FaUpload } from 'react-icons/fa';
+import { FaChevronLeft, FaChevronRight } from 'react-icons/fa';
 import Card from '../components/Card';
 import Modal from '../components/Modal';
-import DataPill from '../components/DataPill';
 import { useEvents } from '../context/EventsContext';
-import { getSundaysInRange } from '../services/liturgicalService';
 import { API_URL } from '../services/apiConfig';
 import { getTaskProgressMeta } from '../utils/taskProgress';
+import CalendarEventDetails from './calendar/CalendarEventDetails';
 import './Calendar.css';
 
+const slugifyRoleKey = (value) => String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 
+const LITURGICAL_ROLE_CONFIGS = [
+    { key: 'celebrant', label: 'Celebrant' },
+    { key: 'preacher', label: 'Preacher' },
+    { key: 'lector', label: 'Lector' },
+    { key: 'organist', label: 'Organist' },
+    { key: 'lem', label: 'LEM' },
+    { key: 'acolyte', label: 'Acolyte' },
+    { key: 'usher', label: 'Usher' },
+    { key: 'sound', label: 'Sound' },
+    { key: 'coffeeHour', label: 'Coffee Hour' },
+    { key: 'childcare', label: 'Childcare' }
+];
+
+const ROLE_CONFIG_BY_KEY = new Map(LITURGICAL_ROLE_CONFIGS.map((role) => [role.key, role]));
+const createEmptyPlanningDraft = () => ({
+    buildingId: '',
+    guestMusicians: [],
+    customRoles: [],
+    roster: {}
+});
 
 const Calendar = () => {
     const { events, loading, refreshEvents } = useEvents();
     const navigate = useNavigate();
     const [currentDate, setCurrentDate] = useState(new Date());
-    const [sundayServices, setSundayServices] = useState([]);
     const [showModal, setShowModal] = useState(false);
     const [selectedEvent, setSelectedEvent] = useState(null);
     const [eventDetails, setEventDetails] = useState(null);
+    const [people, setPeople] = useState([]);
     const [buildings, setBuildings] = useState([]);
     const [eventTasks, setEventTasks] = useState([]);
     const [eventNotes, setEventNotes] = useState('');
@@ -40,29 +64,32 @@ const Calendar = () => {
     const [eventDocs, setEventDocs] = useState([]);
     const [docPreview, setDocPreview] = useState({ open: false, url: '', name: '' });
     const [loadingDetails, setLoadingDetails] = useState(false);
+    const detailRequestRef = useRef({ requestId: 0, controller: null });
     const [taskInput, setTaskInput] = useState('');
+    const [bulletinFile, setBulletinFile] = useState(null);
     const [contractFile, setContractFile] = useState(null);
     const [otherFile, setOtherFile] = useState(null);
+    const [planningDraft, setPlanningDraft] = useState(createEmptyPlanningDraft);
+    const [guestMusicianInput, setGuestMusicianInput] = useState('');
+    const [customRoleInput, setCustomRoleInput] = useState('');
+    const [planningSaving, setPlanningSaving] = useState(false);
+    const [planningError, setPlanningError] = useState('');
+    const [openRosterMenu, setOpenRosterMenu] = useState(null);
+    const [rosterMenuDirection, setRosterMenuDirection] = useState('up');
 
-    useEffect(() => {
-        const monthStart = startOfMonth(currentDate);
-        const monthEnd = endOfMonth(monthStart);
-        const startDate = startOfWeek(monthStart);
-        const endDate = endOfWeek(monthEnd);
-
-        let active = true;
-        const loadSundayServices = async () => {
-            const data = await getSundaysInRange(startDate, endDate);
-            if (active) setSundayServices(data);
+    const cancelDetailRequest = () => {
+        const activeRequest = detailRequestRef.current;
+        if (activeRequest.controller) {
+            activeRequest.controller.abort();
+        }
+        detailRequestRef.current = {
+            requestId: activeRequest.requestId + 1,
+            controller: null
         };
-
-        loadSundayServices();
-        return () => {
-            active = false;
-        };
-    }, [currentDate]);
+    };
 
     const closeModal = () => {
+        cancelDetailRequest();
         setShowModal(false);
         setSelectedEvent(null);
         setEventDetails(null);
@@ -73,32 +100,75 @@ const Calendar = () => {
         setEventDocs([]);
         setDocPreview({ open: false, url: '', name: '' });
         setTaskInput('');
+        setBulletinFile(null);
         setContractFile(null);
         setOtherFile(null);
+        setPlanningDraft(createEmptyPlanningDraft());
+        setGuestMusicianInput('');
+        setCustomRoleInput('');
+        setPlanningSaving(false);
+        setPlanningError('');
+        setOpenRosterMenu(null);
+        setRosterMenuDirection('up');
         setLoadingDetails(false);
     };
 
+    useEffect(() => () => {
+        cancelDetailRequest();
+    }, []);
+
     const loadEventDetails = async (eventItem) => {
         if (!eventItem?.occurrence_id) return;
+
+        const occurrenceId = eventItem.occurrence_id;
+        const nextRequestId = detailRequestRef.current.requestId + 1;
+        detailRequestRef.current.controller?.abort();
+        const controller = new AbortController();
+        detailRequestRef.current = { requestId: nextRequestId, controller };
+
         setLoadingDetails(true);
         try {
-            const occurrenceId = eventItem.occurrence_id;
             const [detailResponse, taskResponse, docResponse] = await Promise.all([
-                fetch(`${API_URL}/event-occurrences/${occurrenceId}`),
-                fetch(`${API_URL}/tasks?origin_type=event&origin_id=${encodeURIComponent(occurrenceId)}`),
-                fetch(`${API_URL}/event-occurrences/${occurrenceId}/documents?preview=1`)
+                fetch(`${API_URL}/event-occurrences/${occurrenceId}`, { signal: controller.signal }),
+                fetch(`${API_URL}/tasks?origin_type=event&origin_id=${encodeURIComponent(occurrenceId)}&include_future=1`, { signal: controller.signal }),
+                fetch(`${API_URL}/event-occurrences/${occurrenceId}/documents?preview=1`, { signal: controller.signal })
             ]);
+
+            if (detailRequestRef.current.requestId !== nextRequestId) return;
 
             if (detailResponse.ok) {
                 const detailPayload = await detailResponse.json();
+                if (detailRequestRef.current.requestId !== nextRequestId) return;
                 setEventDetails(detailPayload);
                 setEventNotes(detailPayload?.notes?.internal || '');
                 setTemplateData(detailPayload?.notes?.template || {});
+                setPlanningDraft({
+                    buildingId: detailPayload?.occurrence?.building_id || '',
+                    guestMusicians: Array.isArray(detailPayload?.planning?.musicians?.guests)
+                        ? detailPayload.planning.musicians.guests
+                        : [],
+                    customRoles: Array.isArray(detailPayload?.planning?.custom_roles)
+                        ? detailPayload.planning.custom_roles
+                        : [],
+                    roster: Object.fromEntries(
+                        (Array.isArray(detailPayload?.planning?.role_definitions) ? detailPayload.planning.role_definitions : [])
+                            .map((role) => [role.key, Array.isArray(role.assignments) ? role.assignments.map((person) => person.id) : []])
+                    )
+                });
+                setGuestMusicianInput('');
+                setCustomRoleInput('');
+                setPlanningError('');
+                setOpenRosterMenu(null);
+                setRosterMenuDirection('up');
                 const eventTypeId = detailPayload?.event?.event_type_id;
                 if (eventTypeId) {
-                    const templateResponse = await fetch(`${API_URL}/event-template-fields?event_type_id=${eventTypeId}`);
+                    const templateResponse = await fetch(`${API_URL}/event-template-fields?event_type_id=${eventTypeId}`, {
+                        signal: controller.signal
+                    });
+                    if (detailRequestRef.current.requestId !== nextRequestId) return;
                     if (templateResponse.ok) {
                         const templatePayload = await templateResponse.json();
+                        if (detailRequestRef.current.requestId !== nextRequestId) return;
                         setTemplateFields(Array.isArray(templatePayload) ? templatePayload : []);
                     } else {
                         setTemplateFields([]);
@@ -108,10 +178,12 @@ const Calendar = () => {
                 }
             } else {
                 setEventDetails(null);
+                setTemplateFields([]);
             }
 
             if (taskResponse.ok) {
                 const taskPayload = await taskResponse.json();
+                if (detailRequestRef.current.requestId !== nextRequestId) return;
                 setEventTasks(Array.isArray(taskPayload) ? taskPayload : []);
             } else {
                 setEventTasks([]);
@@ -119,14 +191,27 @@ const Calendar = () => {
 
             if (docResponse.ok) {
                 const docPayload = await docResponse.json();
+                if (detailRequestRef.current.requestId !== nextRequestId) return;
                 setEventDocs(Array.isArray(docPayload) ? docPayload : []);
             } else {
                 setEventDocs([]);
             }
         } catch (error) {
+            if (error.name === 'AbortError') return;
             console.error('Failed to load event details:', error);
+            if (detailRequestRef.current.requestId !== nextRequestId) return;
+            setEventDetails(null);
+            setEventTasks([]);
+            setEventDocs([]);
+            setTemplateFields([]);
+            setPlanningDraft(createEmptyPlanningDraft());
+            setOpenRosterMenu(null);
+            setRosterMenuDirection('up');
         } finally {
-            setLoadingDetails(false);
+            if (detailRequestRef.current.requestId === nextRequestId) {
+                setLoadingDetails(false);
+                detailRequestRef.current = { requestId: nextRequestId, controller: null };
+            }
         }
     };
 
@@ -145,7 +230,13 @@ const Calendar = () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     internal_notes: eventNotes || '',
-                    template_data: templateData || {}
+                    template_data: {
+                        ...(templateData || {}),
+                        ...(isWorshipPlanning ? {
+                            guest_musicians: planningDraft.guestMusicians,
+                            custom_roles: planningDraft.customRoles
+                        } : {})
+                    }
                 })
             });
         } catch (error) {
@@ -162,22 +253,67 @@ const Calendar = () => {
 
     useEffect(() => {
         let active = true;
-        const loadBuildings = async () => {
+        const loadLookupData = async () => {
             try {
-                const response = await fetch(`${API_URL}/buildings`);
-                if (!response.ok) throw new Error('Failed to load buildings');
-                const data = await response.json();
-                if (active) setBuildings(Array.isArray(data) ? data : []);
+                const [buildingResponse, peopleResponse] = await Promise.all([
+                    fetch(`${API_URL}/buildings`),
+                    fetch(`${API_URL}/people`)
+                ]);
+                if (!buildingResponse.ok) throw new Error('Failed to load buildings');
+                if (!peopleResponse.ok) throw new Error('Failed to load people');
+                const [buildingData, peopleData] = await Promise.all([
+                    buildingResponse.json(),
+                    peopleResponse.json()
+                ]);
+                if (!active) return;
+                setBuildings(Array.isArray(buildingData) ? buildingData : []);
+                setPeople(Array.isArray(peopleData) ? peopleData : []);
             } catch (error) {
-                console.error('Failed to load buildings:', error);
-                if (active) setBuildings([]);
+                console.error('Failed to load event planning lookup data:', error);
+                if (!active) return;
+                setBuildings([]);
+                setPeople([]);
             }
         };
-        loadBuildings();
+        loadLookupData();
         return () => {
             active = false;
         };
     }, []);
+
+    useEffect(() => {
+        if (!openRosterMenu) return undefined;
+
+        const timer = setTimeout(() => {
+            const menu = document.querySelector(`[data-roster-menu-key="${openRosterMenu}"]`);
+            if (!menu) return;
+            const rect = menu.getBoundingClientRect();
+            const menuHeight = rect.height;
+            const trigger = menu.parentElement?.getBoundingClientRect();
+            if (!trigger) return;
+            const spaceAbove = trigger.top;
+            const spaceBelow = window.innerHeight - trigger.bottom;
+            if (spaceAbove >= menuHeight) {
+                setRosterMenuDirection('up');
+            } else if (spaceBelow >= menuHeight) {
+                setRosterMenuDirection('down');
+            } else {
+                setRosterMenuDirection('up');
+            }
+        }, 0);
+
+        const handleClick = (event) => {
+            const target = event.target;
+            if (target.closest('.person-menu') || target.closest('.role-menu-trigger')) return;
+            setOpenRosterMenu(null);
+        };
+
+        document.addEventListener('mousedown', handleClick);
+        return () => {
+            clearTimeout(timer);
+            document.removeEventListener('mousedown', handleClick);
+        };
+    }, [openRosterMenu]);
 
     const normalizeLocationName = (value) => {
         const raw = String(value || '').trim();
@@ -190,8 +326,8 @@ const Calendar = () => {
     };
 
     const locationId = useMemo(() => (
-        eventDetails?.occurrence?.building_id || selectedEvent?.location || ''
-    ), [eventDetails?.occurrence?.building_id, selectedEvent?.location]);
+        planningDraft.buildingId || eventDetails?.occurrence?.building_id || selectedEvent?.location || ''
+    ), [planningDraft.buildingId, eventDetails?.occurrence?.building_id, selectedEvent?.location]);
 
     const locationName = useMemo(() => {
         const buildingId = locationId;
@@ -235,6 +371,12 @@ const Calendar = () => {
         }
     };
 
+    const handleUploadBulletin = async () => {
+        if (!bulletinFile) return;
+        await handleUploadDocument(bulletinFile, 'bulletin');
+        setBulletinFile(null);
+    };
+
     const handleUploadContract = async () => {
         if (!contractFile) return;
         await handleUploadDocument(contractFile, 'contract');
@@ -271,7 +413,166 @@ const Calendar = () => {
         }
     };
 
+    const handleSavePlanning = async () => {
+        if (!selectedEvent?.occurrence_id) return;
+        setPlanningSaving(true);
+        setPlanningError('');
+        try {
+            const response = await fetch(`${API_URL}/event-occurrences/${selectedEvent.occurrence_id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    internal_notes: eventNotes || '',
+                    template_data: templateData || {},
+                    building_id: planningDraft.buildingId || '',
+                    guest_musicians: planningDraft.guestMusicians,
+                    custom_roles: planningDraft.customRoles,
+                    roster: planningDraft.roster
+                })
+            });
+            if (!response.ok) {
+                throw new Error('Failed to save worship planning');
+            }
+            if (selectedEvent) {
+                await loadEventDetails(selectedEvent);
+                await refreshEvents();
+            }
+        } catch (error) {
+            console.error('Failed to save worship planning:', error);
+            setPlanningError('Unable to save the worship planning details right now.');
+        } finally {
+            setPlanningSaving(false);
+        }
+    };
 
+    const handleAddGuestMusician = () => {
+        const value = String(guestMusicianInput || '').trim();
+        if (!value) return;
+        setPlanningDraft((prev) => {
+            const exists = prev.guestMusicians.some((entry) => entry.toLowerCase() === value.toLowerCase());
+            if (exists) return prev;
+            return {
+                ...prev,
+                guestMusicians: [...prev.guestMusicians, value]
+            };
+        });
+        setGuestMusicianInput('');
+    };
+
+    const handleRemoveGuestMusician = (entry) => {
+        setPlanningDraft((prev) => ({
+            ...prev,
+            guestMusicians: prev.guestMusicians.filter((item) => item !== entry)
+        }));
+    };
+
+    const handleAddCustomRole = () => {
+        const label = String(customRoleInput || '').trim();
+        const key = slugifyRoleKey(label);
+        if (!label || !key) return;
+        setPlanningDraft((prev) => {
+            const exists = prev.customRoles.some((role) => role.key === key);
+            if (exists) return prev;
+            return {
+                ...prev,
+                customRoles: [...prev.customRoles, { key, label }],
+                roster: {
+                    ...prev.roster,
+                    [key]: prev.roster[key] || []
+                }
+            };
+        });
+        setCustomRoleInput('');
+    };
+
+    const handleRemoveCustomRole = (roleKey) => {
+        setPlanningDraft((prev) => {
+            const nextRoster = { ...prev.roster };
+            delete nextRoster[roleKey];
+            return {
+                ...prev,
+                customRoles: prev.customRoles.filter((role) => role.key !== roleKey),
+                roster: nextRoster
+            };
+        });
+    };
+
+    const normalizeRosterIds = (roleKey, values) => {
+        const list = Array.isArray(values) ? values : (values ? [values] : []);
+        const uniqueIds = Array.from(new Set(list.map((value) => String(value || '').trim()).filter(Boolean)));
+        return roleAllowsMultiple(roleKey) ? uniqueIds : uniqueIds.slice(0, 1);
+    };
+
+    const handleRosterSelectionChange = (roleKey, values) => {
+        const normalized = normalizeRosterIds(roleKey, values);
+        setPlanningDraft((prev) => ({
+            ...prev,
+            roster: {
+                ...prev.roster,
+                [roleKey]: normalized
+            }
+        }));
+    };
+
+    const toggleRosterMenu = (roleKey) => {
+        setOpenRosterMenu((prev) => (prev === roleKey ? null : roleKey));
+    };
+
+    const getEligibleRosterPeople = (roleKey) => {
+        const eligiblePeople = people.filter((person) => {
+            const personRoles = Array.isArray(person.roles) ? person.roles : [];
+            if (roleKey === 'clergy') {
+                return person.category === 'clergy'
+                    || personRoles.includes('clergy')
+                    || personRoles.includes('celebrant')
+                    || personRoles.includes('preacher')
+                    || personRoles.includes('officiant');
+            }
+            return personRoles.includes(roleKey);
+        });
+        return eligiblePeople.length > 0 ? eligiblePeople : people;
+    };
+
+    const getTeamMap = (roleKey, eligiblePeople) => {
+        const teamMap = new Map();
+        eligiblePeople.forEach((person) => {
+            const teamList = Array.isArray(person.teams?.[roleKey]) ? person.teams[roleKey] : [];
+            teamList.forEach((teamNumber) => {
+                if (!teamMap.has(teamNumber)) teamMap.set(teamNumber, []);
+                teamMap.get(teamNumber).push(person.id);
+            });
+        });
+        return teamMap;
+    };
+
+    const toggleRosterPersonSelection = (roleKey, personId) => {
+        const currentIds = normalizeRosterIds(roleKey, planningDraft.roster?.[roleKey] || []);
+        if (roleAllowsMultiple(roleKey)) {
+            const current = new Set(currentIds);
+            if (current.has(personId)) {
+                current.delete(personId);
+            } else {
+                current.add(personId);
+            }
+            handleRosterSelectionChange(roleKey, Array.from(current));
+            return;
+        }
+        handleRosterSelectionChange(roleKey, [personId]);
+        setOpenRosterMenu(null);
+    };
+
+    const toggleRosterTeamSelection = (roleKey, memberIds) => {
+        const currentIds = normalizeRosterIds(roleKey, planningDraft.roster?.[roleKey] || []);
+        const current = new Set(currentIds);
+        const normalizedMembers = normalizeRosterIds(roleKey, memberIds);
+        const allSelected = normalizedMembers.every((personId) => current.has(personId));
+        if (allSelected) {
+            normalizedMembers.forEach((personId) => current.delete(personId));
+        } else {
+            normalizedMembers.forEach((personId) => current.add(personId));
+        }
+        handleRosterSelectionChange(roleKey, Array.from(current));
+    };
 
     const handleTaskToggle = async (task) => {
         if (!task?.id) return;
@@ -362,67 +663,9 @@ const Calendar = () => {
         return brightness > 180 ? '#1f2937' : hexcolor;
     };
 
-    const getLiturgicalColor = (colorName) => {
-        const colorMap = {
-            green: '#dcfce7',
-            white: '#f3f4f6',
-            purple: '#f3e8ff',
-            red: '#fee2e2'
-        };
-
-        const normalized = (colorName || '').toLowerCase();
-        return colorMap[normalized] || '#15803d';
-    };
-
-    const getRosterSummary = (roster) => {
-        if (!roster) return '';
-
-        const roleLabels = [
-            { key: 'lector', label: 'Lector' },
-            { key: 'lem', label: 'LEM' },
-            { key: 'acolyte', label: 'Acolyte' },
-            { key: 'usher', label: 'Usher' },
-            { key: 'sound', label: 'Sound' }
-        ];
-
-        const entries = roleLabels
-            .map(({ key, label }) => {
-                const assignment = roster[key];
-                if (!assignment?.people?.length) return null;
-                const names = assignment.people.map(person => person.displayName).join(', ');
-                return `${label}: ${names}`;
-            })
-            .filter(Boolean);
-
-        return entries.join(' | ');
-    };
-
-    const sundayServiceEvents = useMemo(() => {
-        if (!sundayServices.length) return [];
-
-        return sundayServices.flatMap((day) => (
-            (day.services || []).map((service) => ({
-                id: `sunday-${day.date.toISOString()}-${service.time}`,
-                title: service.rite ? `${service.rite} Service` : (service.name || 'Sunday Service'),
-                date: day.date,
-                time: service.time,
-                color: getLiturgicalColor(day.color),
-                type_name: day.name,
-                source: 'sunday',
-                roster: service.roster,
-                rite: service.rite,
-                dayName: day.name
-            }))
-        ));
-    }, [sundayServices]);
-
     const filteredEvents = useMemo(() => (
         events.filter(event => !(event.source === 'liturgical' && event.date?.getDay?.() === 0))
     ), [events]);
-
-    const mergedEvents = useMemo(() => (
-        [...filteredEvents, ...sundayServiceEvents]
-    ), [filteredEvents, sundayServiceEvents]);
 
     const taskGroups = useMemo(() => {
         const grouped = eventTasks.reduce((acc, task) => {
@@ -441,6 +684,41 @@ const Calendar = () => {
             })
         }));
     }, [eventTasks]);
+
+    const isWorshipPlanning = Boolean(eventDetails?.planning);
+    const roleDefinitions = useMemo(() => (
+        Array.isArray(eventDetails?.planning?.role_definitions) ? eventDetails.planning.role_definitions : []
+    ), [eventDetails?.planning?.role_definitions]);
+    const roleAllowsMultipleByKey = useMemo(() => (
+        new Map(roleDefinitions.map((role) => [role.key, !!role.allows_multiple]))
+    ), [roleDefinitions]);
+    const roleAllowsMultiple = (roleKey) => roleAllowsMultipleByKey.get(roleKey) === true;
+    const getRoleDisplayLabel = (role) => ROLE_CONFIG_BY_KEY.get(role.key)?.label || role.label;
+    const orderedRoleDefinitions = useMemo(() => {
+        const sortOrder = new Map(LITURGICAL_ROLE_CONFIGS.map((role, index) => [role.key, index]));
+        return [...roleDefinitions].sort((a, b) => {
+            const orderA = sortOrder.has(a.key) ? sortOrder.get(a.key) : Number.MAX_SAFE_INTEGER;
+            const orderB = sortOrder.has(b.key) ? sortOrder.get(b.key) : Number.MAX_SAFE_INTEGER;
+            if (orderA !== orderB) return orderA - orderB;
+            return String(a.label || a.key || '').localeCompare(String(b.label || b.key || ''));
+        });
+    }, [roleDefinitions]);
+    const bulletinDocs = useMemo(() => (
+        eventDocs.filter((doc) => doc.doc_type === 'bulletin')
+    ), [eventDocs]);
+    const contractDocs = useMemo(() => (
+        eventDocs.filter((doc) => doc.doc_type === 'contract')
+    ), [eventDocs]);
+    const attachmentDocs = useMemo(() => (
+        eventDocs.filter((doc) => !['bulletin', 'contract'].includes(doc.doc_type))
+    ), [eventDocs]);
+    const openTaskCount = useMemo(() => (
+        eventTasks.filter((task) => !task.completed).length
+    ), [eventTasks]);
+    const assignedRosterCount = useMemo(() => (
+        Object.values(planningDraft.roster || {}).reduce((sum, ids) => sum + (Array.isArray(ids) ? ids.length : 0), 0)
+    ), [planningDraft.roster]);
+    const serviceLabel = eventDetails?.planning?.service_label || eventDetails?.event?.type_name || selectedEvent?.type_name || selectedEvent?.category_name || 'Event';
 
     const cells = () => {
         const monthStart = startOfMonth(currentDate);
@@ -463,13 +741,10 @@ const Calendar = () => {
                                 <span className="day-number">{format(dayItem, dateFormat)}</span>
                             </div>
                             <div className="cell-events">
-                                {mergedEvents && mergedEvents.filter(e => isSameDay(e.date, dayItem)).map(event => {
+                                {filteredEvents && filteredEvents.filter(e => isSameDay(e.date, dayItem)).map(event => {
                                     const contrastColor = getContrastColor(event.color);
                                     const isLight = contrastColor !== event.color;
-                                    const rosterSummary = event.source === 'sunday' ? getRosterSummary(event.roster) : '';
-                                    const tooltip = event.source === 'sunday'
-                                        ? `${event.dayName || event.title}${event.rite ? ` (${event.rite})` : ''}${rosterSummary ? `\n${rosterSummary}` : ''}`
-                                        : (event.type_name ? `${event.type_name} - ${event.title}` : event.title);
+                                    const tooltip = event.type_name ? `${event.type_name} - ${event.title}` : event.title;
 
                                     return (
                                         <div
@@ -513,282 +788,78 @@ const Calendar = () => {
                 isOpen={showModal}
                 onClose={closeModal}
                 title={eventDetails?.event?.title || selectedEvent?.title || 'Event Details'}
+                className="modal-large event-detail-shell"
             >
-                {loadingDetails ? (
-                    <div className="event-detail-loading">Loading event details...</div>
-                ) : (
-                    <div className="event-detail-modal">
-                        <div className="event-detail-section">
-                            <div className="event-detail-grid">
-                                <div>
-                                    <span className="event-detail-label">Date</span>
-                                    <span className="event-detail-value">
-                                        {selectedEvent?.date ? format(selectedEvent.date, 'MMMM d, yyyy') : '—'}
-                                    </span>
-                                </div>
-                                <div>
-                                    <span className="event-detail-label">Time</span>
-                                    <span className="event-detail-value">{selectedEvent?.time || 'All day'}</span>
-                                </div>
-                                <div>
-                                    <span className="event-detail-label">Type</span>
-                                    <span className="event-detail-value">
-                                        {eventDetails?.event?.type_name || selectedEvent?.type_name || selectedEvent?.category_name || 'Event'}
-                                    </span>
-                                </div>
-                                <div>
-                                    <span className="event-detail-label">Location</span>
-                                    <span className="event-detail-value">
-                                        {locationName ? (
-                                            <DataPill
-                                                type="building"
-                                                value={locationName}
-                                                label={locationName}
-                                                showType={false}
-                                                tooltip={`Location: ${locationName}`}
-                                                onClick={() => {
-                                                    if (!locationId) return;
-                                                    navigate(`/buildings?tab=map&location=${encodeURIComponent(locationId)}`);
-                                                }}
-                                            />
-                                        ) : 'TBD'}
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
-
-                        {templateFields.length > 0 && (
-                            <div className="event-detail-section">
-                                <div className="event-detail-label">Event Details</div>
-                                <div className="event-detail-template-grid">
-                                    {templateFields.map((field) => {
-                                        const value = templateData?.[field.field_key];
-                                        const fieldType = field.field_type || 'text';
-                                        const key = field.field_key;
-                                        if (fieldType === 'textarea') {
-                                            return (
-                                                <label key={key} className="event-detail-template-field">
-                                                    <span>{field.label}</span>
-                                                    <textarea
-                                                        value={value || ''}
-                                                        placeholder={field.placeholder || ''}
-                                                        onChange={(e) => handleTemplateChange(key, e.target.value)}
-                                                        rows="3"
-                                                    />
-                                                </label>
-                                            );
-                                        }
-                                        if (fieldType === 'select') {
-                                            const options = Array.isArray(field.options) ? field.options : [];
-                                            return (
-                                                <label key={key} className="event-detail-template-field">
-                                                    <span>{field.label}</span>
-                                                    <select
-                                                        value={value || ''}
-                                                        onChange={(e) => handleTemplateChange(key, e.target.value)}
-                                                    >
-                                                        <option value="">Select...</option>
-                                                        {options.map((option) => (
-                                                            <option key={option} value={option}>{option}</option>
-                                                        ))}
-                                                    </select>
-                                                </label>
-                                            );
-                                        }
-                                        if (fieldType === 'checkbox') {
-                                            return (
-                                                <label key={key} className="event-detail-template-field event-detail-template-checkbox">
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={!!value}
-                                                        onChange={(e) => handleTemplateChange(key, e.target.checked)}
-                                                    />
-                                                    <span>{field.label}</span>
-                                                </label>
-                                            );
-                                        }
-                                        return (
-                                            <label key={key} className="event-detail-template-field">
-                                                <span>{field.label}</span>
-                                                <input
-                                                    type={fieldType}
-                                                    value={value || ''}
-                                                    placeholder={field.placeholder || ''}
-                                                    onChange={(e) => handleTemplateChange(key, e.target.value)}
-                                                />
-                                            </label>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="event-detail-section">
-                            <div className="event-detail-label">Internal Notes</div>
-                            <textarea
-                                className="event-detail-notes"
-                                value={eventNotes}
-                                onChange={(e) => setEventNotes(e.target.value)}
-                                placeholder="Add internal notes for this occurrence..."
-                                rows="3"
-                            />
-                            <div className="event-detail-actions">
-                                <button className="btn-secondary" type="button" onClick={handleSaveNotes}>
-                                    Save Changes
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="event-detail-section">
-                            <div className="event-detail-header-row">
-                                <span className="event-detail-label">Documents</span>
-                            </div>
-                            <div className="event-documents">
-                                <div className="event-document-slot">
-                                    <div className="event-document-slot-header">
-                                        <div className="event-document-slot-title">
-                                            <span>Contract</span>
-                                            <span className="event-document-slot-subtitle">Keep the signed contract here.</span>
-                                        </div>
-                                        <div className="event-document-upload">
-                                            <label className="btn-secondary event-document-upload-button">
-                                                <FaPaperclip />
-                                                Choose
-                                                <input
-                                                    type="file"
-                                                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
-                                                    onChange={(e) => setContractFile(e.target.files?.[0] || null)}
-                                                />
-                                            </label>
-                                            <button type="button" className="btn-primary event-document-upload-button" onClick={handleUploadContract} disabled={!contractFile}>
-                                                <FaUpload />
-                                                Upload
-                                            </button>
-                                        </div>
-                                    </div>
-                                    {contractFile && (
-                                        <div className="event-document-selected">Selected: {contractFile.name}</div>
-                                    )}
-                                    {eventDocs.filter((doc) => doc.doc_type === 'contract').length === 0 ? (
-                                        <div className="event-detail-empty">No contract uploaded.</div>
-                                    ) : (
-                                        eventDocs
-                                            .filter((doc) => doc.doc_type === 'contract')
-                                            .map((doc) => (
-                                                <div key={doc.id} className="event-document-row">
-                                                    <div className="event-document-meta">
-                                                        <span className="event-document-name">{doc.file_name}</span>
-                                                        {doc.label && <span className="event-document-tag">{doc.label}</span>}
-                                                    </div>
-                                                    <div className="event-document-actions">
-                                                        <button type="button" className="btn-icon small" onClick={() => handlePreviewDocument(doc)} disabled={!doc.preview} title="Preview">
-                                                            <FaEye />
-                                                        </button>
-                                                        <button type="button" className="btn-icon small" onClick={() => handleOpenDocument(doc)} title="Open">
-                                                            <FaExternalLinkAlt />
-                                                        </button>
-                                                        <button type="button" className="btn-icon small" onClick={() => handleOpenLocation(doc)} title="Open File Location">
-                                                            <FaFolderOpen />
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            ))
-                                    )}
-                                </div>
-
-                                <div className="event-document-slot">
-                                    <div className="event-document-slot-header">
-                                        <div className="event-document-slot-title">
-                                            <span>Other Documents</span>
-                                            <span className="event-document-slot-subtitle">Add permits, schedules, or notes.</span>
-                                        </div>
-                                        <div className="event-document-upload">
-                                            <label className="btn-secondary event-document-upload-button">
-                                                <FaPaperclip />
-                                                Choose
-                                                <input
-                                                    type="file"
-                                                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
-                                                    onChange={(e) => setOtherFile(e.target.files?.[0] || null)}
-                                                />
-                                            </label>
-                                            <button type="button" className="btn-primary event-document-upload-button" onClick={handleUploadOther} disabled={!otherFile}>
-                                                <FaUpload />
-                                                Upload
-                                            </button>
-                                        </div>
-                                    </div>
-                                    {otherFile && (
-                                        <div className="event-document-selected">Selected: {otherFile.name}</div>
-                                    )}
-                                    {eventDocs.filter((doc) => doc.doc_type !== 'contract').length === 0 ? (
-                                        <div className="event-detail-empty">No documents uploaded.</div>
-                                    ) : (
-                                        eventDocs
-                                            .filter((doc) => doc.doc_type !== 'contract')
-                                            .map((doc) => (
-                                                <div key={doc.id} className="event-document-row">
-                                                    <div className="event-document-meta">
-                                                        <span className="event-document-name">{doc.file_name}</span>
-                                                        {doc.label && <span className="event-document-tag">{doc.label}</span>}
-                                                    </div>
-                                                    <div className="event-document-actions">
-                                                        <button type="button" className="btn-icon small" onClick={() => handlePreviewDocument(doc)} disabled={!doc.preview} title="Preview">
-                                                            <FaEye />
-                                                        </button>
-                                                        <button type="button" className="btn-icon small" onClick={() => handleOpenDocument(doc)} title="Open">
-                                                            <FaExternalLinkAlt />
-                                                        </button>
-                                                        <button type="button" className="btn-icon small" onClick={() => handleOpenLocation(doc)} title="Open File Location">
-                                                            <FaFolderOpen />
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            ))
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="event-detail-section">
-                            <div className="event-detail-header-row">
-                                <span className="event-detail-label">Tasks & Checklists</span>
-                            </div>
-                            {taskGroups.length === 0 ? (
-                                <div className="event-detail-empty">No tasks for this occurrence yet.</div>
-                            ) : (
-                                taskGroups.map((group) => (
-                                    <div key={group.title} className="event-detail-task-group">
-                                        <div className="event-detail-task-title">{group.title}</div>
-                                        <div className="event-detail-task-list">
-                                            {group.items.map((task) => (
-                                                <label key={task.id} className={`event-detail-task ${task.completed ? 'completed' : ''}`}>
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={task.completed}
-                                                        onChange={() => handleTaskToggle(task)}
-                                                    />
-                                                    <span>{task.text}</span>
-                                                </label>
-                                            ))}
-                                        </div>
-                                    </div>
-                                ))
-                            )}
-                            <div className="event-detail-task-add">
-                                <input
-                                    type="text"
-                                    placeholder="Add task…"
-                                    value={taskInput}
-                                    onChange={(e) => setTaskInput(e.target.value)}
-                                />
-                                <button className="btn-primary" type="button" onClick={handleAddTask}>
-                                    Add Task
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
+                <CalendarEventDetails
+                    loadingDetails={loadingDetails}
+                    selectedEvent={selectedEvent}
+                    eventDetails={eventDetails}
+                    serviceLabel={serviceLabel}
+                    locationId={locationId}
+                    locationName={locationName}
+                    openTaskCount={openTaskCount}
+                    assignedRosterCount={assignedRosterCount}
+                    isWorshipPlanning={isWorshipPlanning}
+                    templateFields={templateFields}
+                    templateData={templateData}
+                    onTemplateChange={handleTemplateChange}
+                    planningState={{
+                        buildings,
+                        people,
+                        planningDraft,
+                        guestMusicianInput,
+                        customRoleInput,
+                        planningSaving,
+                        planningError,
+                        openRosterMenu,
+                        rosterMenuDirection,
+                        orderedRoleDefinitions
+                    }}
+                    planningActions={{
+                        setPlanningDraft,
+                        setGuestMusicianInput,
+                        setCustomRoleInput,
+                        handleSavePlanning,
+                        handleAddGuestMusician,
+                        handleRemoveGuestMusician,
+                        handleAddCustomRole,
+                        handleRemoveCustomRole,
+                        toggleRosterMenu,
+                        toggleRosterPersonSelection,
+                        toggleRosterTeamSelection
+                    }}
+                    planningHelpers={{
+                        roleAllowsMultiple,
+                        normalizeRosterIds,
+                        getEligibleRosterPeople,
+                        getTeamMap,
+                        getRoleDisplayLabel
+                    }}
+                    notesState={{ eventNotes }}
+                    notesActions={{ setEventNotes, handleSaveNotes }}
+                    documentsState={{
+                        bulletinDocs,
+                        contractDocs,
+                        attachmentDocs,
+                        bulletinFile,
+                        contractFile,
+                        otherFile
+                    }}
+                    documentActions={{
+                        setBulletinFile,
+                        setContractFile,
+                        setOtherFile,
+                        handleUploadBulletin,
+                        handleUploadContract,
+                        handleUploadOther,
+                        handlePreviewDocument,
+                        handleOpenDocument,
+                        handleOpenLocation
+                    }}
+                    taskState={{ taskGroups, taskInput }}
+                    taskActions={{ setTaskInput, handleAddTask, handleTaskToggle }}
+                    onLocationClick={() => navigate(`/buildings?tab=map&location=${encodeURIComponent(locationId)}`)}
+                />
             </Modal>
             <Modal
                 isOpen={docPreview.open}
@@ -809,3 +880,4 @@ const Calendar = () => {
 };
 
 export default Calendar;
+

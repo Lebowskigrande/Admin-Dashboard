@@ -178,6 +178,86 @@ export const getListProgressDisplay = (list, task) => {
     };
 };
 
+export const getListChecklist = (list) => {
+    if (!list) {
+        return {
+            mode: 'sequential',
+            items: [],
+            totalCount: 0,
+            completedCount: 0,
+            progress: 0,
+            currentItem: null,
+            representativeTask: null,
+            canAdvance: false,
+            canRewind: false
+        };
+    }
+
+    const listMode = String(list.mode || '').toLowerCase();
+    if (listMode === 'progressive') {
+        const task = list.tasks?.[0] || null;
+        const meta = getTaskProgressMeta(task);
+        const steps = Array.isArray(meta?.steps) ? meta.steps : [];
+        const currentIndex = Number(meta?.currentIndex ?? -1);
+        const isComplete = !!(meta?.isComplete || task?.completed);
+        const items = steps.map((step, index) => {
+            let status = 'upcoming';
+            if (isComplete || index <= currentIndex) status = 'done';
+            else if ((currentIndex < 0 && index === 0) || index === currentIndex + 1) status = 'current';
+            return {
+                key: step.key || `step-${index}`,
+                label: step.title || `Step ${index + 1}`,
+                status,
+                stepKey: step.key || '',
+                task: task || null
+            };
+        });
+        const completedCount = isComplete ? items.length : Math.max(0, currentIndex + 1);
+        return {
+            mode: 'progressive',
+            items,
+            totalCount: items.length,
+            completedCount,
+            progress: items.length ? completedCount / items.length : 0,
+            currentItem: isComplete ? null : (items.find((item) => item.status === 'current') || null),
+            representativeTask: task,
+            canAdvance: !!meta?.nextStep,
+            canRewind: !!meta?.prevStep || currentIndex >= 0
+        };
+    }
+
+    const tasks = sortTasksForDetails(list.tasks || []);
+    const firstOpenIndex = tasks.findIndex((task) => !task.completed);
+    const items = tasks.map((task, index) => {
+        let status = 'done';
+        if (!task.completed) {
+            if (listMode === 'parallel') status = 'open';
+            else if (firstOpenIndex === -1) status = 'done';
+            else if (index === firstOpenIndex) status = 'current';
+            else if (index > firstOpenIndex) status = 'upcoming';
+            else status = 'done';
+        }
+        return {
+            key: task.id,
+            label: task.text || task.list_title || 'Task',
+            status,
+            task
+        };
+    });
+    const completedCount = items.filter((item) => item.status === 'done').length;
+    return {
+        mode: listMode || 'sequential',
+        items,
+        totalCount: items.length,
+        completedCount,
+        progress: items.length ? completedCount / items.length : 0,
+        currentItem: items.find((item) => item.status === 'current' || item.status === 'open') || null,
+        representativeTask: getListRepresentativeTask(list),
+        canAdvance: !!items.find((item) => item.status === 'current' || item.status === 'open'),
+        canRewind: false
+    };
+};
+
 export const toTitleCase = (value) => String(value || '')
     .replace(/[-_]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -243,8 +323,8 @@ export const formatOriginLabel = (task) => {
     if (!rawType) return 'Task Origin';
     const type = rawType.toLowerCase();
     if (type.includes('sunday')) return 'Sunday Planning';
-    if (type.includes('vestry')) return 'Vestry';
-    if (type.includes('event')) return 'Event';
+    if (type.includes('vestry')) return 'Vestry Cycle';
+    if (type.includes('event')) return 'Event Planning';
     if (type.includes('operation')) return 'Operations';
     if (type.includes('ticket')) return 'Ticket';
     if (type.includes('project')) return 'Project';
@@ -304,4 +384,110 @@ export const formatOriginSubtitle = (task) => {
         return `Timesheets ${task.origin_id.replace('timesheets-', '')}`;
     }
     return task.origin_id;
+};
+
+const getOriginSample = (originOrTask) => originOrTask?.sample || originOrTask || null;
+
+export const getWorkPackageTitle = (originOrTask) => {
+    const sample = getOriginSample(originOrTask);
+    if (!sample) return 'Work Package';
+
+    const originType = String(sample.origin_type || '').toLowerCase();
+    if (originType === 'event') {
+        const eventName = sample.event_title || sample.event_type_name || 'Event';
+        return `${eventName} Event Planning`;
+    }
+    if (originType === 'sunday') {
+        if (sample.origin_id && isDateString(sample.origin_id)) {
+            return `${format(new Date(`${sample.origin_id}T00:00:00`), 'EEEE, MMM d')} Service Planning`;
+        }
+        return 'Sunday Service Planning';
+    }
+    if (originType === 'vestry') {
+        if (sample.origin_id && isMonthString(sample.origin_id)) {
+            return `${format(new Date(`${sample.origin_id}-01T00:00:00`), 'MMMM')} Vestry Cycle`;
+        }
+        return 'Vestry Cycle';
+    }
+    if (originType === 'operations') {
+        if (sample.origin_id?.startsWith('weekly-')) return 'Weekly Operations';
+        if (sample.origin_id?.startsWith('timesheets-')) {
+            return `Timesheets ${sample.origin_id.replace('timesheets-', '')}`;
+        }
+        return sample.list_title || 'Operations';
+    }
+    if (originType === 'ticket') {
+        return sample.ticket_title || `Ticket ${sample.origin_id || ''}`.trim();
+    }
+    return sample.list_title || sample.text || 'Work Package';
+};
+
+export const getWorkPackageSubtitle = (originOrTask) => {
+    const sample = getOriginSample(originOrTask);
+    if (!sample) return '';
+
+    const originType = String(sample.origin_type || '').toLowerCase();
+    if (originType === 'event') {
+        const dateLabel = sample.event_date
+            ? format(new Date(`${sample.event_date}T00:00:00`), 'MMM d, yyyy')
+            : '';
+        const timeLabel = sample.event_time ? ` at ${sample.event_time}` : '';
+        const typeLabel = sample.event_type_name || 'Event';
+        return [typeLabel, `${dateLabel}${timeLabel}`.trim()].filter(Boolean).join(' · ');
+    }
+    if (originType === 'sunday') {
+        return formatOriginSubtitle(sample) || 'Sunday planning package';
+    }
+    if (originType === 'vestry') {
+        return formatOriginSubtitle(sample) || 'Meeting preparation and follow-up';
+    }
+    if (originType === 'operations') {
+        return formatOriginSubtitle(sample) || 'Operational work package';
+    }
+    return formatOriginSubtitle(sample);
+};
+
+export const getWorkPackageSummary = (origin) => {
+    const sections = (origin?.lists || [])
+        .map((list) => {
+            const checklist = getListChecklist(list);
+            const representativeTask = getListRepresentativeTask(list);
+            const currentTask = checklist.currentItem?.task || representativeTask || null;
+            const isDone = checklist.totalCount > 0 && checklist.completedCount >= checklist.totalCount;
+            const status = isDone
+                ? 'done'
+                : checklist.currentItem
+                    ? 'current'
+                    : (checklist.totalCount > 0 ? 'open' : 'done');
+            const actionTask = checklist.mode === 'progressive'
+                ? checklist.representativeTask
+                : (checklist.currentItem?.task || representativeTask || null);
+
+            return {
+                key: list.key,
+                title: list.title || getTopLevelTaskTitle(list, currentTask),
+                currentLabel: checklist.currentItem?.label || (checklist.totalCount ? 'Checklist complete' : 'No checklist items'),
+                completedCount: checklist.completedCount,
+                totalCount: checklist.totalCount,
+                progress: checklist.progress,
+                checklist,
+                currentTask,
+                actionTask,
+                status
+            };
+        })
+        .sort((a, b) => compareTasksIgnoreState(a.currentTask || a.actionTask || {}, b.currentTask || b.actionTask || {}));
+
+    const totalCount = sections.reduce((sum, section) => sum + section.totalCount, 0);
+    const completedCount = sections.reduce((sum, section) => sum + section.completedCount, 0);
+    const primarySection = sections.find((section) => section.status !== 'done') || sections[0] || null;
+
+    return {
+        sections,
+        totalCount,
+        completedCount,
+        progress: totalCount ? completedCount / totalCount : 0,
+        primarySection,
+        openSectionCount: sections.filter((section) => section.status !== 'done').length
+    };
 };

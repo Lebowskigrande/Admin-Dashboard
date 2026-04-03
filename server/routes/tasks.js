@@ -13,6 +13,11 @@ import {
     getDefaultPriorityBase
 } from '../helpers/task-utils.js';
 import {
+    recordTaskProgressHistory,
+    listTaskProgressHistory,
+    buildTaskProgressAudit
+} from '../helpers/task-progress-history.js';
+import {
     listTaskInstances,
     createTaskInstance,
     deleteTaskInstance,
@@ -28,10 +33,175 @@ import { upsertEntityLink } from '../helpers/entity-utils.js';
 
 const router = express.Router();
 
+const filterVisibleTasks = (tasks, { includeArchived = false, includeFuture = false } = {}) => {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    return tasks.filter((task) => {
+        if (!includeArchived && task.archived_at) return false;
+        if (includeFuture) return true;
+        if (!task.start_at) return true;
+        return task.start_at <= todayKey;
+    });
+};
+
+const createLegacyTaskEngineTask = db.transaction((payload) => {
+    const {
+        normalizedText,
+        sourceType,
+        sourceId,
+        sourceEvent,
+        priorityBase,
+        priorityOverride,
+        dueAt,
+        rank,
+        instanceState,
+        notes
+    } = payload;
+    const now = new Date().toISOString();
+    const taskId = `task-${randomUUID()}`;
+    const taskInstanceId = `taskinst-${randomUUID()}`;
+
+    db.prepare(`
+        INSERT INTO tasks (id, title, description, status, priority_base, created_at, updated_at)
+        VALUES (?, ?, NULL, 'active', ?, ?, ?)
+    `).run(taskId, normalizedText, priorityBase, now, now);
+
+    db.prepare(`
+        INSERT INTO task_instances (
+            id, task_id, state, priority_override, rank, due_at, notes, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        taskInstanceId,
+        taskId,
+        instanceState,
+        priorityOverride,
+        rank,
+        dueAt,
+        notes,
+        now,
+        now
+    );
+
+    db.prepare(`
+        INSERT INTO task_origins (
+            id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        `origin-${taskInstanceId}`,
+        'instance',
+        taskId,
+        taskInstanceId,
+        sourceType,
+        sourceId,
+        sourceEvent,
+        now
+    );
+
+    return taskInstanceId;
+});
+
+const createModernTaskEngineTask = db.transaction((payload) => {
+    const {
+        normalizedText,
+        ticketId,
+        taskType,
+        priorityBase,
+        priorityOverride,
+        dueAt,
+        slaTargetAt,
+        rank,
+        blocked,
+        computedState,
+        listKey,
+        listTitle,
+        listMode,
+        progressKey,
+        progressSteps,
+        notes,
+        originType,
+        originId,
+        originEvent
+    } = payload;
+    const now = new Date().toISOString();
+    const taskId = `taskdef-${randomUUID()}`;
+    const taskInstanceId = `taskinst-${randomUUID()}`;
+
+    db.prepare(`
+        INSERT INTO tasks_new (
+            id, title, description, status, priority_base, task_type, due_mode,
+            default_duration_min, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        taskId,
+        normalizedText,
+        null,
+        'active',
+        priorityBase,
+        taskType,
+        'floating',
+        null,
+        now,
+        now
+    );
+
+    db.prepare(`
+        INSERT INTO task_instances (
+            id, task_id, state, due_at, start_at, completed_at, generated_from,
+            generation_key, priority_override, rank, sla_target_at, blocked,
+            list_key, list_title, list_mode, progress_key, progress_steps, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        taskInstanceId,
+        taskId,
+        computedState,
+        dueAt,
+        null,
+        null,
+        ticketId ? 'ticket' : 'manual',
+        null,
+        priorityOverride,
+        rank,
+        slaTargetAt,
+        Number(blocked) ? 1 : 0,
+        listKey,
+        listTitle,
+        listMode,
+        progressKey,
+        progressSteps,
+        notes,
+    );
+
+    db.prepare(`
+        INSERT INTO task_origins (
+            id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        `origin-${taskInstanceId}`,
+        'instance',
+        taskId,
+        taskInstanceId,
+        originType,
+        originId,
+        originEvent,
+        now
+    );
+
+    upsertEntityLink({
+        fromType: 'task_instance',
+        fromId: taskInstanceId,
+        toType: originType,
+        toId: originId,
+        role: 'source',
+        metaJson: JSON.stringify({ origin_event: originEvent })
+    });
+
+    return taskInstanceId;
+});
+
 // --- Tasks ---
 
 router.get('/tasks', (req, res) => {
     const includeArchived = String(req.query.include_archived || '').trim() === '1';
+    const includeFuture = String(req.query.include_future || '').trim() === '1';
     const originType = String(req.query.origin_type || '').trim();
     const originId = String(req.query.origin_id || '').trim();
     const rollup = String(req.query.rollup || '').trim() === '1';
@@ -39,64 +209,13 @@ router.get('/tasks', (req, res) => {
         ? `WHERE src.origin_type = ? AND src.origin_id = ?`
         : '';
     const rows = listTaskInstances(whereClause, originType && originId ? [originType, originId] : []);
-    const tasks = sortTasksByPriority(rows.filter((task) => (
-        includeArchived || !task.archived_at
-    )));
+    const tasks = sortTasksByPriority(filterVisibleTasks(rows, { includeArchived, includeFuture }));
     if (!rollup) {
         return res.json(tasks);
     }
-    const grouped = tasks.reduce((acc, task) => {
-        if (task.completed) return acc;
-        const oType = task.origin_type || 'manual';
-        const oId = task.origin_id || 'manual';
-        const key = `${oType}:${oId}`;
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(task);
-        return acc;
-    }, {});
-    const rollupTasks = Object.values(grouped).map((group) => {
-        const incomplete = group.filter((task) => !task.completed);
-        if (!incomplete.length) return null;
-        const listGroups = incomplete.reduce((acc, task) => {
-            const listKey = task.list_key || 'default';
-            if (!acc[listKey]) acc[listKey] = [];
-            acc[listKey].push(task);
-            return acc;
-        }, {});
-        const listNextTasks = Object.values(listGroups).map((listTasks) => {
-            if (!listTasks.length) return null;
-            const listMode = listTasks[0]?.list_mode || 'sequential';
-            const hasSequence = listMode === 'sequential'
-                || listTasks.some((task) => task.rank != null || task.step_order != null);
-            let sorted;
-            if (hasSequence) {
-                sorted = [...listTasks].sort((a, b) => {
-                    const rankA = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
-                    const rankB = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
-                    if (rankA !== rankB) return rankA - rankB;
-                    const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : a.step_order;
-                    const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : b.step_order;
-                    if (orderA !== orderB) return orderA - orderB;
-                    const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-                    const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
-                    if (dueA !== dueB) return dueA - dueB;
-                    return b.priority_effective - a.priority_effective;
-                });
-                const chainMax = Math.max(...listTasks.map((task) => task.priority_effective ?? 0));
-                return {
-                    ...sorted[0],
-                    priority_effective: chainMax,
-                    priority_tier: getPriorityTier(chainMax)
-                };
-            }
-            sorted = sortTasksByPriority(listTasks);
-            return sorted[0];
-        }).filter(Boolean);
-        if (!listNextTasks.length) return null;
-        const sortedOrigin = sortTasksByPriority(listNextTasks);
-        return sortedOrigin[0];
-    }).filter(Boolean);
-    let sortedRollup = sortTasksByPriority(rollupTasks);
+    let sortedRollup = buildOriginRollups(tasks)
+        .map((origin) => origin.next_task)
+        .filter(Boolean);
     const sundayCandidates = sortedRollup.filter(
         (task) => task.origin_type === 'sunday' && task.origin_id
     );
@@ -114,6 +233,29 @@ router.get('/tasks', (req, res) => {
         }
     }
     return res.json(sortedRollup);
+});
+
+router.get('/tasks/progress-audit', (req, res) => {
+    const days = Math.max(7, Math.min(365, Number(req.query.days) || 120));
+    const clusterWindowMinutes = Math.max(1, Math.min(60, Number(req.query.cluster_window_minutes) || 5));
+    const minClusterSize = Math.max(2, Math.min(20, Number(req.query.min_cluster_size) || 3));
+    const tasks = listTaskInstances('');
+    return res.json(buildTaskProgressAudit(tasks, {
+        days,
+        cluster_window_minutes: clusterWindowMinutes,
+        min_cluster_size: minClusterSize
+    }));
+});
+
+router.get('/tasks/:id/progress-history', (req, res) => {
+    const { id } = req.params;
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 100));
+    const history = listTaskProgressHistory(id, limit);
+    return res.json({
+        task_instance_id: id,
+        count: history.length,
+        history
+    });
 });
 
 router.post('/tasks', (req, res) => {
@@ -134,47 +276,20 @@ router.post('/tasks', (req, res) => {
         if (!normalizedText) {
             return res.status(400).json({ error: 'Task text is required' });
         }
-        const now = new Date().toISOString();
-        const taskId = `task-${randomUUID()}`;
-        const taskInstanceId = `taskinst-${randomUUID()}`;
         const basePriority = Number.isFinite(Number(priority_base)) ? Number(priority_base) : 50;
         const instanceState = state || 'open';
-
-        db.prepare(`
-            INSERT INTO tasks (id, title, description, status, priority_base, created_at, updated_at)
-            VALUES (?, ?, NULL, 'active', ?, ?, ?)
-        `).run(taskId, normalizedText, basePriority, now, now);
-
-        db.prepare(`
-            INSERT INTO task_instances (
-                id, task_id, state, priority_override, rank, due_at, notes, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-            taskInstanceId,
-            taskId,
-            instanceState,
-            priority_override,
+        const taskInstanceId = createLegacyTaskEngineTask({
+            normalizedText,
+            sourceType: source_type || 'manual',
+            sourceId: source_id || 'manual',
+            sourceEvent: source_event || 'created',
+            priorityBase: basePriority,
+            priorityOverride: priority_override,
+            dueAt: due_at,
             rank,
-            due_at,
-            notes ? String(notes).trim() : null,
-            now,
-            now
-        );
-
-        db.prepare(`
-            INSERT INTO task_origins (
-                id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-            `origin-${taskInstanceId}`,
-            'instance',
-            taskId,
-            taskInstanceId,
-            source_type || 'manual',
-            source_id || 'manual',
-            source_event || 'created',
-            now
-        );
+            instanceState,
+            notes: notes ? String(notes).trim() : null
+        });
 
         const [created] = listTaskInstances('WHERE ti.id = ?', [taskInstanceId]);
         return res.status(201).json(created);
@@ -241,89 +356,42 @@ router.post('/tasks', (req, res) => {
         }
     }
 
-    const now = new Date().toISOString();
     const tType = task_type || (ticket_id ? 'support' : null);
     const basePriority = Number.isFinite(Number(priority_base))
         ? Number(priority_base)
         : getDefaultPriorityBase(tType);
-    const taskId = `taskdef-${randomUUID()}`;
-    const taskInstanceId = `taskinst-${randomUUID()}`;
     const computedState = state || (Number(blocked) ? 'blocked' : 'open');
-
-    db.prepare(`
-        INSERT INTO tasks_new (
-            id, title, description, status, priority_base, task_type, due_mode,
-            default_duration_min, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-        taskId,
-        normalizedText,
-        null,
-        'active',
-        basePriority,
-        tType,
-        'floating',
-        null,
-        now,
-        now
-    );
-
-    db.prepare(`
-        INSERT INTO task_instances (
-            id, task_id, state, due_at, start_at, completed_at, generated_from,
-            generation_key, priority_override, rank, sla_target_at, blocked,
-            list_key, list_title, list_mode, progress_key, progress_steps, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-        taskInstanceId,
-        taskId,
-        computedState,
-        due_at,
-        null,
-        null,
-        ticket_id ? 'ticket' : 'manual',
-        null,
-        priority_override,
-        rank,
-        sla_target_at,
-        Number(blocked) ? 1 : 0,
-        list_key,
-        list_title || list_key,
-        list_mode || 'sequential',
-        progress_key,
-        progress_steps ? JSON.stringify(progress_steps) : null,
-        notes ? String(notes).trim() : null
-    );
-
     const originType = source_type || (ticket_id ? 'ticket' : 'manual');
     const originId = source_id || (ticket_id ? ticket_id : 'manual');
     const originEvent = source_event || 'created';
-    const originIdValue = `origin-${taskInstanceId}`;
-    db.prepare(`
-        INSERT INTO task_origins (
-            id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-        originIdValue,
-        'instance',
-        taskId,
-        taskInstanceId,
+    const taskInstanceId = createModernTaskEngineTask({
+        normalizedText,
+        ticketId: ticket_id,
+        taskType: tType,
+        priorityBase: basePriority,
+        priorityOverride: priority_override,
+        dueAt: due_at,
+        slaTargetAt: sla_target_at,
+        rank,
+        blocked,
+        computedState,
+        listKey: list_key,
+        listTitle: list_title || list_key,
+        listMode: list_mode || 'sequential',
+        progressKey: progress_key,
+        progressSteps: progress_steps ? JSON.stringify(progress_steps) : null,
+        notes: notes ? String(notes).trim() : null,
         originType,
         originId,
-        originEvent,
-        now
-    );
-
-    upsertEntityLink({
-        fromType: 'task_instance',
-        fromId: taskInstanceId,
-        toType: originType,
-        toId: originId,
-        role: 'source',
-        metaJson: JSON.stringify({ origin_event: originEvent })
+        originEvent
     });
 
     const [created] = listTaskInstances('WHERE ti.id = ?', [taskInstanceId]);
+    recordTaskProgressHistory({
+        after: created,
+        source: 'api',
+        actor: 'create-task'
+    });
     res.status(201).json(created);
 });
 
@@ -495,6 +563,12 @@ router.put('/tasks/:id', (req, res) => {
     );
 
     const [updated] = listTaskInstances('WHERE ti.id = ?', [id]);
+    recordTaskProgressHistory({
+        before: existing,
+        after: updated,
+        source: 'api',
+        actor: 'update-task'
+    });
     res.json(updated);
 });
 
@@ -571,7 +645,9 @@ router.post('/tasks/generator/rehydrate', (req, res) => {
 // --- Origins ---
 
 router.get('/task-origins', (req, res) => {
-    const tasks = listTaskInstances('');
+    const includeArchived = String(req.query.include_archived || '').trim() === '1';
+    const includeFuture = String(req.query.include_future || '').trim() === '1';
+    const tasks = filterVisibleTasks(listTaskInstances(''), { includeArchived, includeFuture });
     const rollups = buildOriginRollups(tasks).map((origin) => ({
         ...origin,
         label: origin.next_task?.text || `${origin.origin_type}:${origin.origin_id}`
@@ -1060,3 +1136,4 @@ router.get('/recurring-templates/instances', (req, res) => {
 });
 
 export default router;
+

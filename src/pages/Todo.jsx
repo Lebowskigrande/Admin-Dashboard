@@ -62,6 +62,10 @@ const Todo = () => {
         getTaskProgressMeta,
         getListRepresentativeTask,
         getListProgressDisplay,
+        getListChecklist,
+        getWorkPackageTitle,
+        getWorkPackageSubtitle,
+        getWorkPackageSummary,
         sortTasksForDetails,
         formatTaskTitle,
         handleToggleNested
@@ -121,7 +125,7 @@ const Todo = () => {
             <header className="page-header-controls page-header-bar">
                 <div className="page-header-title">
                     <h1>Tasks</h1>
-                    <p className="page-header-subtitle">Due this week first, then next week and later.</p>
+                    <p className="page-header-subtitle">Checklist-first task cockpit with the current workload, completion shape, and next action in one view.</p>
                 </div>
                 <div className="page-header-actions">
                     <TodoAddForm
@@ -140,7 +144,7 @@ const Todo = () => {
             </header>
             <div className="todo-kpi-strip">
                 <div className="todo-kpi-card">
-                    <span className="todo-kpi-label">Open</span>
+                    <span className="todo-kpi-label">Open Packages</span>
                     <strong className="todo-kpi-value">{dashboardCounts.open}</strong>
                 </div>
                 <div className="todo-kpi-card">
@@ -179,26 +183,24 @@ const Todo = () => {
             <div className="tasks-layout">
                 <div className="tasks-stack">
                     <TodoListCard
-                        title="Task Queue"
+                        title="Work Queue"
                         subtitle={`Week of ${format(weekBuckets.weekStart, 'MMM d')} - ${format(weekBuckets.weekEnd, 'MMM d')}`}
                         rows={filteredRows}
                         tasksLoading={tasksLoading}
                         error={error}
-                        emptyLabel="No tasks in this filter."
-                        countLabel={`${filteredRows.length} tasks`}
+                        emptyLabel="No work packages in this filter."
+                        countLabel={`${filteredRows.length} packages`}
                         renderCountBadge={renderCountBadge}
                         useWrapper
                         selectedOriginKey={selectedOriginKey}
-                        selectedTaskId={selectedTaskId}
                         onSelectRow={(originKey, taskId) => {
                             setSelectedOriginKey(originKey);
                             setSelectedTaskId(taskId);
                         }}
                         formatOriginLabel={formatOriginLabel}
-                        formatOriginSubtitle={formatOriginSubtitle}
-                        getTopLevelTaskTitle={getTopLevelTaskTitle}
-                        getTaskProgressMeta={getTaskProgressMeta}
-                        getTaskNextStepLabel={getTaskNextStepLabel}
+                        getWorkPackageTitle={getWorkPackageTitle}
+                        getWorkPackageSubtitle={getWorkPackageSubtitle}
+                        getWorkPackageSummary={getWorkPackageSummary}
                         getOriginColorClass={getOriginColorClass}
                         getDisplayClass={getDisplayClass}
                         getDisplayLabel={getDisplayLabel}
@@ -230,6 +232,7 @@ const Todo = () => {
                     getDisplayClass={getDisplayClass}
                     getDisplayLabel={getDisplayLabel}
                     getListProgressDisplay={getListProgressDisplay}
+                    getListChecklist={getListChecklist}
                     getTopLevelTaskTitle={getTopLevelTaskTitle}
                     getListRepresentativeTask={getListRepresentativeTask}
                     sortTasksForDetails={sortTasksForDetails}

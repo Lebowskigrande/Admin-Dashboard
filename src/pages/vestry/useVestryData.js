@@ -130,23 +130,20 @@ export const useVestryData = () => {
         };
     }, [previewModal.url]);
 
-    const vestryMeetings = useMemo(() => {
-        const upcoming = [];
-        const today = new Date();
-        for (let offset = 0; offset < 8; offset += 1) {
-            const date = addMonths(today, offset);
-            const meeting = getVestryMeetingDate(date.getFullYear(), date.getMonth());
-            if (meeting >= today || upcoming.length === 0) {
-                upcoming.push(meeting);
-            }
-            if (upcoming.length >= 6) break;
-        }
-        return upcoming;
-    }, []);
-
-    const nextMeeting = vestryMeetings[0] || null;
-    const [selectedMeeting, setSelectedMeeting] = useState(nextMeeting);
     const today = useMemo(() => startOfDay(new Date()), []);
+    const vestryMeetings = useMemo(() => {
+        const meetings = [];
+        for (let offset = -3; offset <= 8; offset += 1) {
+            const date = addMonths(today, offset);
+            meetings.push(getVestryMeetingDate(date.getFullYear(), date.getMonth()));
+        }
+        return meetings.sort((a, b) => a - b);
+    }, [today]);
+
+    const nextMeeting = useMemo(() => (
+        vestryMeetings.find((meeting) => startOfDay(meeting) >= today) || vestryMeetings[vestryMeetings.length - 1] || null
+    ), [today, vestryMeetings]);
+    const [selectedMeeting, setSelectedMeeting] = useState(null);
 
     useEffect(() => {
         setSelectedMeeting((prev) => prev || nextMeeting);

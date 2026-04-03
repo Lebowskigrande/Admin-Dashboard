@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { format, startOfWeek, endOfWeek, addWeeks, isWithinInterval, parseISO } from 'date-fns';
 
 import { API_URL } from '../../services/apiConfig';
+import { getOriginRoute } from '../../config/appRoutes';
 import { getTaskProgressMeta, getTaskNextStepLabel } from '../../utils/taskProgress';
 import {
     PRIORITY_OPTIONS,
@@ -14,9 +15,13 @@ import {
     getListRepresentativeTask,
     getTopLevelTaskTitle,
     getListProgressDisplay,
+    getListChecklist,
     formatTaskTitle,
     formatOriginLabel,
     formatOriginSubtitle,
+    getWorkPackageTitle,
+    getWorkPackageSubtitle,
+    getWorkPackageSummary,
     getOriginColorClass,
     getDueInfo
 } from './todoHelpers';
@@ -87,6 +92,33 @@ export const useTodoData = () => {
     const [nestedExpanded, setNestedExpanded] = useState({});
     const [nestedTasks, setNestedTasks] = useState({});
     const [nestedLoading, setNestedLoading] = useState({});
+
+    const upsertTaskInState = useCallback((nextTask) => {
+        if (!nextTask?.id) return;
+        const nextOriginKey = normalizeOriginKey(nextTask.origin_type, nextTask.origin_id);
+        setTaskList((prev) => {
+            const index = prev.findIndex((task) => task.id === nextTask.id);
+            if (index === -1) return [...prev, nextTask];
+            const next = [...prev];
+            next[index] = nextTask;
+            return next;
+        });
+        setNestedTasks((prev) => Object.fromEntries(
+            Object.entries(prev).map(([key, tasks]) => {
+                if (!Array.isArray(tasks)) return [key, tasks];
+                const index = tasks.findIndex((task) => task.id === nextTask.id);
+                if (index >= 0) {
+                    const next = [...tasks];
+                    next[index] = nextTask;
+                    return [key, next];
+                }
+                if (key === nextOriginKey) {
+                    return [key, [...tasks, nextTask]];
+                }
+                return [key, tasks];
+            })
+        ));
+    }, []);
 
     const loadAllTasks = useCallback(async () => {
         setTasksLoading(true);
@@ -307,23 +339,12 @@ export const useTodoData = () => {
     ), [filteredOriginGroups, showCompleted]);
 
     const topLevelRows = useMemo(() => {
-        const rows = [];
-        visibleOriginGroups.forEach((group) => {
-            group.lists.forEach((list) => {
-                const task = getListRepresentativeTask(list);
-                if (!task) return;
-                const progressMeta = getTaskProgressMeta(task);
-                const isComplete = progressMeta?.isComplete || task.completed;
-                rows.push({
-                    originKey: group.key,
-                    origin: group,
-                    list,
-                    task,
-                    isComplete
-                });
-            });
-        });
-        return rows;
+        return visibleOriginGroups.map((group) => ({
+            originKey: group.key,
+            origin: group,
+            task: group.nextTask || group.sample || null,
+            isComplete: group.openCount === 0
+        }));
     }, [visibleOriginGroups]);
 
     const visibleTaskRows = useMemo(() => (
@@ -471,9 +492,11 @@ export const useTodoData = () => {
             });
             if (!response.ok) throw new Error('Failed to create task');
             const created = await response.json();
+            upsertTaskInState(created);
             setNewTask('');
             setNewTaskDuePreset('');
-            await loadAllTasks();
+            setSelectedOriginKey(normalizeOriginKey(created.origin_type, created.origin_id));
+            setSelectedTaskId(created.id || '');
             if (openDetails) {
                 openTaskModal(created);
             }
@@ -507,8 +530,9 @@ export const useTodoData = () => {
                 body: JSON.stringify(payload)
             });
             if (!response.ok) throw new Error('Failed to update task');
+            const updated = await response.json();
+            upsertTaskInState(updated);
             setTaskModalOpen(false);
-            await loadAllTasks();
         } catch (err) {
             console.error('Failed to update task:', err);
             setError('Unable to update task. Please try again.');
@@ -524,7 +548,8 @@ export const useTodoData = () => {
                 body: JSON.stringify({ notes: taskNotesDraft || '' })
             });
             if (!response.ok) throw new Error('Failed to update task notes');
-            await loadAllTasks();
+            const updated = await response.json();
+            upsertTaskInState(updated);
         } catch (err) {
             console.error('Failed to update task notes:', err);
             setError('Unable to update task notes. Please try again.');
@@ -540,7 +565,8 @@ export const useTodoData = () => {
                 body: JSON.stringify({ text: task.text, progress_key: nextKey })
             });
             if (!response.ok) throw new Error('Failed to update task');
-            await loadAllTasks();
+            const updated = await response.json();
+            upsertTaskInState(updated);
         } catch (err) {
             console.error('Failed to update task progress:', err);
             setError('Unable to update task. Please try again.');
@@ -561,7 +587,8 @@ export const useTodoData = () => {
                 body: JSON.stringify({ text: task.text, completed: !task.completed })
             });
             if (!response.ok) throw new Error('Failed to update task');
-            await loadAllTasks();
+            const updated = await response.json();
+            upsertTaskInState(updated);
         } catch (err) {
             console.error('Failed to update task:', err);
             setError('Unable to update task. Please try again.');
@@ -570,11 +597,8 @@ export const useTodoData = () => {
 
     const selectedTask = useMemo(() => {
         if (!selectedOrigin || !selectedTaskId) return null;
-        const representativeTasks = selectedOrigin.lists
-            .map((list) => getListRepresentativeTask(list))
-            .filter(Boolean);
-        if (!representativeTasks.length) return null;
-        return representativeTasks.find((task) => task.id === selectedTaskId) || null;
+        const allTasks = selectedOrigin.lists.flatMap((list) => list.tasks || []);
+        return allTasks.find((task) => task.id === selectedTaskId) || null;
     }, [selectedOrigin, selectedTaskId]);
 
     useEffect(() => {
@@ -583,27 +607,16 @@ export const useTodoData = () => {
 
     const selectedTaskKey = selectedTask?.id || selectedTaskId || '';
 
-    const selectedOriginSubtitle = selectedOrigin?.sample ? formatOriginSubtitle(selectedOrigin.sample) : '';
+    const selectedOriginSubtitle = selectedOrigin?.sample ? getWorkPackageSubtitle(selectedOrigin) : '';
     const selectedOriginTitle = selectedOrigin?.sample
-        ? formatOriginLabel(selectedOrigin.sample)
+        ? getWorkPackageTitle(selectedOrigin)
         : 'Task Origin';
 
-    const getOriginLink = useCallback((origin) => {
-        if (!origin) return '';
-        if (origin.origin_type === 'sunday') {
-            const dateParam = origin.origin_id ? `date=${encodeURIComponent(origin.origin_id)}` : '';
-            const extra = selectedTask?.id ? `&task=${encodeURIComponent(selectedTask.id)}` : '';
-            return `/sunday${dateParam ? `?${dateParam}${extra}` : ''}`;
-        }
-        if (origin.origin_type === 'vestry') return '/vestry';
-        if (origin.origin_type === 'event') return '/calendar';
-        if (origin.origin_type === 'ticket') {
-            const ticketParam = origin.origin_id ? `ticket=${encodeURIComponent(origin.origin_id)}` : '';
-            return `/buildings${ticketParam ? `?${ticketParam}` : ''}`;
-        }
-        if (origin.origin_type === 'operations') return '/tasks';
-        return '';
-    }, [selectedTask?.id]);
+    const getOriginLink = useCallback((origin) => getOriginRoute({
+        originType: origin?.origin_type,
+        originId: origin?.origin_id,
+        taskId: selectedTask?.id
+    }), [selectedTask?.id]);
 
     const parentOriginKey = originLinks.parent
         ? normalizeOriginKey(originLinks.parent.origin_type, originLinks.parent.origin_id)
@@ -670,8 +683,13 @@ export const useTodoData = () => {
         getTaskProgressMeta,
         getListRepresentativeTask,
         getListProgressDisplay,
+        getListChecklist,
+        getWorkPackageTitle,
+        getWorkPackageSubtitle,
+        getWorkPackageSummary,
         sortTasksForDetails,
         formatTaskTitle,
         handleToggleNested
     };
 };
+

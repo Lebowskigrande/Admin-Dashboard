@@ -22,7 +22,7 @@ const Music = () => {
             <header className="page-header page-header-bar">
                 <div className="page-header-title">
                     <h1>Music Library</h1>
-                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                    <p className="page-header-subtitle">Search service music, reference files, and the reusable materials that support worship planning.</p>
                 </div>
                 <div className="page-header-actions">
                     <div className="search-bar">

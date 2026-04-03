@@ -93,7 +93,7 @@ const Buildings = () => {
             <header className="buildings-header page-header-bar">
                 <div className="page-header-title">
                     <h1>Buildings & Grounds</h1>
-                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                    <p className="page-header-subtitle">Facilities tickets, campus map context, vendors, and architectural records in one workspace.</p>
                 </div>
             </header>
 

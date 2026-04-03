@@ -8,6 +8,7 @@ import {
     getPriorityTier,
     getDefaultPriorityBase
 } from '../helpers/task-utils.js';
+import { recordTaskProgressHistory } from '../helpers/task-progress-history.js';
 
 const ensureTaskInstanceNotes = () => {
     const table = db.prepare(`
@@ -82,7 +83,214 @@ const listRecurringTemplates = (originType, originId = null) => {
 };
 
 const normalizeListKey = (value) => String(value || '').trim().toLowerCase();
-const UNUSED_isSpecialEventsList = (listKey) => normalizeListKey(listKey) === 'special-events';
+const getEventTypeIdBySlug = (slug) => {
+    if (!tableExists('event_types')) return null;
+    const row = db.prepare('SELECT id FROM event_types WHERE slug = ? LIMIT 1').get(slug);
+    return Number.isFinite(Number(row?.id)) ? Number(row.id) : null;
+};
+
+const getEventTypeIdsBySlugs = (slugs = []) => (
+    slugs
+        .map((slug) => ({ slug, id: getEventTypeIdBySlug(slug) }))
+        .filter((entry) => Number.isFinite(entry.id))
+);
+
+const cleanupSundaySpecialEventPlaceholders = () => {
+    if (tableExists('recurring_task_templates')) {
+        db.prepare(`
+            DELETE FROM recurring_task_templates
+            WHERE origin_type = 'sunday' AND list_key = 'special-events'
+        `).run();
+    }
+    if (!tableExists('task_instances') || !tableExists('task_origins')) return;
+    const rows = db.prepare(`
+        SELECT ti.id
+        FROM task_instances ti
+        JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+        WHERE src.origin_type = 'sunday'
+          AND ti.list_key = 'special-events'
+    `).all();
+    rows.forEach((row) => deleteTaskInstance(row.id));
+};
+
+const upsertRecurringTemplateDefinition = (definition) => {
+    if (!tableExists('recurring_task_templates')) return;
+    const now = new Date().toISOString();
+    const existing = db.prepare(`
+        SELECT id
+        FROM recurring_task_templates
+        WHERE id = ?
+           OR (
+                origin_type = ?
+                AND COALESCE(origin_id, '') = COALESCE(?, '')
+                AND COALESCE(list_key, '') = COALESCE(?, '')
+                AND step_key = ?
+           )
+        LIMIT 1
+    `).get(definition.id, definition.originType, definition.originId, definition.listKey, definition.stepKey);
+    if (existing?.id) {
+        db.prepare(`
+            UPDATE recurring_task_templates
+            SET origin_type = ?,
+                origin_id = ?,
+                list_key = ?,
+                list_title = ?,
+                list_mode = ?,
+                step_key = ?,
+                title = ?,
+                sort_order = ?,
+                due_offset_days = ?,
+                priority_base = ?,
+                active = 1,
+                updated_at = ?
+            WHERE id = ?
+        `).run(
+            definition.originType,
+            definition.originId,
+            definition.listKey,
+            definition.listTitle,
+            definition.listMode,
+            definition.stepKey,
+            definition.title,
+            definition.sortOrder,
+            definition.dueOffsetDays,
+            definition.priorityBase,
+            now,
+            definition.id
+        );
+        return;
+    }
+    db.prepare(`
+        INSERT INTO recurring_task_templates (
+            id, origin_type, origin_id, list_key, list_title, list_mode,
+            step_key, title, sort_order, due_offset_days, priority_base,
+            active, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `).run(
+        definition.id,
+        definition.originType,
+        definition.originId,
+        definition.listKey,
+        definition.listTitle,
+        definition.listMode,
+        definition.stepKey,
+        definition.title,
+        definition.sortOrder,
+        definition.dueOffsetDays,
+        definition.priorityBase,
+        now,
+        now
+    );
+};
+
+const ensureDefaultWorshipServiceTemplates = () => {
+    const worshipTypeIds = getEventTypeIdsBySlugs([
+        'rite-i-service',
+        'rite-ii-service',
+        'eucharist-service',
+        'special-service',
+        'weekly-service'
+    ]);
+    if (!worshipTypeIds.length) return;
+    const definitions = [
+        {
+            id: 'tmpl-event-worship-bulletin-draft',
+            listKey: 'bulletin',
+            listTitle: 'Bulletin',
+            listMode: 'progressive',
+            stepKey: 'bulletin-draft',
+            title: 'Draft bulletin',
+            sortOrder: 10,
+            dueOffsetDays: -5,
+            priorityBase: 70
+        },
+        {
+            id: 'tmpl-event-worship-bulletin-review',
+            listKey: 'bulletin',
+            listTitle: 'Bulletin',
+            listMode: 'progressive',
+            stepKey: 'bulletin-review',
+            title: 'Review and finalize bulletin',
+            sortOrder: 20,
+            dueOffsetDays: -2,
+            priorityBase: 70
+        },
+        {
+            id: 'tmpl-event-worship-bulletin-print',
+            listKey: 'bulletin',
+            listTitle: 'Bulletin',
+            listMode: 'progressive',
+            stepKey: 'bulletin-print',
+            title: 'Print bulletin',
+            sortOrder: 30,
+            dueOffsetDays: -1,
+            priorityBase: 70
+        },
+        {
+            id: 'tmpl-event-worship-roster-plan',
+            listKey: 'roster',
+            listTitle: 'Liturgical Roster',
+            listMode: 'progressive',
+            stepKey: 'roster-plan',
+            title: 'Build liturgical roster',
+            sortOrder: 10,
+            dueOffsetDays: -7,
+            priorityBase: 68
+        },
+        {
+            id: 'tmpl-event-worship-roster-confirm',
+            listKey: 'roster',
+            listTitle: 'Liturgical Roster',
+            listMode: 'progressive',
+            stepKey: 'roster-confirm',
+            title: 'Confirm liturgical roster',
+            sortOrder: 20,
+            dueOffsetDays: -4,
+            priorityBase: 68
+        },
+        {
+            id: 'tmpl-event-worship-music-plan',
+            listKey: 'music',
+            listTitle: 'Music',
+            listMode: 'progressive',
+            stepKey: 'music-plan',
+            title: 'Confirm regular musicians and guests',
+            sortOrder: 10,
+            dueOffsetDays: -7,
+            priorityBase: 66
+        },
+        {
+            id: 'tmpl-event-worship-music-final',
+            listKey: 'music',
+            listTitle: 'Music',
+            listMode: 'progressive',
+            stepKey: 'music-finalize',
+            title: 'Finalize music details',
+            sortOrder: 20,
+            dueOffsetDays: -3,
+            priorityBase: 66
+        },
+        {
+            id: 'tmpl-event-worship-logistics',
+            listKey: 'service',
+            listTitle: 'Service Ready',
+            listMode: 'parallel',
+            stepKey: 'service-ready',
+            title: 'Confirm location, time, and service setup',
+            sortOrder: 10,
+            dueOffsetDays: -1,
+            priorityBase: 65
+        }
+    ];
+    worshipTypeIds.forEach(({ slug, id }) => {
+        definitions.forEach((definition) => upsertRecurringTemplateDefinition({
+            ...definition,
+            id: `${definition.id}-${slug}`,
+            originType: 'event',
+            originId: String(id)
+        }));
+    });
+};
 let taskEngineRuntime = {
     lastSeedAt: null,
     lastSeedSummary: null,
@@ -154,23 +362,24 @@ const normalizeOperationsOrigins = () => {
 };
 
 const collapseOperationsRecurringTasks = () => {
-    if (!tableExists('recurring_task_templates')) return;
+    if (!tableExists('recurring_task_templates')) return 0;
 
-    // Consolidate 'operations' templates
-    // This logic mimics the original simplified collapsing
-    // Actual implementation depends on specific business rules found in original file
-    // For now, assuming standard template cleanup
     const orphaned = db.prepare(`
-        SELECT id FROM recurring_task_templates 
-        WHERE origin_type = 'operations' 
-        AND active = 0 
-        AND updated_at < date('now', '-30 days')
+        SELECT id FROM recurring_task_templates
+        WHERE origin_type = 'operations'
+          AND active = 0
+          AND updated_at < date('now', '-30 days')
     `).all();
 
-    if (orphaned.length) {
-        const ids = orphaned.map(o => o.id).join(',');
-        db.prepare(`DELETE FROM recurring_task_templates WHERE id IN (${ids})`).run();
-    }
+    if (!orphaned.length) return 0;
+
+    const placeholders = orphaned.map(() => '?').join(', ');
+    const result = db.prepare(`
+        DELETE FROM recurring_task_templates
+        WHERE id IN (${placeholders})
+    `).run(...orphaned.map((row) => row.id));
+
+    return Number(result.changes || 0);
 };
 
 const addDaysIso = (dateKey, offsetDays) => {
@@ -222,6 +431,73 @@ const getNextWeekdayDate = (baseDate, weekday) => {
 const getLastDayOfMonthKey = (year, monthIndex) => {
     const lastDay = new Date(year, monthIndex + 1, 0);
     return lastDay.toISOString().slice(0, 10);
+};
+
+const getNthWeekdayOfMonth = (year, monthIndex, weekday, nth) => {
+    const first = new Date(year, monthIndex, 1);
+    const offset = (weekday - first.getDay() + 7) % 7;
+    return new Date(year, monthIndex, 1 + offset + ((nth - 1) * 7));
+};
+
+const getVestryMeetingDate = (year, monthIndex) => {
+    const nth = (monthIndex === 10 || monthIndex === 11) ? 3 : 4;
+    return getNthWeekdayOfMonth(year, monthIndex, 4, nth);
+};
+
+const getVestryTaskSchedule = ({ year, monthIndex, listKey, dueOffsetDays = null } = {}) => {
+    const meetingDate = getVestryMeetingDate(year, monthIndex);
+    const meetingKey = toDateKey(meetingDate);
+    const mondayBeforeKey = addDaysIso(meetingKey, -3);
+    const mondayAfterKey = addDaysIso(meetingKey, 4);
+    const normalizedListKey = normalizeListKey(listKey);
+    const startAt = normalizedListKey === 'postvestry' ? mondayAfterKey : mondayBeforeKey;
+
+    if (dueOffsetDays != null && String(dueOffsetDays).trim() !== '' && Number.isFinite(Number(dueOffsetDays))) {
+        return {
+            meetingKey,
+            startAt,
+            dueAt: addDaysIso(meetingKey, Number(dueOffsetDays))
+        };
+    }
+
+    if (normalizedListKey === 'postvestry') {
+        return {
+            meetingKey,
+            startAt: mondayAfterKey,
+            dueAt: addDaysIso(meetingKey, 7)
+        };
+    }
+
+    if (normalizedListKey === 'email' || normalizedListKey === 'print') {
+        return {
+            meetingKey,
+            startAt: mondayBeforeKey,
+            dueAt: addDaysIso(meetingKey, -1)
+        };
+    }
+
+    return {
+        meetingKey,
+        startAt: mondayBeforeKey,
+        dueAt: meetingKey
+    };
+};
+
+const getEventTaskSchedule = ({ dateKey, dueOffsets = [] } = {}) => {
+    const validOffsets = (Array.isArray(dueOffsets) ? dueOffsets : [dueOffsets])
+        .filter((value) => value != null && String(value).trim() !== '')
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value));
+    if (!dateKey || !validOffsets.length) {
+        return {
+            startAt: dateKey || null,
+            dueAt: dateKey || null
+        };
+    }
+    return {
+        startAt: addDaysIso(dateKey, Math.min(...validOffsets)),
+        dueAt: addDaysIso(dateKey, Math.max(...validOffsets))
+    };
 };
 
 const parseMonthdays = (value, fallback = []) => {
@@ -291,6 +567,7 @@ export const createTaskInstance = (payload) => {
         taskType = null,
         priorityBase = 50,
         dueAt = null,
+        startAt = null,
         slaTargetAt = null,
         originType,
         originId,
@@ -365,7 +642,7 @@ export const createTaskInstance = (payload) => {
             list_key, list_title, list_mode, progress_key, progress_steps
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-        taskInstanceId, taskId, 'open', dueAt, null, null, 'seed', generationKey,
+        taskInstanceId, taskId, 'open', dueAt, startAt, null, 'seed', generationKey,
         null, null, slaTargetAt, 0, listKey, listTitle, listMode || 'sequential',
         progressKey, progressSteps ? JSON.stringify(progressSteps) : null
     );
@@ -385,7 +662,82 @@ export const createTaskInstance = (payload) => {
         metaJson: JSON.stringify({ origin_event: originEvent })
     });
 
+    recordTaskProgressHistory({
+        after: {
+            id: taskInstanceId,
+            task_id: taskId,
+            title,
+            state: 'open',
+            blocked: 0,
+            completed_at: null,
+            progress_key: progressKey || '',
+            progress_steps: Array.isArray(progressSteps) ? progressSteps : [],
+            list_key: listKey,
+            list_title: listTitle,
+            list_mode: listMode || 'sequential',
+            origin_type: originType,
+            origin_id: originId,
+            origin_event: originEvent
+        },
+        source: 'task-engine',
+        actor: 'seed'
+    });
+
     return taskInstanceId;
+};
+
+const syncSeededTaskInstance = ({
+    generationKey,
+    title,
+    taskType = null,
+    priorityBase = 50,
+    dueAt = null,
+    startAt = null,
+    slaTargetAt = null,
+    listKey = null,
+    listTitle = null,
+    listMode = 'sequential',
+    progressSteps = null
+} = {}) => {
+    if (!generationKey || !tableHasColumn('task_instances', 'generation_key')) return null;
+    const existing = db.prepare(`
+        SELECT ti.id, ti.task_id, ti.completed_at
+        FROM task_instances ti
+        WHERE ti.generation_key = ?
+        LIMIT 1
+    `).get(generationKey);
+    if (!existing) return null;
+
+    const now = new Date().toISOString();
+    db.prepare(`
+        UPDATE tasks_new
+        SET title = ?, priority_base = ?, task_type = ?, updated_at = ?
+        WHERE id = ?
+    `).run(title, priorityBase, taskType, now, existing.task_id);
+
+    db.prepare(`
+        UPDATE task_instances
+        SET due_at = ?,
+            start_at = ?,
+            sla_target_at = ?,
+            list_key = ?,
+            list_title = ?,
+            list_mode = ?,
+            progress_steps = ?,
+            archived_at = CASE WHEN completed_at IS NULL THEN NULL ELSE archived_at END
+        WHERE id = ?
+    `).run(
+        dueAt,
+        startAt,
+        slaTargetAt,
+        listKey,
+        listTitle,
+        listMode || 'sequential',
+        progressSteps ? JSON.stringify(progressSteps) : null,
+        existing.id
+    );
+
+    return existing.id;
 };
 
 export const seedSundayTasksFromTemplates = () => {
@@ -486,7 +838,6 @@ export const seedVestryTasksFromTemplates = () => {
     const templates = listRecurringTemplates('vestry', null);
     if (!templates.length) return;
     const now = new Date();
-    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const grouped = templates.reduce((acc, template) => {
         const listKey = template.list_key || 'list';
         const listMode = template.list_mode || 'sequential';
@@ -495,51 +846,83 @@ export const seedVestryTasksFromTemplates = () => {
         acc[groupKey].push(template);
         return acc;
     }, {});
-    Object.values(grouped).forEach((groupTemplates) => {
-        const listKey = groupTemplates[0]?.list_key || null;
-        const listTitle = groupTemplates[0]?.list_title || null;
-        const listMode = groupTemplates[0]?.list_mode || 'sequential';
-        if (listMode === 'progressive') {
-            const steps = groupTemplates.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-                .map((template) => ({
-                    key: template.step_key,
+    const targetMonths = [0, 1].map((offset) => {
+        const monthDate = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+        return {
+            year: monthDate.getFullYear(),
+            monthIndex: monthDate.getMonth(),
+            monthKey: `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`
+        };
+    });
+
+    targetMonths.forEach(({ year, monthIndex, monthKey }) => {
+        Object.values(grouped).forEach((groupTemplates) => {
+            const listKey = groupTemplates[0]?.list_key || null;
+            const listTitle = groupTemplates[0]?.list_title || null;
+            const listMode = groupTemplates[0]?.list_mode || 'sequential';
+            if (listMode === 'progressive') {
+                const steps = groupTemplates.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                    .map((template) => ({
+                        key: template.step_key,
+                        title: template.title,
+                        sort_order: template.sort_order ?? 0,
+                        due_offset_days: template.due_offset_days ?? null
+                    }));
+                const explicitOffsets = steps
+                    .filter((step) => step.due_offset_days != null && String(step.due_offset_days).trim() !== '')
+                    .map((step) => Number(step.due_offset_days))
+                    .filter((value) => Number.isFinite(value));
+                const schedule = getVestryTaskSchedule({
+                    year,
+                    monthIndex,
+                    listKey,
+                    dueOffsetDays: explicitOffsets.length ? Math.max(...explicitOffsets) : null
+                });
+                const generationKey = `vestry:${monthKey}:${listKey || 'list'}:progressive`;
+                const payload = {
+                    title: listTitle || listKey || 'Task',
+                    taskType: 'vestry',
+                    priorityBase: Number.isFinite(Number(groupTemplates[0]?.priority_base)) ? Number(groupTemplates[0].priority_base) : getDefaultPriorityBase('vestry'),
+                    dueAt: schedule.dueAt,
+                    startAt: schedule.startAt,
+                    originType: 'vestry',
+                    originId: monthKey,
+                    originEvent: listKey || 'progressive',
+                    generationKey,
+                    listKey,
+                    listTitle,
+                    listMode: 'progressive',
+                    progressSteps: steps
+                };
+                if (!syncSeededTaskInstance(payload)) {
+                    createTaskInstance(payload);
+                }
+                return;
+            }
+            groupTemplates.forEach((template) => {
+                const schedule = getVestryTaskSchedule({
+                    year,
+                    monthIndex,
+                    listKey: template.list_key || listKey,
+                    dueOffsetDays: template.due_offset_days
+                });
+                const payload = {
                     title: template.title,
-                    sort_order: template.sort_order ?? 0,
-                    due_offset_days: template.due_offset_days ?? null
-                }));
-            const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
-            const dueAt = addDaysIso(`${monthKey}-01`, maxOffset);
-            createTaskInstance({
-                title: listTitle || listKey || 'Task',
-                taskType: 'vestry',
-                priorityBase: Number.isFinite(Number(groupTemplates[0]?.priority_base)) ? Number(groupTemplates[0].priority_base) : getDefaultPriorityBase('vestry'),
-                dueAt,
-                originType: 'vestry',
-                originId: monthKey,
-                originEvent: listKey || 'progressive',
-                generationKey: `vestry:${monthKey}:${listKey || 'list'}:progressive`,
-                listKey,
-                listTitle,
-                listMode: 'progressive',
-                progressSteps: steps
-            });
-            return;
-        }
-        groupTemplates.forEach((template) => {
-            const dueOffset = Number.isFinite(Number(template.due_offset_days)) ? Number(template.due_offset_days) : null;
-            const dueAt = dueOffset != null ? addDaysIso(`${monthKey}-01`, dueOffset) : getLastDayOfMonthKey(now.getFullYear(), now.getMonth());
-            createTaskInstance({
-                title: template.title,
-                taskType: 'vestry',
-                priorityBase: Number.isFinite(Number(template.priority_base)) ? Number(template.priority_base) : getDefaultPriorityBase('vestry'),
-                dueAt,
-                originType: 'vestry',
-                originId: monthKey,
-                originEvent: template.step_key,
-                generationKey: `vestry:${monthKey}:${template.list_key || 'list'}:${template.step_key}`,
-                listKey: template.list_key || null,
-                listTitle: template.list_title || null,
-                listMode: template.list_mode || 'sequential'
+                    taskType: 'vestry',
+                    priorityBase: Number.isFinite(Number(template.priority_base)) ? Number(template.priority_base) : getDefaultPriorityBase('vestry'),
+                    dueAt: schedule.dueAt,
+                    startAt: schedule.startAt,
+                    originType: 'vestry',
+                    originId: monthKey,
+                    originEvent: template.step_key,
+                    generationKey: `vestry:${monthKey}:${template.list_key || 'list'}:${template.step_key}`,
+                    listKey: template.list_key || null,
+                    listTitle: template.list_title || null,
+                    listMode: template.list_mode || 'sequential'
+                };
+                if (!syncSeededTaskInstance(payload)) {
+                    createTaskInstance(payload);
+                }
             });
         });
     });
@@ -877,6 +1260,15 @@ const applyOperationsSeedPlan = (plan = { items: [] }) => {
 
             if (item.action === 'update' || item.action === 'reactivate') {
                 const firstStepKey = Array.isArray(item.progressSteps) ? (item.progressSteps[0]?.key || null) : null;
+                const existingRow = db.prepare(`
+                    SELECT ti.id, ti.task_id, ti.state, ti.blocked, ti.completed_at, ti.progress_key, ti.progress_steps,
+                           ti.list_key, ti.list_title, ti.list_mode, t.title,
+                           src.origin_type, src.origin_id, src.origin_event
+                    FROM task_instances ti
+                    JOIN tasks_new t ON t.id = ti.task_id
+                    LEFT JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+                    WHERE ti.id = ?
+                `).get(item.existingId);
                 db.prepare(`
                     UPDATE task_instances
                     SET due_at = ?,
@@ -923,6 +1315,30 @@ const applyOperationsSeedPlan = (plan = { items: [] }) => {
                     new Date().toISOString(),
                     item.existingTaskId
                 );
+                recordTaskProgressHistory({
+                    before: existingRow,
+                    after: {
+                        ...existingRow,
+                        title: item.title,
+                        state: item.action === 'reactivate' ? 'open' : existingRow?.state,
+                        blocked: item.action === 'reactivate' ? 0 : existingRow?.blocked,
+                        completed_at: item.action === 'reactivate' ? null : existingRow?.completed_at,
+                        progress_key: item.action === 'reactivate'
+                            && String(item.listMode || '').toLowerCase() === 'progressive'
+                            && firstStepKey
+                            ? firstStepKey
+                            : existingRow?.progress_key,
+                        progress_steps: Array.isArray(item.progressSteps) ? item.progressSteps : [],
+                        list_key: item.listKey,
+                        list_title: item.listTitle || item.title || item.listKey || null,
+                        list_mode: item.listMode || 'sequential',
+                        origin_type: existingRow?.origin_type || 'operations',
+                        origin_id: existingRow?.origin_id || item.originId,
+                        origin_event: existingRow?.origin_event || item.originEvent
+                    },
+                    source: 'task-engine',
+                    actor: item.action
+                });
                 counters[item.action] += 1;
                 return;
             }
@@ -975,13 +1391,16 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
                     sort_order: template.sort_order ?? 0,
                     due_offset_days: template.due_offset_days ?? null
                 }));
-            const maxOffset = Math.max(...steps.map((step) => Number.isFinite(Number(step.due_offset_days)) ? Number(step.due_offset_days) : 0));
-            const dueAt = addDaysIso(dateKey, maxOffset);
-            createTaskInstance({
+            const schedule = getEventTaskSchedule({
+                dateKey,
+                dueOffsets: steps.map((step) => step.due_offset_days)
+            });
+            const payload = {
                 title: listTitle || listKey || 'Task',
                 taskType: 'event',
                 priorityBase: Number.isFinite(Number(groupTemplates[0]?.priority_base)) ? Number(groupTemplates[0].priority_base) : getDefaultPriorityBase('event'),
-                dueAt,
+                dueAt: schedule.dueAt,
+                startAt: schedule.startAt,
                 originType: 'event',
                 originId: occurrenceId,
                 originEvent: listKey || 'progressive',
@@ -990,17 +1409,23 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
                 listTitle,
                 listMode: 'progressive',
                 progressSteps: steps
-            });
+            };
+            if (!syncSeededTaskInstance(payload)) {
+                createTaskInstance(payload);
+            }
             return;
         }
         groupTemplates.forEach((template) => {
-            const dueOffset = Number.isFinite(Number(template.due_offset_days)) ? Number(template.due_offset_days) : null;
-            const dueAt = dueOffset != null ? addDaysIso(dateKey, dueOffset) : dateKey;
-            createTaskInstance({
+            const schedule = getEventTaskSchedule({
+                dateKey,
+                dueOffsets: [template.due_offset_days]
+            });
+            const payload = {
                 title: template.title,
                 taskType: 'event',
                 priorityBase: Number.isFinite(Number(template.priority_base)) ? Number(template.priority_base) : getDefaultPriorityBase('event'),
-                dueAt,
+                dueAt: schedule.dueAt,
+                startAt: schedule.startAt,
                 originType: 'event',
                 originId: occurrenceId,
                 originEvent: template.step_key,
@@ -1008,12 +1433,15 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
                 listKey: template.list_key || null,
                 listTitle: template.list_title || null,
                 listMode: template.list_mode || 'sequential'
-            });
+            };
+            if (!syncSeededTaskInstance(payload)) {
+                createTaskInstance(payload);
+            }
         });
     });
 };
 
-export const seedEventTasksFromTemplates = (daysAhead = 120) => {
+export const seedEventTasksFromTemplates = (daysAhead = 400) => {
     if (!tableExists('event_occurrences') || !tableExists('events')) return;
     const todayKey = new Date().toISOString().slice(0, 10);
     const endKey = addDaysIso(todayKey, daysAhead);
@@ -1049,9 +1477,68 @@ export const deleteTaskInstance = (taskInstanceId) => {
     return true;
 };
 
+const cleanupDuplicateEventServiceReadyTasks = () => {
+    if (!tableExists('task_instances') || !tableExists('task_origins')) return 0;
+    const rows = db.prepare(`
+        SELECT legacy.task_instance_id AS task_instance_id
+        FROM view_task_source legacy
+        JOIN view_task_source canonical
+          ON canonical.origin_type = 'event'
+         AND canonical.origin_id = legacy.origin_id
+         AND canonical.origin_event = 'service-ready'
+        WHERE legacy.origin_type = 'event'
+          AND legacy.origin_event = 'ready'
+    `).all();
+    rows.forEach((row) => deleteTaskInstance(row.task_instance_id));
+    return rows.length;
+};
+
+const getListRollupCandidate = (listTasks = []) => {
+    if (!Array.isArray(listTasks) || !listTasks.length) return null;
+    const listMode = listTasks[0]?.list_mode || 'sequential';
+    const hasSequence = listMode === 'sequential'
+        || listTasks.some((task) => task.rank != null || task.step_order != null);
+    if (!hasSequence) {
+        return sortTasksByPriority(listTasks)[0] || null;
+    }
+
+    const sorted = [...listTasks].sort((a, b) => {
+        const rankA = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
+        const rankB = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
+        if (rankA !== rankB) return rankA - rankB;
+        const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : a.step_order;
+        const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : b.step_order;
+        if (orderA !== orderB) return orderA - orderB;
+        const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
+        const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+        if (dueA !== dueB) return dueA - dueB;
+        return b.priority_effective - a.priority_effective;
+    });
+    const chainMax = Math.max(...listTasks.map((task) => task.priority_effective ?? 0));
+    return {
+        ...sorted[0],
+        priority_effective: chainMax,
+        priority_tier: getPriorityTier(chainMax)
+    };
+};
+
+const getOriginNextTask = (openTasks = []) => {
+    if (!Array.isArray(openTasks) || !openTasks.length) return null;
+    const listGroups = openTasks.reduce((acc, task) => {
+        const listKey = task.list_key || 'default';
+        if (!acc[listKey]) acc[listKey] = [];
+        acc[listKey].push(task);
+        return acc;
+    }, {});
+    const listCandidates = Object.values(listGroups)
+        .map((listTasks) => getListRollupCandidate(listTasks))
+        .filter(Boolean);
+    if (!listCandidates.length) return null;
+    return sortTasksByPriority(listCandidates)[0] || null;
+};
+
 export const listTaskInstances = (whereClause = '', params = []) => {
     if (tableExists('tasks_new') && tableExists('task_instances')) {
-        applyTaskArchiving();
         const hasTemplates = tableExists('recurring_task_templates');
         const rows = db.prepare(`
             SELECT
@@ -1117,6 +1604,14 @@ export const listTaskInstances = (whereClause = '', params = []) => {
     return [];
 };
 
+export const runTaskMaintenance = () => {
+    ensureTaskInstanceNotes();
+    const archivedCount = applyTaskArchiving() || 0;
+    return {
+        archivedCount,
+        archivedAt: taskEngineRuntime.lastArchiveSweepAt
+    };
+};
 export const buildOriginRollups = (tasks) => {
     const grouped = tasks.reduce((acc, task) => {
         if (task.archived_at) return acc;
@@ -1139,34 +1634,7 @@ export const buildOriginRollups = (tasks) => {
         const total = group.tasks.length;
         const openTasks = group.tasks.filter((task) => !task.completed);
         const completedCount = total - openTasks.length;
-        let nextTask = null;
-        if (openTasks.length) {
-            const hasSequence = openTasks.some((task) => task.rank != null || task.step_order != null);
-            let sorted;
-            if (hasSequence) {
-                sorted = [...openTasks].sort((a, b) => {
-                    const rankA = a.rank == null ? Number.POSITIVE_INFINITY : a.rank;
-                    const rankB = b.rank == null ? Number.POSITIVE_INFINITY : b.rank;
-                    if (rankA !== rankB) return rankA - rankB;
-                    const orderA = a.step_order == null ? Number.POSITIVE_INFINITY : a.step_order;
-                    const orderB = b.step_order == null ? Number.POSITIVE_INFINITY : b.step_order;
-                    if (orderA !== orderB) return orderA - orderB;
-                    const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-                    const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
-                    if (dueA !== dueB) return dueA - dueB;
-                    return b.priority_effective - a.priority_effective;
-                });
-                const chainMax = Math.max(...openTasks.map((task) => task.priority_effective ?? 0));
-                nextTask = {
-                    ...sorted[0],
-                    priority_effective: chainMax,
-                    priority_tier: getPriorityTier(chainMax)
-                };
-            } else {
-                sorted = sortTasksByPriority(openTasks);
-                nextTask = sorted[0];
-            }
-        }
+        const nextTask = getOriginNextTask(openTasks);
         return {
             key: group.key,
             origin_type: group.origin_type,
@@ -1209,6 +1677,9 @@ export const seedTaskEngine = () => {
     normalizeOperationsOrigins();
     collapseOperationsRecurringTasks();
     ensureProgressiveTemplateModes();
+    cleanupSundaySpecialEventPlaceholders();
+    ensureDefaultWorshipServiceTemplates();
+    cleanupDuplicateEventServiceReadyTasks();
 
     seedSundayTasksFromTemplates();
     seedVestryTasksFromTemplates();
@@ -1273,183 +1744,3 @@ export const getTaskEngineHealth = () => {
     };
 };
 
-const UNUSED_auditAndCleanupOrphanTasks = () => {
-    if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
-
-    const removeTaskInstance = (taskInstanceId) => {
-        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
-        if (!row) return;
-        db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
-        if (tableExists('task_origins')) {
-            db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
-        }
-        if (tableExists('entity_links')) {
-            db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
-        }
-        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
-        if (!remaining) {
-            if (tableExists('task_origins')) {
-                db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
-            }
-            db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
-        }
-    };
-
-    if (!tableExists('recurring_task_templates')) return;
-    const templates = db.prepare('SELECT * FROM recurring_task_templates WHERE active = 1').all();
-    const listKeys = Array.from(new Set(templates.map((row) => row.list_key).filter(Boolean)));
-    const listTitles = Array.from(new Set(
-        templates.map((row) => row.list_title).filter(Boolean).map((value) => String(value).trim().toLowerCase())
-    ));
-    if (listKeys.length === 0 && listTitles.length === 0) return;
-
-    const keyPlaceholders = listKeys.map(() => '?').join(', ');
-    const titlePlaceholders = listTitles.map(() => '?').join(', ');
-    const hasArchived = tableHasColumn('task_instances', 'archived_at');
-    const whereArchived = hasArchived ? 'AND (ti.archived_at IS NULL OR ti.archived_at = \'\')' : '';
-
-    if (tableExists('task_origins')) {
-        const orphaned = db.prepare(`
-            SELECT ti.id
-            FROM task_instances ti
-            LEFT JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
-            JOIN tasks_new t ON t.id = ti.task_id
-            WHERE (src.task_instance_id IS NULL OR src.origin_type IS NULL OR src.origin_id IS NULL OR TRIM(src.origin_type) = '' OR TRIM(src.origin_id) = '')
-              AND (
-                  (${listKeys.length ? `ti.list_key IN (${keyPlaceholders})` : '0'})
-                  OR (${listTitles.length ? `LOWER(COALESCE(ti.list_title, t.title, '')) IN (${titlePlaceholders})` : '0'})
-              )
-              ${whereArchived}
-        `).all(...listKeys, ...listTitles);
-        orphaned.forEach((row) => removeTaskInstance(row.id));
-
-        if (listKeys.length) {
-            const sundayPlaceholders = listKeys.map(() => '?').join(', ');
-            const sundayOrphans = db.prepare(`
-                SELECT ti.id
-                FROM task_instances ti
-                JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
-                WHERE ti.list_key IN (${sundayPlaceholders})
-                  AND (src.origin_type IS NULL OR src.origin_type = '' OR src.origin_type = 'manual')
-                  ${whereArchived}
-            `).all(...listKeys);
-            sundayOrphans.forEach((row) => removeTaskInstance(row.id));
-        }
-
-        const badOriginTypes = new Set(listKeys.map((value) => String(value).trim().toLowerCase()));
-        listTitles.forEach((value) => badOriginTypes.add(value));
-        const originTypePlaceholders = Array.from(badOriginTypes).map(() => '?').join(', ');
-        if (originTypePlaceholders) {
-            const badOrigins = db.prepare(`
-                SELECT ti.id
-                FROM task_instances ti
-                JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
-                WHERE LOWER(src.origin_type) IN (${originTypePlaceholders})
-                  AND (src.origin_type != 'sunday')
-                  ${whereArchived}
-            `).all(...Array.from(badOriginTypes));
-            badOrigins.forEach((row) => removeTaskInstance(row.id));
-        }
-    }
-};
-
-const UNUSED_repairMissingOrigins = () => {
-    if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
-    if (!tableExists('task_origins')) return;
-
-    const templates = db.prepare('SELECT origin_type, list_key FROM recurring_task_templates WHERE active = 1').all();
-    const templateKeys = templates.reduce((acc, row) => {
-        const key = String(row.list_key || '').trim();
-        if (!key) return acc;
-        if (!acc[row.origin_type]) acc[row.origin_type] = new Set();
-        acc[row.origin_type].add(key);
-        return acc;
-    }, {});
-    const sundayKeys = templateKeys.sunday ? Array.from(templateKeys.sunday) : [];
-    const operationsKeys = templateKeys.operations ? Array.from(templateKeys.operations) : [];
-    const vestryKeys = templateKeys.vestry ? Array.from(templateKeys.vestry) : [];
-    const allTemplateKeys = new Set([...sundayKeys, ...operationsKeys, ...vestryKeys]);
-
-    const removeTaskInstance = (taskInstanceId) => {
-        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
-        if (!row) return;
-        db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
-        db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
-        db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
-        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
-        if (!remaining) {
-            db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
-            db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
-        }
-    };
-
-    const orphanRows = db.prepare(`
-        SELECT ti.id, t.title, ti.list_key
-        FROM task_instances ti
-        JOIN tasks_new t ON t.id = ti.task_id
-        LEFT JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
-        WHERE src.task_instance_id IS NULL
-           OR src.origin_type IS NULL
-           OR src.origin_id IS NULL
-           OR TRIM(src.origin_type) = ''
-           OR TRIM(src.origin_id) = ''
-    `).all();
-
-    const attachManual = db.prepare(`
-        INSERT INTO task_origins (
-            id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
-        ) VALUES (?, 'instance', ?, ?, 'manual', 'manual', 'created', ?)
-    `);
-
-    orphanRows.forEach((row) => {
-        const listKey = String(row.list_key || '').trim();
-        if (listKey && allTemplateKeys.has(listKey)) {
-            removeTaskInstance(row.id);
-            return;
-        }
-        const taskRow = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(row.id);
-        if (!taskRow?.task_id) return;
-        const originId = `origin-${row.id}`;
-        try {
-            attachManual.run(originId, taskRow.task_id, row.id, new Date().toISOString());
-        } catch {
-            // ignore duplicate origin rows
-        }
-    });
-};
-
-const UNUSED_purgeTemplateOrphanTasks = () => {
-    if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
-    const templateKeys = tableExists('recurring_task_templates')
-        ? db.prepare('SELECT list_key FROM recurring_task_templates WHERE active = 1').all()
-            .map((row) => String(row.list_key || '').trim())
-            .filter(Boolean)
-        : [];
-    const extraKeys = ['bulletins', 'bulletins-10am', 'bulletins-8am', 'insert', 'email', 'roles', 'ops-weekly'];
-    const listKeys = Array.from(new Set([...templateKeys, ...extraKeys]));
-    if (!listKeys.length) return;
-    const placeholders = listKeys.map(() => '?').join(', ');
-
-    const removeTaskInstance = (taskInstanceId) => {
-        const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
-        if (!row) return;
-        db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
-        db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
-        db.prepare('DELETE FROM entity_links WHERE from_type = ? AND from_id = ?').run('task_instance', taskInstanceId);
-        const remaining = db.prepare('SELECT 1 FROM task_instances WHERE task_id = ? LIMIT 1').get(row.task_id);
-        if (!remaining) {
-            db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_id = ?').run('task', row.task_id);
-            db.prepare('DELETE FROM tasks_new WHERE id = ?').run(row.task_id);
-        }
-    };
-
-    const orphanRows = db.prepare(`
-        SELECT ti.id
-        FROM task_instances ti
-        JOIN tasks_new t ON t.id = ti.task_id
-        LEFT JOIN view_task_source src ON src.task_instance_id = ti.id
-        WHERE ti.list_key IN (${placeholders})
-          AND (src.origin_type IS NULL OR src.origin_id IS NULL OR TRIM(src.origin_type) = '' OR TRIM(src.origin_id) = '')
-    `).all(...listKeys);
-    orphanRows.forEach((row) => removeTaskInstance(row.id));
-};

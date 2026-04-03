@@ -895,7 +895,7 @@ const Finance = () => {
             <header className="finance-header page-header-bar">
                 <div className="page-header-title">
                     <h1>Finance & Accounts</h1>
-                    <p className="page-header-subtitle is-empty" aria-hidden="true">Spacer</p>
+                    <p className="page-header-subtitle">Monitor AP and AR routing, build deposit packets, and handle print-ready finance workflows.</p>
                 </div>
             </header>
 
