@@ -20,7 +20,7 @@ const SundayRosterPanel = ({
     getServiceRoleKeys,
     defaultLocationForTime,
     formatServiceTime,
-    multiAssignmentRoles,
+    roleAllowsMultiple,
     roleDefinitions,
     onTooltipToggle
 }) => {
@@ -52,7 +52,7 @@ const SundayRosterPanel = ({
             </header>
             <div className="service-roles-grid">
                 {roleDefinitions.filter((role) => getServiceRoleKeys(service).includes(role.key)).map((role) => {
-                    const isMulti = multiAssignmentRoles.has(role.key);
+                    const isMulti = roleAllowsMultiple(service.time, role.key);
                     const selectedValue = roleDrafts?.[service.time]?.[role.key];
                     const selectValue = isMulti
                         ? (Array.isArray(selectedValue) ? selectedValue : (selectedValue ? [selectedValue] : []))
@@ -64,6 +64,10 @@ const SundayRosterPanel = ({
                         .map((id) => peopleById.get(id))
                         .filter(Boolean);
                     const menuOpen = openMenu?.serviceTime === service.time && openMenu?.roleKey === role.key;
+                    const triggerMeta = selectedPeople.length === 0
+                        ? (eligiblePeople.length === 0 ? 'No matches' : 'Select people')
+                        : (selectedPeople.length === 1 ? selectedPeople[0].displayName : `${selectedPeople.length} assigned`);
+                    const triggerCount = selectedPeople.length === 0 ? '+' : String(selectedPeople.length);
 
                     return (
                         <div key={`${service.id}-${role.key}`} className="role-edit-row">
@@ -79,7 +83,11 @@ const SundayRosterPanel = ({
                                     disabled={eligiblePeople.length === 0}
                                     aria-expanded={menuOpen ? 'true' : 'false'}
                                 >
-                                    <span>{role.label}</span>
+                                    <span className="role-trigger-copy">
+                                        <span className="role-label">{role.label}</span>
+                                        <span className="role-trigger-meta">{triggerMeta}</span>
+                                    </span>
+                                    <span className="role-trigger-count">{triggerCount}</span>
                                     <span className={`caret-icon ${menuOpen ? 'open' : ''}`}>&#9656;</span>
                                 </button>
                                 {menuOpen && (
@@ -120,7 +128,7 @@ const SundayRosterPanel = ({
                                                         key={`${service.id}-${role.key}-${person.id}`}
                                                         type="button"
                                                         className="person-menu-item"
-                                                        onClick={() => togglePersonSelection(service.time, role.key, person.id, isMulti)}
+                                                        onClick={() => togglePersonSelection(service.time, role.key, person.id)}
                                                     >
                                                         <span className={`person-chip person-chip-${category} ${person.isPledger ? 'person-chip-pledger' : ''} ${isSelected ? 'chip-selected' : ''}`}>
                                                             {person.displayName}

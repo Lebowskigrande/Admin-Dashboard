@@ -462,13 +462,13 @@
 
 .packet-row {
     display: grid;
-    grid-template-columns: auto minmax(200px, 1fr) minmax(200px, 1fr) auto;
+    grid-template-columns: auto minmax(220px, 1fr) minmax(220px, 1fr) auto;
     gap: 0.35rem;
     align-items: center;
     padding: 0.28rem 0.4rem;
-    border-radius: 12px;
+    border-radius: 16px;
     border: 1px solid #e5e7eb;
-    background: #fff;
+    background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
     transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -548,10 +548,11 @@
 }
 
 .status-pill {
-    font-size: 0.7rem;
-    padding: 0.05rem 0.4rem;
+    font-size: 0.72rem;
+    padding: 0.18rem 0.55rem;
     border-radius: 999px;
     border: 1px solid transparent;
+    font-weight: 700;
 }
 
 .status-pill.ready {
@@ -560,14 +561,20 @@
     border-color: #bbf7d0;
 }
 
+.status-pill.cached {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+}
+
 .status-pill.missing {
     background: #fee2e2;
     color: #991b1b;
     border-color: #fecaca;
 }
 
-.packet-row input[type='file'] {
-    font-size: 0.72rem;
+.packet-row .file-picker {
+    min-width: 0;
 }
 
 .packet-download {

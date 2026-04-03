@@ -4,25 +4,31 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(0, 0, 0, 0.5);
+    background:
+        radial-gradient(circle at top, rgba(15, 76, 129, 0.16) 0%, transparent 42%),
+        rgba(15, 23, 42, 0.46);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: 1000;
-    backdrop-filter: blur(2px);
-    animation: fadeIn 0.2s ease-out;
+    backdrop-filter: blur(10px);
+    animation: fadeIn 0.24s var(--ease-standard);
 }
 
 .modal-container {
-    background: var(--color-surface);
-    border-radius: var(--radius-lg);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 251, 255, 0.98) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.58);
+    border-radius: 22px;
     width: 90%;
     max-width: 500px;
-    box-shadow: var(--shadow-lg);
-    animation: slideIn 0.3s ease-out;
+    box-shadow:
+        0 28px 60px rgba(15, 23, 42, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.75);
+    animation: slideIn 0.32s var(--ease-standard);
     display: flex;
     flex-direction: column;
     max-height: 90vh;
+    overflow: hidden;
 }
 
 .modal-container.modal-large {
@@ -31,11 +37,13 @@
 }
 
 .modal-header {
-    padding: var(--space-md);
-    border-bottom: 1px solid var(--color-bg);
+    padding: 0.95rem 1rem;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
     display: flex;
     justify-content: space-between;
     align-items: center;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.82) 0%, rgba(248, 251, 255, 0.82) 100%);
+    backdrop-filter: blur(14px);
 }
 
 .modal-header h3 {
@@ -45,21 +53,30 @@
 }
 
 .btn-close {
-    background: transparent;
-    border: none;
-    font-size: 1.25rem;
+    background: rgba(248, 250, 252, 0.92);
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 12px;
+    width: 36px;
+    height: 36px;
+    font-size: 1.05rem;
     color: var(--color-text-secondary);
     cursor: pointer;
-    padding: var(--space-xs);
-    display: flex;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .btn-close:hover {
     color: var(--color-text-main);
+    transform: translateY(-1px);
+    border-color: rgba(37, 99, 235, 0.22);
+    background: #ffffff;
+    box-shadow: 0 12px 22px rgba(15, 23, 42, 0.1);
 }
 
 .modal-content {
-    padding: var(--space-md);
+    padding: 1rem;
     overflow-y: auto;
 }
 
@@ -75,12 +92,12 @@
 
 @keyframes slideIn {
     from {
-        transform: translateY(20px);
+        transform: translateY(28px) scale(0.985);
         opacity: 0;
     }
 
     to {
-        transform: translateY(0);
+        transform: translateY(0) scale(1);
         opacity: 1;
     }
 }

@@ -109,28 +109,46 @@ const VestryPacketBuilder = ({
                             <div className="packet-status">
                                 {item.required && !item.excluded && <span className="packet-required">Required</span>}
                                 {item.required && item.excluded && <span className="packet-excluded">Required (Excluded)</span>}
-                                <span className={hasPacketFile(item) ? 'status-pill ready' : 'status-pill missing'}>
+                                <span
+                                    className={`status-pill ${
+                                        item.uploading
+                                            ? 'cached'
+                                            : item.file
+                                                ? 'ready'
+                                                : item.cachedFile
+                                                    ? 'cached'
+                                                    : 'missing'
+                                    }`}
+                                >
                                     {item.uploading
-                                        ? 'Uploading...'
+                                        ? 'Uploading'
                                         : item.file
-                                            ? `Uploaded: ${item.file.name}`
+                                            ? 'Ready'
                                             : item.cachedFile
-                                                ? `Cached: ${item.cachedFile.originalName || 'document'}`
-                                                : 'No file yet'}
+                                                ? 'Cached'
+                                                : 'Missing'}
                                 </span>
                             </div>
                         </div>
-                        <input
-                            type="file"
-                            accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            onChange={(event) => {
-                                const file = event.target.files?.[0] || null;
-                                if (file) {
-                                    handlePacketFileUpload(item.id, file);
-                                }
-                                event.target.value = '';
-                            }}
-                        />
+                        <label className="file-picker file-picker--compact">
+                            <span className="file-picker__button">Choose File</span>
+                            <span className="file-picker__label">
+                                {item.file
+                                    ? item.file.name
+                                    : item.cachedFile?.originalName || 'PDF, Word, or Excel'}
+                            </span>
+                            <input
+                                type="file"
+                                accept=".pdf,.doc,.docx,.xls,.xlsx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                onChange={(event) => {
+                                    const file = event.target.files?.[0] || null;
+                                    if (file) {
+                                        handlePacketFileUpload(item.id, file);
+                                    }
+                                    event.target.value = '';
+                                }}
+                            />
+                        </label>
                         {item.required && (
                             <button
                                 type="button"

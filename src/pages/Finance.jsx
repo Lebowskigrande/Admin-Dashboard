@@ -1407,28 +1407,40 @@ const Finance = () => {
                             <h3>Deposit Attachments</h3>
                             <div className="deposit-upload-field">
                                 <label htmlFor="deposit-checks-pdf">Checks PDF</label>
-                                <input
-                                    key={`checks-${uploadResetKey}`}
-                                    id="deposit-checks-pdf"
-                                    type="file"
-                                    accept="application/pdf"
-                                    onChange={(event) => setChecksPdfFile(event.target.files?.[0] || null)}
-                                />
+                                <label className="file-picker" htmlFor="deposit-checks-pdf">
+                                    <span className="file-picker__button">Choose PDF</span>
+                                    <span className="file-picker__label">
+                                        {checksPdfFile ? checksPdfFile.name : 'Attach the scanned checks packet.'}
+                                    </span>
+                                    <input
+                                        key={`checks-${uploadResetKey}`}
+                                        id="deposit-checks-pdf"
+                                        type="file"
+                                        accept="application/pdf"
+                                        onChange={(event) => setChecksPdfFile(event.target.files?.[0] || null)}
+                                    />
+                                </label>
                                 <p className="deposit-upload-hint">
-                                    {checksPdfFile ? checksPdfFile.name : 'Upload the scanned checks PDF.'}
+                                    Used when building the final deposit packet.
                                 </p>
                             </div>
                             <div className="deposit-upload-field">
                                 <label htmlFor="deposit-cash-pdf">Cash Count PDF</label>
-                                <input
-                                    key={`cash-${uploadResetKey}`}
-                                    id="deposit-cash-pdf"
-                                    type="file"
-                                    accept="application/pdf"
-                                    onChange={(event) => setCashPdfFile(event.target.files?.[0] || null)}
-                                />
+                                <label className="file-picker" htmlFor="deposit-cash-pdf">
+                                    <span className="file-picker__button">Choose PDF</span>
+                                    <span className="file-picker__label">
+                                        {cashPdfFile ? cashPdfFile.name : 'Optional cash count sheet.'}
+                                    </span>
+                                    <input
+                                        key={`cash-${uploadResetKey}`}
+                                        id="deposit-cash-pdf"
+                                        type="file"
+                                        accept="application/pdf"
+                                        onChange={(event) => setCashPdfFile(event.target.files?.[0] || null)}
+                                    />
+                                </label>
                                 <p className="deposit-upload-hint">
-                                    {cashPdfFile ? cashPdfFile.name : 'Optional. Upload the cash count PDF if available.'}
+                                    Optional. Add only when cash is present.
                                 </p>
                             </div>
                             <button

@@ -1210,6 +1210,11 @@
     overflow: visible;
 }
 
+.role-edit-row .role-menu-anchor {
+    width: 100%;
+    min-width: 0;
+}
+
 .role-edit-row input {
     padding: 8px 10px;
     border-radius: var(--radius-md);
@@ -1225,133 +1230,6 @@
 .role-edit-row select[multiple] {
     min-height: 120px;
 }
-
-.role-menu-anchor {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    width: fit-content;
-}
-
-.role-menu-trigger {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--color-text-secondary);
-    font-size: 0.8rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: color 0.15s ease;
-}
-
-.role-menu-trigger:hover:not(:disabled) {
-    color: var(--color-text-primary);
-}
-
-.role-menu-trigger:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.caret-icon {
-    display: inline-block;
-    transition: transform 0.15s ease;
-}
-
-.caret-icon.open {
-    transform: rotate(90deg);
-}
-
-.person-menu {
-    position: absolute;
-    right: 0;
-    margin: 6px 0;
-    min-width: 240px;
-    max-height: 260px;
-    overflow-y: auto;
-    border-radius: 12px;
-    border: 1px solid rgba(15, 23, 42, 0.15);
-    background: var(--color-surface);
-    box-shadow: 0 18px 30px rgba(15, 23, 42, 0.15);
-    padding: 8px;
-    z-index: 2000;
-    opacity: 1;
-    transition: opacity 0.16s ease, transform 0.16s ease;
-}
-
-.person-menu.open-up {
-    bottom: 100%;
-    top: auto;
-    animation: person-menu-in-up 0.16s ease;
-}
-
-.person-menu.open-down {
-    top: 100%;
-    bottom: auto;
-    animation: person-menu-in-down 0.16s ease;
-}
-
-@keyframes person-menu-in-up {
-    from {
-        opacity: 0;
-        transform: translateY(-6px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-@keyframes person-menu-in-down {
-    from {
-        opacity: 0;
-        transform: translateY(6px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.person-menu-section + .person-menu-section {
-    margin-top: 6px;
-}
-
-.person-menu-title {
-    font-size: 0.7rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--color-text-secondary);
-    margin: 4px 6px;
-}
-
-.person-menu-divider {
-    height: 1px;
-    background: rgba(15, 23, 42, 0.08);
-    margin: 6px 0;
-}
-
-.person-menu-item {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border: none;
-    border-radius: 8px;
-    background: transparent;
-    cursor: pointer;
-    text-align: left;
-    transition: color 0.15s ease;
-}
-
-.person-menu-item:hover {
-    background: transparent;
-}
-
 
 @media (max-width: 720px) {
     .sunday-header {

@@ -22,6 +22,7 @@ const SERVICE_TIME_SET = new Set(['08:00', '10:00']);
 const isEightAmService = (time = '') => /^0?8:/.test(time.trim());
 const getServiceRoleKeys = (serviceTime) => (isEightAmService(serviceTime || '') ? EIGHT_AM_ROLE_KEYS : TEN_AM_ROLE_KEYS);
 const MULTI_ASSIGNMENT_ROLES = new Set(['lector', 'lem', 'acolyte', 'usher', 'sound', 'coffeeHour', 'childcare']);
+const roleAllowsMultiple = (serviceTime, roleKey) => !isEightAmService(serviceTime || '') && MULTI_ASSIGNMENT_ROLES.has(roleKey);
 
 const entryFieldByRole = {
     celebrant: 'celebrant',
@@ -337,9 +338,9 @@ const LiturgicalSchedule = () => {
         });
     };
 
-    const normalizeRoleIds = (roleKey, ids) => {
+    const normalizeRoleIds = (serviceTime, roleKey, ids) => {
         const list = Array.isArray(ids) ? ids.filter(Boolean) : (ids ? [ids] : []);
-        return MULTI_ASSIGNMENT_ROLES.has(roleKey) ? list : list.slice(0, 1);
+        return roleAllowsMultiple(serviceTime, roleKey) ? list : list.slice(0, 1);
     };
 
     const getTeamMap = (roleKey, eligiblePeople) => {
@@ -370,9 +371,9 @@ const LiturgicalSchedule = () => {
                 const currentIds = serviceRoleKeys.includes(role.key)
                     ? parseAssignments(entry[entryField])
                     : [];
-                const normalizedCurrent = normalizeRoleIds(role.key, currentIds);
+                const normalizedCurrent = normalizeRoleIds(entry.service_time, role.key, currentIds);
                 const normalizedNext = role.key === roleKey
-                    ? normalizeRoleIds(role.key, nextIds)
+                    ? normalizeRoleIds(entry.service_time, role.key, nextIds)
                     : normalizedCurrent;
                 payload[entry.service_time || '10:00'][role.key] = normalizedNext;
             });
@@ -390,7 +391,7 @@ const LiturgicalSchedule = () => {
                 const entryField = entryFieldByRole[roleKey];
                 return {
                     ...row,
-                    [entryField]: normalizeRoleIds(roleKey, nextIds).join(', ')
+                    [entryField]: normalizeRoleIds(entry.service_time, roleKey, nextIds).join(', ')
                 };
             }));
         } catch (err) {
@@ -403,7 +404,7 @@ const LiturgicalSchedule = () => {
 
     const toggleTeamSelection = (entry, roleKey, teamMemberIds) => {
         const entryField = entryFieldByRole[roleKey];
-        const currentIds = normalizeRoleIds(roleKey, parseAssignments(entry[entryField]));
+        const currentIds = normalizeRoleIds(entry.service_time, roleKey, parseAssignments(entry[entryField]));
         const current = new Set(currentIds);
         const allSelected = teamMemberIds.every((id) => current.has(id));
         if (allSelected) {
@@ -415,9 +416,9 @@ const LiturgicalSchedule = () => {
     };
 
     const togglePersonSelection = (entry, roleKey, personId) => {
-        const isMulti = MULTI_ASSIGNMENT_ROLES.has(roleKey);
+        const isMulti = roleAllowsMultiple(entry.service_time, roleKey);
         const entryField = entryFieldByRole[roleKey];
-        const currentIds = normalizeRoleIds(roleKey, parseAssignments(entry[entryField]));
+        const currentIds = normalizeRoleIds(entry.service_time, roleKey, parseAssignments(entry[entryField]));
         if (isMulti) {
             const current = new Set(currentIds);
             if (current.has(personId)) {
@@ -614,12 +615,19 @@ const LiturgicalSchedule = () => {
                                                 {getServiceRoleKeys(entry.service_time).map((roleKey) => {
                                                     const role = roleConfigs.find((config) => config.key === roleKey);
                                                     const entryField = entryFieldByRole[roleKey];
-                                                    const selectedIds = normalizeRoleIds(roleKey, parseAssignments(entry[entryField]));
+                                                    const selectedIds = normalizeRoleIds(entry.service_time, roleKey, parseAssignments(entry[entryField]));
                                                     const eligiblePeople = people.filter((person) => (person.roles || []).includes(roleKey));
                                                     const teamMap = getTeamMap(roleKey, eligiblePeople);
                                                     const teamEntries = Array.from(teamMap.entries()).sort((a, b) => a[0] - b[0]);
                                                     const entryKey = getEntryKey(entry);
                                                     const menuOpen = openMenu?.entryKey === entryKey && openMenu?.roleKey === roleKey;
+                                                    const selectedPeople = selectedIds
+                                                        .map((personId) => peopleById.get(personId))
+                                                        .filter(Boolean);
+                                                    const triggerMeta = selectedPeople.length === 0
+                                                        ? (eligiblePeople.length === 0 ? 'No matches' : 'Select people')
+                                                        : (selectedPeople.length === 1 ? selectedPeople[0].displayName : `${selectedPeople.length} assigned`);
+                                                    const triggerCount = selectedPeople.length === 0 ? '+' : String(selectedPeople.length);
                                                     return (
                                                         <div key={`${entry.date}-${entry.service_time}-${roleKey}`}>
                                                             <div className="role-menu-anchor">
@@ -634,7 +642,11 @@ const LiturgicalSchedule = () => {
                                                                     disabled={eligiblePeople.length === 0}
                                                                     aria-expanded={menuOpen ? 'true' : 'false'}
                                                                 >
-                                                                    <span className="role-label">{role?.label}</span>
+                                                                    <span className="role-trigger-copy">
+                                                                        <span className="role-label">{role?.label}</span>
+                                                                        <span className="role-trigger-meta">{triggerMeta}</span>
+                                                                    </span>
+                                                                    <span className="role-trigger-count">{triggerCount}</span>
                                                                     <span className={`caret-icon ${menuOpen ? 'open' : ''}`}>▸</span>
                                                                 </button>
                                                                 {menuOpen && (
@@ -642,7 +654,7 @@ const LiturgicalSchedule = () => {
                                                                         className={`person-menu ${menuDirection === 'down' ? 'open-down' : 'open-up'}`}
                                                                         data-menu-key={`${entryKey}-${roleKey}`}
                                                                     >
-                                                                        {MULTI_ASSIGNMENT_ROLES.has(roleKey) && teamEntries.length > 0 && (
+                                                                        {roleAllowsMultiple(entry.service_time, roleKey) && teamEntries.length > 0 && (
                                                                             <div className="person-menu-section">
                                                                                 <div className="person-menu-title">Teams</div>
                                                                                 {teamEntries.map(([teamNumber, memberIds]) => {

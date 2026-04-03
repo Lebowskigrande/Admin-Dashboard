@@ -591,12 +591,13 @@
 
 .deposit-upload-panel {
     border: 1px solid #e2e8f0;
-    border-radius: var(--radius-lg);
+    border-radius: 20px;
     padding: var(--space-sm);
-    background: #fff;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
     display: flex;
     flex-direction: column;
-    gap: 0.65rem;
+    gap: 0.85rem;
+    box-shadow: 0 14px 30px rgba(15, 23, 42, 0.05);
 }
 
 .deposit-upload-panel h3 {
@@ -608,7 +609,7 @@
 .deposit-upload-field {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.45rem;
 }
 
 .deposit-upload-field label {
@@ -617,17 +618,13 @@
     font-weight: 600;
 }
 
-.deposit-upload-field input[type='file'] {
-    border: 1px solid #d1d5db;
-    border-radius: 8px;
-    padding: 0.35rem 0.5rem;
-    background: #f9fafb;
-    font-size: 0.85rem;
+.deposit-upload-field .file-picker {
+    min-height: 62px;
 }
 
 .deposit-upload-hint {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: 0.78rem;
     color: var(--color-text-secondary);
 }
 

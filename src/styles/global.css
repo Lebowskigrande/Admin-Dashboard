@@ -131,6 +131,7 @@ button {
     cursor: pointer;
     font-family: inherit;
     transition:
+        transform var(--transition-fast),
         box-shadow var(--transition-fast),
         border-color var(--transition-fast),
         background var(--transition-fast),
@@ -156,9 +157,13 @@ textarea {
     font: inherit;
     color: var(--color-text-main);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
-    background: #fff;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.85),
+        0 1px 2px rgba(15, 23, 42, 0.04);
     transition:
+        transform var(--transition-fast),
         border-color var(--transition-fast),
         box-shadow var(--transition-fast),
         background var(--transition-fast);
@@ -168,6 +173,75 @@ input:hover,
 select:hover,
 textarea:hover {
     border-color: var(--color-border-strong);
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.95),
+        0 0 0 1px rgba(37, 99, 235, 0.08);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    outline: none;
+    border-color: rgba(37, 99, 235, 0.36);
+    background: #ffffff;
+    box-shadow:
+        0 0 0 4px rgba(37, 99, 235, 0.12),
+        0 12px 24px rgba(15, 23, 42, 0.08);
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: #94a3b8;
+}
+
+input,
+select:not([multiple]):not([size]),
+textarea {
+    min-height: 42px;
+    padding: 0.68rem 0.85rem;
+}
+
+textarea {
+    min-height: 96px;
+}
+
+select:not([multiple]):not([size]) {
+    appearance: none;
+    padding-right: 2.5rem;
+    background-image:
+        linear-gradient(180deg, #ffffff 0%, #fbfdff 100%),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%235b6b82' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.6' d='M1 1.5 6 6.5l5-5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat, no-repeat;
+    background-position: 0 0, right 0.95rem center;
+    background-size: auto, 12px 8px;
+}
+
+input[type='file'] {
+    padding: 0.4rem;
+    min-height: 48px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+input[type='file']::file-selector-button {
+    margin-right: 0.8rem;
+    border: none;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #0f4c81 0%, #2e6da3 100%);
+    color: #ffffff;
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 700;
+    padding: 0.55rem 0.95rem;
+    cursor: pointer;
+    box-shadow: 0 10px 18px rgba(15, 76, 129, 0.18);
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast), filter var(--transition-fast);
+}
+
+input[type='file']::file-selector-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 14px 24px rgba(15, 76, 129, 0.24);
+    filter: brightness(1.04);
 }
 
 .pill {
@@ -342,39 +416,47 @@ textarea:hover {
 }
 
 .btn-primary {
-    background: var(--color-primary);
+    background: linear-gradient(135deg, var(--color-primary) 0%, #1e5f98 100%);
     color: var(--color-text-inverse);
-    border: none;
-    border-radius: var(--radius-md);
+    border: 1px solid rgba(8, 45, 79, 0.12);
+    border-radius: 14px;
     padding: 0 var(--space-md);
     height: 40px;
     font-weight: 600;
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    box-shadow: var(--shadow-sm);
+    box-shadow: 0 12px 24px rgba(15, 76, 129, 0.2);
 }
 
 .btn-primary:hover {
-    background: var(--color-primary-light);
-    box-shadow: var(--interactive-hover-shadow-strong);
+    background: linear-gradient(135deg, var(--color-primary-light) 0%, #3b7ab1 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 18px 30px rgba(15, 76, 129, 0.24);
 }
 
 .btn-secondary {
-    background: #fff;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
     color: var(--color-text-secondary);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    border-radius: 14px;
     padding: 0 var(--space-md);
     height: 40px;
     font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.85),
+        0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .btn-secondary:hover {
-    background: var(--interactive-hover-bg);
+    background: linear-gradient(180deg, #ffffff 0%, #f4f8ff 100%);
     color: var(--color-text-main);
     border-color: var(--interactive-hover-border);
-    box-shadow: var(--interactive-hover-shadow);
+    transform: translateY(-1px);
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
 }
 
 .btn-ghost {
@@ -394,6 +476,7 @@ textarea:hover {
     background: var(--interactive-hover-bg);
     border-color: var(--interactive-hover-border);
     color: var(--color-text-main);
+    transform: translateY(-1px);
     box-shadow: var(--interactive-hover-shadow);
 }
 
@@ -418,7 +501,91 @@ textarea:hover {
 .btn-danger:hover {
     background: #fecaca;
     border-color: #fca5a5;
+    transform: translateY(-1px);
     box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.28);
+}
+
+.file-picker {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    width: 100%;
+    min-height: 56px;
+    padding: 0.7rem 0.85rem;
+    border: 1px dashed rgba(148, 163, 184, 0.5);
+    border-radius: 18px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    cursor: pointer;
+    transition:
+        transform var(--transition-fast),
+        border-color var(--transition-fast),
+        background var(--transition-fast),
+        box-shadow var(--transition-fast);
+}
+
+.file-picker:hover {
+    transform: translateY(-1px);
+    border-color: rgba(37, 99, 235, 0.3);
+    background: linear-gradient(180deg, #ffffff 0%, #f4f8ff 100%);
+    box-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
+}
+
+.file-picker input[type='file'] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+    padding: 0;
+    min-height: 0;
+}
+
+.file-picker input[type='file']::file-selector-button {
+    display: none;
+}
+
+.file-picker__button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 32px;
+    padding: 0 0.85rem;
+    border-radius: 999px;
+    background: rgba(15, 76, 129, 0.1);
+    color: var(--color-primary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.file-picker__label {
+    min-width: 0;
+    font-size: 0.84rem;
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-picker--compact {
+    min-height: 46px;
+    padding: 0.5rem 0.65rem;
+    gap: 0.7rem;
+    border-radius: 14px;
+}
+
+.file-picker--compact .file-picker__button {
+    min-height: 28px;
+    padding: 0 0.75rem;
+    font-size: 0.74rem;
+}
+
+.file-picker--compact .file-picker__label {
+    font-size: 0.78rem;
 }
 
 /* Scrollbar */

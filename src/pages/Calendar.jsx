@@ -18,29 +18,35 @@ import Modal from '../components/Modal';
 import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
 import { getTaskProgressMeta } from '../utils/taskProgress';
+import { ROLE_DEFINITIONS } from '../models/roles';
 import CalendarEventDetails from './calendar/CalendarEventDetails';
 import './Calendar.css';
 
-const slugifyRoleKey = (value) => String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+const REGULAR_SUNDAY_SERVICE_SLUGS = new Set(['weekly-service', 'rite-i-service', 'rite-ii-service']);
 
-const LITURGICAL_ROLE_CONFIGS = [
+const WORSHIP_ROLE_CATALOG = [
+    { key: 'clergy', label: 'Clergy' },
     { key: 'celebrant', label: 'Celebrant' },
     { key: 'preacher', label: 'Preacher' },
+    { key: 'officiant', label: 'Officiant' },
     { key: 'lector', label: 'Lector' },
-    { key: 'organist', label: 'Organist' },
     { key: 'lem', label: 'LEM' },
     { key: 'acolyte', label: 'Acolyte' },
+    { key: 'thurifer', label: 'Thurifer' },
     { key: 'usher', label: 'Usher' },
+    { key: 'altarGuild', label: 'Altar Guild' },
+    { key: 'organist', label: 'Organist' },
+    { key: 'choirmaster', label: 'Choirmaster' },
     { key: 'sound', label: 'Sound' },
     { key: 'coffeeHour', label: 'Coffee Hour' },
     { key: 'childcare', label: 'Childcare' }
 ];
 
-const ROLE_CONFIG_BY_KEY = new Map(LITURGICAL_ROLE_CONFIGS.map((role) => [role.key, role]));
+const ROLE_CONFIG_BY_KEY = new Map(
+    [...ROLE_DEFINITIONS, ...WORSHIP_ROLE_CATALOG]
+        .map((role) => [role.key, role])
+);
+
 const createEmptyPlanningDraft = () => ({
     buildingId: '',
     guestMusicians: [],
@@ -66,12 +72,15 @@ const Calendar = () => {
     const [loadingDetails, setLoadingDetails] = useState(false);
     const detailRequestRef = useRef({ requestId: 0, controller: null });
     const [taskInput, setTaskInput] = useState('');
-    const [bulletinFile, setBulletinFile] = useState(null);
-    const [contractFile, setContractFile] = useState(null);
-    const [otherFile, setOtherFile] = useState(null);
+    const [linkedBulletinDoc, setLinkedBulletinDoc] = useState(null);
+    const [documentBusy, setDocumentBusy] = useState({
+        bulletin: false,
+        contract: false,
+        attachment: false
+    });
     const [planningDraft, setPlanningDraft] = useState(createEmptyPlanningDraft);
     const [guestMusicianInput, setGuestMusicianInput] = useState('');
-    const [customRoleInput, setCustomRoleInput] = useState('');
+    const [planningRoleKey, setPlanningRoleKey] = useState('');
     const [planningSaving, setPlanningSaving] = useState(false);
     const [planningError, setPlanningError] = useState('');
     const [openRosterMenu, setOpenRosterMenu] = useState(null);
@@ -98,14 +107,13 @@ const Calendar = () => {
         setTemplateFields([]);
         setTemplateData({});
         setEventDocs([]);
+        setLinkedBulletinDoc(null);
         setDocPreview({ open: false, url: '', name: '' });
         setTaskInput('');
-        setBulletinFile(null);
-        setContractFile(null);
-        setOtherFile(null);
+        setDocumentBusy({ bulletin: false, contract: false, attachment: false });
         setPlanningDraft(createEmptyPlanningDraft());
         setGuestMusicianInput('');
-        setCustomRoleInput('');
+        setPlanningRoleKey('');
         setPlanningSaving(false);
         setPlanningError('');
         setOpenRosterMenu(null);
@@ -121,6 +129,12 @@ const Calendar = () => {
         if (!eventItem?.occurrence_id) return;
 
         const occurrenceId = eventItem.occurrence_id;
+        const eventDate = eventItem.date instanceof Date
+            ? format(eventItem.date, 'yyyy-MM-dd')
+            : String(eventItem.date || '').slice(0, 10);
+        const startTime = String(eventItem.time || '').trim();
+        const regularSundayService = REGULAR_SUNDAY_SERVICE_SLUGS.has(String(eventItem.type_slug || '').trim());
+        const sundayBulletinDocKey = /^0?8:/.test(startTime) ? 'bulletin8' : 'bulletin10';
         const nextRequestId = detailRequestRef.current.requestId + 1;
         detailRequestRef.current.controller?.abort();
         const controller = new AbortController();
@@ -128,10 +142,13 @@ const Calendar = () => {
 
         setLoadingDetails(true);
         try {
-            const [detailResponse, taskResponse, docResponse] = await Promise.all([
+            const [detailResponse, taskResponse, docResponse, sundayDocResponse] = await Promise.all([
                 fetch(`${API_URL}/event-occurrences/${occurrenceId}`, { signal: controller.signal }),
                 fetch(`${API_URL}/tasks?origin_type=event&origin_id=${encodeURIComponent(occurrenceId)}&include_future=1`, { signal: controller.signal }),
-                fetch(`${API_URL}/event-occurrences/${occurrenceId}/documents?preview=1`, { signal: controller.signal })
+                fetch(`${API_URL}/event-occurrences/${occurrenceId}/documents?preview=1`, { signal: controller.signal }),
+                regularSundayService && eventDate
+                    ? fetch(`${API_URL}/sunday/documents?date=${encodeURIComponent(eventDate)}&doc=${encodeURIComponent(sundayBulletinDocKey)}&preview=1`, { signal: controller.signal })
+                    : Promise.resolve(null)
             ]);
 
             if (detailRequestRef.current.requestId !== nextRequestId) return;
@@ -156,7 +173,7 @@ const Calendar = () => {
                     )
                 });
                 setGuestMusicianInput('');
-                setCustomRoleInput('');
+                setPlanningRoleKey('');
                 setPlanningError('');
                 setOpenRosterMenu(null);
                 setRosterMenuDirection('up');
@@ -196,6 +213,30 @@ const Calendar = () => {
             } else {
                 setEventDocs([]);
             }
+
+            if (regularSundayService && sundayDocResponse?.ok) {
+                const sundayDocPayload = await sundayDocResponse.json();
+                if (detailRequestRef.current.requestId !== nextRequestId) return;
+                const rawDoc = sundayDocPayload?.[sundayBulletinDocKey] || null;
+                if (rawDoc?.exists) {
+                    setLinkedBulletinDoc({
+                        id: `linked-${occurrenceId}-${sundayBulletinDocKey}`,
+                        occurrence_id: occurrenceId,
+                        event_id: eventItem.event_id || eventItem.id || 'sunday-service',
+                        doc_type: 'bulletin',
+                        label: 'Folder',
+                        file_name: rawDoc.name || 'Bulletin',
+                        file_path: rawDoc.path || '',
+                        preview: rawDoc.preview || '',
+                        created_at: '',
+                        isLinkedSundayDoc: true
+                    });
+                } else {
+                    setLinkedBulletinDoc(null);
+                }
+            } else {
+                setLinkedBulletinDoc(null);
+            }
         } catch (error) {
             if (error.name === 'AbortError') return;
             console.error('Failed to load event details:', error);
@@ -203,6 +244,7 @@ const Calendar = () => {
             setEventDetails(null);
             setEventTasks([]);
             setEventDocs([]);
+            setLinkedBulletinDoc(null);
             setTemplateFields([]);
             setPlanningDraft(createEmptyPlanningDraft());
             setOpenRosterMenu(null);
@@ -245,10 +287,16 @@ const Calendar = () => {
     };
 
     const handleTemplateChange = (key, value) => {
-        setTemplateData((prev) => ({
-            ...(prev || {}),
-            [key]: value
-        }));
+        setTemplateData((prev) => {
+            const next = {
+                ...(prev || {}),
+                [key]: value
+            };
+            if (key === 'rental' && !value) {
+                delete next.rental_rate;
+            }
+            return next;
+        });
     };
 
     useEffect(() => {
@@ -351,6 +399,7 @@ const Calendar = () => {
 
     const handleUploadDocument = async (file, docType = 'attachment') => {
         if (!file || !selectedEvent?.occurrence_id) return;
+        setDocumentBusy((prev) => ({ ...prev, [docType]: true }));
         const form = new FormData();
         form.append('file', file);
         form.append('doc_type', docType);
@@ -368,25 +417,24 @@ const Calendar = () => {
             await refreshDocuments();
         } catch (error) {
             console.error('Failed to upload document:', error);
+        } finally {
+            setDocumentBusy((prev) => ({ ...prev, [docType]: false }));
         }
     };
 
-    const handleUploadBulletin = async () => {
-        if (!bulletinFile) return;
-        await handleUploadDocument(bulletinFile, 'bulletin');
-        setBulletinFile(null);
+    const handlePickBulletin = async (file) => {
+        if (!file) return;
+        await handleUploadDocument(file, 'bulletin');
     };
 
-    const handleUploadContract = async () => {
-        if (!contractFile) return;
-        await handleUploadDocument(contractFile, 'contract');
-        setContractFile(null);
+    const handlePickContract = async (file) => {
+        if (!file) return;
+        await handleUploadDocument(file, 'contract');
     };
 
-    const handleUploadOther = async () => {
-        if (!otherFile) return;
-        await handleUploadDocument(otherFile, 'attachment');
-        setOtherFile(null);
+    const handlePickOtherDocument = async (file) => {
+        if (!file) return;
+        await handleUploadDocument(file, 'attachment');
     };
 
     const handlePreviewDocument = (doc) => {
@@ -466,9 +514,10 @@ const Calendar = () => {
         }));
     };
 
-    const handleAddCustomRole = () => {
-        const label = String(customRoleInput || '').trim();
-        const key = slugifyRoleKey(label);
+    const handleAddPlanningRole = (roleKey = planningRoleKey) => {
+        const key = String(roleKey || '').trim();
+        const roleConfig = ROLE_CONFIG_BY_KEY.get(key);
+        const label = roleConfig?.label || '';
         if (!label || !key) return;
         setPlanningDraft((prev) => {
             const exists = prev.customRoles.some((role) => role.key === key);
@@ -482,10 +531,10 @@ const Calendar = () => {
                 }
             };
         });
-        setCustomRoleInput('');
+        setPlanningRoleKey('');
     };
 
-    const handleRemoveCustomRole = (roleKey) => {
+    const handleRemovePlanningRole = (roleKey) => {
         setPlanningDraft((prev) => {
             const nextRoster = { ...prev.roster };
             delete nextRoster[roleKey];
@@ -695,7 +744,7 @@ const Calendar = () => {
     const roleAllowsMultiple = (roleKey) => roleAllowsMultipleByKey.get(roleKey) === true;
     const getRoleDisplayLabel = (role) => ROLE_CONFIG_BY_KEY.get(role.key)?.label || role.label;
     const orderedRoleDefinitions = useMemo(() => {
-        const sortOrder = new Map(LITURGICAL_ROLE_CONFIGS.map((role, index) => [role.key, index]));
+        const sortOrder = new Map(WORSHIP_ROLE_CATALOG.map((role, index) => [role.key, index]));
         return [...roleDefinitions].sort((a, b) => {
             const orderA = sortOrder.has(a.key) ? sortOrder.get(a.key) : Number.MAX_SAFE_INTEGER;
             const orderB = sortOrder.has(b.key) ? sortOrder.get(b.key) : Number.MAX_SAFE_INTEGER;
@@ -703,6 +752,11 @@ const Calendar = () => {
             return String(a.label || a.key || '').localeCompare(String(b.label || b.key || ''));
         });
     }, [roleDefinitions]);
+    const availablePlanningRoles = useMemo(() => {
+        const activeKeys = new Set(orderedRoleDefinitions.map((role) => role.key));
+        return WORSHIP_ROLE_CATALOG.filter((role) => !activeKeys.has(role.key));
+    }, [orderedRoleDefinitions]);
+    const isRegularSundayService = REGULAR_SUNDAY_SERVICE_SLUGS.has(String(selectedEvent?.type_slug || eventDetails?.event?.type_slug || '').trim());
     const bulletinDocs = useMemo(() => (
         eventDocs.filter((doc) => doc.doc_type === 'bulletin')
     ), [eventDocs]);
@@ -808,22 +862,23 @@ const Calendar = () => {
                         people,
                         planningDraft,
                         guestMusicianInput,
-                        customRoleInput,
+                        planningRoleKey,
                         planningSaving,
                         planningError,
                         openRosterMenu,
                         rosterMenuDirection,
-                        orderedRoleDefinitions
+                        orderedRoleDefinitions,
+                        availablePlanningRoles
                     }}
                     planningActions={{
                         setPlanningDraft,
                         setGuestMusicianInput,
-                        setCustomRoleInput,
+                        setPlanningRoleKey,
                         handleSavePlanning,
                         handleAddGuestMusician,
                         handleRemoveGuestMusician,
-                        handleAddCustomRole,
-                        handleRemoveCustomRole,
+                        handleAddPlanningRole,
+                        handleRemovePlanningRole,
                         toggleRosterMenu,
                         toggleRosterPersonSelection,
                         toggleRosterTeamSelection
@@ -841,17 +896,14 @@ const Calendar = () => {
                         bulletinDocs,
                         contractDocs,
                         attachmentDocs,
-                        bulletinFile,
-                        contractFile,
-                        otherFile
+                        linkedBulletinDoc,
+                        documentBusy,
+                        isRegularSundayService
                     }}
                     documentActions={{
-                        setBulletinFile,
-                        setContractFile,
-                        setOtherFile,
-                        handleUploadBulletin,
-                        handleUploadContract,
-                        handleUploadOther,
+                        handlePickBulletin,
+                        handlePickContract,
+                        handlePickOtherDocument,
                         handlePreviewDocument,
                         handleOpenDocument,
                         handleOpenLocation

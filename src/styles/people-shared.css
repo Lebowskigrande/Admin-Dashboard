@@ -1,7 +1,7 @@
 .role-chip-list {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
     overflow: visible;
 }
 
@@ -9,57 +9,99 @@
     position: relative;
     display: inline-flex;
     align-items: center;
+    transition: transform var(--transition-fast);
+}
+
+.person-chip-wrapper:hover {
+    transform: translateY(-1px);
 }
 
 .person-chip {
     display: inline-flex;
     align-items: center;
-    padding: 4px 8px;
+    gap: 0.45rem;
+    padding: 0.42rem 0.78rem;
     border-radius: 999px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
     color: var(--color-text-main);
-    font-size: 0.75rem;
-    font-weight: 600;
-    transition: background 0.15s ease, color 0.15s ease;
+    font-size: 0.76rem;
+    font-weight: 700;
+    line-height: 1;
+    background: #ffffff;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.92),
+        0 6px 14px rgba(15, 23, 42, 0.06);
+    transition:
+        transform var(--transition-fast),
+        box-shadow var(--transition-fast),
+        border-color var(--transition-fast),
+        filter var(--transition-fast);
     cursor: default;
 }
 
+.person-chip::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: currentColor;
+    opacity: 0.3;
+    flex-shrink: 0;
+}
+
 .person-chip:hover {
-    filter: brightness(0.7);
+    filter: none;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.96),
+        0 10px 18px rgba(15, 23, 42, 0.08);
 }
 
 .chip-selected {
-    box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.5);
+    border-color: rgba(37, 99, 235, 0.34);
+    box-shadow:
+        0 0 0 3px rgba(37, 99, 235, 0.12),
+        0 12px 20px rgba(37, 99, 235, 0.16);
+}
+
+.person-chip-pledger {
+    box-shadow:
+        0 0 0 2px rgba(245, 158, 11, 0.18),
+        0 10px 18px rgba(245, 158, 11, 0.14);
 }
 
 .person-chip-clergy {
     background: var(--person-clergy-bg);
     color: var(--person-clergy-text);
+    border-color: rgba(29, 78, 216, 0.16);
 }
 
 .person-chip-staff {
     background: var(--person-staff-bg);
     color: var(--person-staff-text);
+    border-color: rgba(4, 120, 87, 0.16);
 }
 
 .person-chip-volunteer {
     background: var(--person-volunteer-bg);
     color: var(--person-volunteer-text);
+    border-color: rgba(194, 65, 12, 0.16);
 }
 
 .person-chip-parishioner {
     background: var(--person-parishioner-bg);
     color: var(--person-parishioner-text);
+    border-color: rgba(109, 40, 217, 0.16);
 }
 
 .person-tooltip {
     position: absolute;
-    top: calc(100% + 8px);
+    top: calc(100% + 10px);
     left: 0;
     z-index: 9999;
     opacity: 0;
     pointer-events: none;
-    transform: translateY(-6px);
-    transition: opacity 0.15s ease, transform 0.15s ease;
+    transform: translateY(-6px) scale(0.985);
+    transition: opacity var(--transition-fast), transform var(--transition-fast);
 }
 
 .person-phone {
@@ -73,7 +115,7 @@
 .person-tooltip.open {
     opacity: 1;
     pointer-events: auto;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
     z-index: 9999;
 }
 
@@ -84,5 +126,223 @@
 .tooltip-person-card {
     min-width: 240px;
     max-width: 300px;
-    box-shadow: 0 18px 30px rgba(15, 23, 42, 0.18);
+    box-shadow: 0 24px 36px rgba(15, 23, 42, 0.16);
+}
+
+.role-menu-anchor {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    min-width: min(100%, 280px);
+}
+
+.role-menu-trigger {
+    width: 100%;
+    min-height: 52px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid rgba(148, 163, 184, 0.26);
+    border-radius: 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.96),
+        0 8px 20px rgba(15, 23, 42, 0.05);
+    color: var(--color-text-secondary);
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+        transform var(--transition-fast),
+        color var(--transition-fast),
+        border-color var(--transition-fast),
+        background var(--transition-fast),
+        box-shadow var(--transition-fast);
+}
+
+.role-menu-trigger:hover:not(:disabled) {
+    transform: translateY(-1px);
+    color: var(--color-text-primary);
+    border-color: rgba(37, 99, 235, 0.24);
+    background: linear-gradient(180deg, #ffffff 0%, #f4f8ff 100%);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 1),
+        0 14px 28px rgba(15, 23, 42, 0.08);
+}
+
+.role-menu-trigger:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.role-trigger-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+    text-align: left;
+}
+
+.role-label {
+    font-weight: 700;
+    color: var(--color-primary-dark);
+}
+
+.role-label-trigger {
+    color: var(--color-text-secondary);
+}
+
+.role-label-trigger:hover .role-label {
+    color: var(--color-text-primary);
+}
+
+.role-trigger-meta {
+    max-width: 100%;
+    font-size: 0.73rem;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.role-trigger-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 30px;
+    height: 30px;
+    padding: 0 0.55rem;
+    border-radius: 999px;
+    background: rgba(37, 99, 235, 0.08);
+    color: #1d4ed8;
+    font-size: 0.73rem;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+}
+
+.caret-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.12);
+    color: var(--color-text-secondary);
+    transition: transform var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.caret-icon.open {
+    transform: rotate(90deg);
+    background: rgba(37, 99, 235, 0.12);
+    color: #1d4ed8;
+}
+
+.person-menu {
+    position: absolute;
+    right: 0;
+    margin: 8px 0;
+    min-width: 280px;
+    max-width: min(360px, calc(100vw - 32px));
+    max-height: 320px;
+    overflow-y: auto;
+    border-radius: 18px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: blur(18px);
+    box-shadow: 0 26px 54px rgba(15, 23, 42, 0.2);
+    padding: 0.6rem;
+    z-index: 2000;
+    opacity: 1;
+    transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.person-menu.open-up {
+    bottom: 100%;
+    top: auto;
+    animation: person-menu-in-up var(--transition-fast) var(--ease-standard);
+}
+
+.person-menu.open-down {
+    top: 100%;
+    bottom: auto;
+    animation: person-menu-in-down var(--transition-fast) var(--ease-standard);
+}
+
+@keyframes person-menu-in-up {
+    from {
+        opacity: 0;
+        transform: translateY(-8px) scale(0.985);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes person-menu-in-down {
+    from {
+        opacity: 0;
+        transform: translateY(8px) scale(0.985);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.person-menu-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.22rem;
+}
+
+.person-menu-section + .person-menu-section {
+    margin-top: 0.5rem;
+}
+
+.person-menu-title {
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+    margin: 0.1rem 0.35rem 0.2rem;
+    font-weight: 700;
+}
+
+.person-menu-divider {
+    height: 1px;
+    background: rgba(15, 23, 42, 0.07);
+    margin: 0.35rem 0;
+}
+
+.person-menu-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0.2rem;
+    border: none;
+    border-radius: 14px;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    transition: background var(--transition-fast), transform var(--transition-fast);
+}
+
+.person-menu-item:hover {
+    background: rgba(37, 99, 235, 0.06);
+    transform: translateX(2px);
+}
+
+.person-menu-item .person-chip {
+    width: 100%;
+    justify-content: flex-start;
 }

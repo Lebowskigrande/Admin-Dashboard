@@ -214,6 +214,11 @@
     align-self: flex-start;
 }
 
+.schedule-roles .role-menu-anchor {
+    width: 100%;
+    min-width: 0;
+}
+
 .schedule-roles .role-chip-list {
     flex: 1 1 auto;
     min-width: 0;
