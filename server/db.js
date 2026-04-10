@@ -5,6 +5,17 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './db/schema.js';
 import { vestryChecklistItems } from './vestryChecklistData.js';
 import { syncPledgerFlagsInPeople } from './helpers/pledger-utils.js';
+import {
+    normalizeTicketCategory,
+    normalizeTicketPriority,
+    normalizeTicketStatus
+} from '../shared/tickets.js';
+import {
+    normalizeOrderCategory,
+    normalizeOrderItemStatus,
+    normalizeOrderPriority,
+    normalizePurchaseOrderStatus
+} from '../shared/orders.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -138,6 +149,61 @@ const ensureRuntimeTables = () => {
             ON task_progress_history(task_instance_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_task_progress_history_created_at
             ON task_progress_history(created_at);
+
+        CREATE TABLE IF NOT EXISTS purchase_orders (
+            id TEXT PRIMARY KEY,
+            vendor_name TEXT NOT NULL,
+            order_number TEXT,
+            status TEXT NOT NULL DEFAULT 'draft',
+            placed_at TEXT,
+            expected_delivery_at TEXT,
+            delivered_at TEXT,
+            tracking_number TEXT,
+            shipping_cost REAL,
+            subtotal_amount REAL,
+            tax_amount REAL,
+            total_amount REAL,
+            return_deadline TEXT,
+            order_url TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS order_items (
+            id TEXT PRIMARY KEY,
+            purchase_order_id TEXT REFERENCES purchase_orders(id) ON DELETE SET NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            vendor_name TEXT,
+            category TEXT NOT NULL DEFAULT 'other',
+            priority TEXT NOT NULL DEFAULT 'normal',
+            quantity INTEGER NOT NULL DEFAULT 1,
+            unit TEXT,
+            estimated_cost REAL,
+            requested_by TEXT,
+            needed_by TEXT,
+            status TEXT NOT NULL DEFAULT 'needed',
+            order_url TEXT,
+            notes TEXT,
+            received_quantity INTEGER NOT NULL DEFAULT 0,
+            returned_quantity INTEGER NOT NULL DEFAULT 0,
+            return_reason TEXT,
+            return_requested_at TEXT,
+            returned_at TEXT,
+            refund_received_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_purchase_orders_status_expected
+            ON purchase_orders(status, expected_delivery_at);
+        CREATE INDEX IF NOT EXISTS idx_purchase_orders_vendor_name
+            ON purchase_orders(vendor_name);
+        CREATE INDEX IF NOT EXISTS idx_order_items_status_needed
+            ON order_items(status, needed_by);
+        CREATE INDEX IF NOT EXISTS idx_order_items_purchase_order
+            ON order_items(purchase_order_id);
     `);
 };
 
@@ -224,11 +290,132 @@ const ensurePeopleColumns = () => {
     addColumn('is_pledger');
 };
 
+const ensureTicketColumns = () => {
+    const table = sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tickets'
+    `).get();
+    if (!table) return;
+
+    const columns = sqlite.prepare('PRAGMA table_info(tickets)').all().map((col) => col.name);
+    const columnSet = new Set(columns);
+    const addColumn = (name, definition) => {
+        if (!columnSet.has(name)) {
+            sqlite.exec(`ALTER TABLE tickets ADD COLUMN ${name} ${definition}`);
+            columnSet.add(name);
+        }
+    };
+
+    addColumn('priority', "TEXT NOT NULL DEFAULT 'normal'");
+    addColumn('category', "TEXT NOT NULL DEFAULT 'general'");
+    addColumn('requested_by', 'TEXT');
+    addColumn('assigned_to', 'TEXT');
+    addColumn('vendor_id', 'TEXT');
+    addColumn('target_date', 'TEXT');
+
+    sqlite.exec(`
+        UPDATE tickets
+        SET
+            status = CASE
+                WHEN status IS NULL OR TRIM(status) = '' THEN 'new'
+                WHEN LOWER(REPLACE(REPLACE(status, ' ', '_'), '-', '_')) = 'reviewed' THEN 'open'
+                WHEN LOWER(REPLACE(REPLACE(status, ' ', '_'), '-', '_')) = 'in_process' THEN 'in_progress'
+                WHEN LOWER(REPLACE(REPLACE(status, ' ', '_'), '-', '_')) = 'closed' THEN 'done'
+                ELSE LOWER(REPLACE(REPLACE(status, ' ', '_'), '-', '_'))
+            END
+    `);
+
+    const rows = sqlite.prepare('SELECT id, status, priority, category FROM tickets').all();
+    const update = sqlite.prepare(`
+        UPDATE tickets
+        SET status = ?, priority = ?, category = ?
+        WHERE id = ?
+    `);
+    rows.forEach((row) => {
+        update.run(
+            normalizeTicketStatus(row.status),
+            normalizeTicketPriority(row.priority),
+            normalizeTicketCategory(row.category),
+            row.id
+        );
+    });
+
+    sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tickets_status_target_date ON tickets(status, target_date)');
+    sqlite.exec('CREATE INDEX IF NOT EXISTS idx_tickets_vendor_id ON tickets(vendor_id)');
+};
+
+const ensureOrdersModule = () => {
+    if (sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'purchase_orders'
+    `).get()) {
+        sqlite.exec(`
+            UPDATE purchase_orders
+            SET status = LOWER(REPLACE(REPLACE(COALESCE(status, 'draft'), ' ', '_'), '-', '_'))
+        `);
+        const orders = sqlite.prepare(`
+            SELECT id, status FROM purchase_orders
+        `).all();
+        const updateOrder = sqlite.prepare(`
+            UPDATE purchase_orders
+            SET status = ?
+            WHERE id = ?
+        `);
+        orders.forEach((row) => {
+            updateOrder.run(normalizePurchaseOrderStatus(row.status), row.id);
+        });
+    }
+
+    if (sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'order_items'
+    `).get()) {
+        sqlite.exec(`
+            UPDATE order_items
+            SET
+                status = LOWER(REPLACE(REPLACE(COALESCE(status, 'needed'), ' ', '_'), '-', '_')),
+                priority = LOWER(REPLACE(REPLACE(COALESCE(priority, 'normal'), ' ', '_'), '-', '_')),
+                category = LOWER(REPLACE(REPLACE(COALESCE(category, 'other'), ' ', '_'), '-', '_'))
+        `);
+        const items = sqlite.prepare(`
+            SELECT id, status, priority, category FROM order_items
+        `).all();
+        const updateItem = sqlite.prepare(`
+            UPDATE order_items
+            SET status = ?, priority = ?, category = ?
+            WHERE id = ?
+        `);
+        items.forEach((row) => {
+            updateItem.run(
+                normalizeOrderItemStatus(row.status),
+                normalizeOrderPriority(row.priority),
+                normalizeOrderCategory(row.category),
+                row.id
+            );
+        });
+    }
+
+    if (sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'recurring_task_templates'
+    `).get()) {
+        sqlite.prepare(`
+            INSERT OR IGNORE INTO recurring_task_templates (
+                id, origin_type, origin_id, list_key, list_title, list_mode,
+                step_key, title, sort_order, due_offset_days, anchor_monthdays,
+                schedule_rule, priority_base, active, created_at, updated_at
+            ) VALUES (
+                'tmpl-ops-orders', 'operations', 'weekly', 'ops-weekly', 'Weekly Ops', 'parallel',
+                'orders', 'Review orders queue', 95, NULL, NULL,
+                NULL, 55, 1, datetime('now'), datetime('now')
+            )
+        `).run();
+    }
+};
+
 export const initializeDatabaseRuntime = () => {
     ensureRuntimeTables();
     ensureSharefileJobEventsColumns();
     ensureRecurringTaskTemplateColumns();
     ensurePeopleColumns();
+    ensureTicketColumns();
+    ensureOrdersModule();
     console.log('Database runtime initialized at', dbPath);
 };
 

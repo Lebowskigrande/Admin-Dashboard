@@ -26,6 +26,7 @@ import filesRouter from './routes/files.js';
 import sharefileRouter from './routes/sharefile.js';
 import tasksRouter from './routes/tasks.js';
 import eventsRouter from './routes/events.js';
+import ordersRouter from './routes/orders.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -92,6 +93,7 @@ export const createApp = ({ clientOrigin = process.env.CLIENT_ORIGIN || 'http://
     app.use('/api/files', filesRouter);
     app.use('/api', tasksRouter);
     app.use('/api', eventsRouter);
+    app.use('/api', ordersRouter);
 
     app.get('/api/db-backups/latest', requireAdmin, async (_req, res) => {
         try {

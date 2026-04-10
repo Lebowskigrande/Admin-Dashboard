@@ -11,6 +11,19 @@ import {
 } from '../server/helpers/task-progress-history.js';
 import { buildOriginRollups } from '../server/services/taskEngine.js';
 import { sqlite as db } from '../server/db.js';
+import {
+    getTicketDueMeta,
+    normalizeTicketRecord,
+    normalizeTicketStatus,
+    summarizeTickets
+} from '../shared/tickets.js';
+import {
+    buildOrdersSnapshot,
+    linkManualOrdersToEmailPackages,
+    normalizeOrderItemRecord,
+    normalizeOrderItemStatus,
+    normalizePurchaseOrderStatus
+} from '../shared/orders.js';
 
 const fixturesDir = join(process.cwd(), 'tests', 'fixtures');
 const TEST_TASK_HISTORY_PREFIX = 'test-taskhist-';
@@ -241,6 +254,155 @@ const tests = [
                 'Proof + Approve',
                 'Print'
             ]);
+        }
+    },
+    {
+        name: 'Legacy ticket statuses normalize into the current workflow states',
+        run: async () => {
+            assert.equal(normalizeTicketStatus('reviewed'), 'open');
+            assert.equal(normalizeTicketStatus('in_process'), 'in_progress');
+            assert.equal(normalizeTicketStatus('closed'), 'done');
+        }
+    },
+    {
+        name: 'Ticket summary tracks overdue and vendorless active tickets',
+        run: async () => {
+            const tickets = [
+                normalizeTicketRecord({
+                    id: 'ticket-overdue',
+                    status: 'in_process',
+                    priority: 'high',
+                    vendor_id: '',
+                    target_date: '2026-04-08'
+                }),
+                normalizeTicketRecord({
+                    id: 'ticket-blocked',
+                    status: 'blocked',
+                    priority: 'critical',
+                    vendor_id: 'vendor-hvac',
+                    target_date: '2026-04-12'
+                }),
+                normalizeTicketRecord({
+                    id: 'ticket-complete',
+                    status: 'closed',
+                    priority: 'normal'
+                })
+            ];
+
+            const summary = summarizeTickets(tickets, { today: new Date('2026-04-10T12:00:00Z') });
+            assert.equal(summary.total, 3);
+            assert.equal(summary.active, 2);
+            assert.equal(summary.closed, 1);
+            assert.equal(summary.blocked, 1);
+            assert.equal(summary.urgent, 2);
+            assert.equal(summary.overdue, 1);
+            assert.equal(summary.no_vendor, 1);
+
+            const due = getTicketDueMeta(tickets[0], { today: new Date('2026-04-10T12:00:00Z') });
+            assert.equal(due.key, 'overdue');
+        }
+    },
+    {
+        name: 'Orders module normalizes item and purchase order statuses',
+        run: async () => {
+            assert.equal(normalizeOrderItemStatus('delivered'), 'received');
+            assert.equal(normalizeOrderItemStatus('return requested'), 'return_pending');
+            assert.equal(normalizePurchaseOrderStatus('ordered'), 'placed');
+            assert.equal(normalizePurchaseOrderStatus('received'), 'delivered');
+        }
+    },
+    {
+        name: 'Orders matching links manual requests to matching email package updates',
+        run: async () => {
+            const items = [
+                normalizeOrderItemRecord({
+                    id: 'orditem-toner',
+                    title: 'Printer toner',
+                    requested_by: 'Office',
+                    needed_by: '2026-04-12'
+                }),
+                normalizeOrderItemRecord({
+                    id: 'orditem-candles',
+                    title: 'Altar candle oil',
+                    requested_by: 'Buildings',
+                    needed_by: '2026-04-15'
+                })
+            ];
+            const emailPackages = [
+                {
+                    id: 'pkg-toner',
+                    packageName: 'HP 206A printer toner cartridge',
+                    latestStatus: 'ordered',
+                    latestStatusLabel: 'Ordered',
+                    latestAt: '2026-04-10T15:00:00.000Z',
+                    carrier: 'Amazon',
+                    updates: []
+                },
+                {
+                    id: 'pkg-unmatched',
+                    packageName: 'Palm Sunday crosses',
+                    latestStatus: 'shipped',
+                    latestStatusLabel: 'Shipped',
+                    latestAt: '2026-04-10T17:00:00.000Z',
+                    carrier: 'UPS',
+                    updates: []
+                }
+            ];
+
+            const linked = linkManualOrdersToEmailPackages({ items, emailPackages });
+            assert.equal(linked.itemMatchesById['orditem-toner']?.emailId, 'pkg-toner');
+            assert.equal(Boolean(linked.itemMatchesById['orditem-candles']), false);
+        }
+    },
+    {
+        name: 'Orders snapshot separates requests, tracked orders, deliveries, and returns',
+        run: async () => {
+            const items = [
+                normalizeOrderItemRecord({
+                    id: 'orditem-needed',
+                    title: 'Printer toner',
+                    requested_by: 'Office',
+                    needed_by: '2026-04-12',
+                    status: 'needed'
+                }),
+                normalizeOrderItemRecord({
+                    id: 'orditem-return',
+                    title: 'LED floodlight',
+                    requested_by: 'Buildings',
+                    needed_by: '2026-04-09',
+                    status: 'return_pending'
+                })
+            ];
+            const emailPackages = [
+                {
+                    id: 'pkg-unmatched-ordered',
+                    packageName: 'Palm Sunday crosses',
+                    latestStatus: 'ordered',
+                    latestStatusLabel: 'Ordered',
+                    latestAt: '2026-04-10T15:00:00.000Z',
+                    carrier: 'Amazon',
+                    updates: []
+                },
+                {
+                    id: 'pkg-unmatched-shipped',
+                    packageName: 'Kitchen gloves bulk pack',
+                    latestStatus: 'shipped',
+                    latestStatusLabel: 'Shipped',
+                    latestAt: '2026-04-10T17:00:00.000Z',
+                    carrier: 'UPS',
+                    updates: []
+                }
+            ];
+
+            const snapshot = buildOrdersSnapshot({ items, emailPackages });
+            assert.equal(snapshot.summary.requested, 1);
+            assert.equal(snapshot.summary.orders, 1);
+            assert.equal(snapshot.summary.deliveries, 1);
+            assert.equal(snapshot.summary.returns, 1);
+            assert.equal(snapshot.sections.requests[0].item.id, 'orditem-needed');
+            assert.equal(snapshot.sections.orders[0].source, 'email');
+            assert.equal(snapshot.sections.deliveries[0].tracking.id, 'pkg-unmatched-shipped');
+            assert.equal(snapshot.sections.returns[0].item.id, 'orditem-return');
         }
     },
     {

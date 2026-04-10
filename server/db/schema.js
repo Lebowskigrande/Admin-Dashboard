@@ -100,6 +100,29 @@ export const preferredVendors = sqliteTable('preferred_vendors', {
     contract: text('contract')
 });
 
+export const tickets = sqliteTable('tickets', {
+    id: text('id').primaryKey(),
+    title: text('title').notNull(),
+    description: text('description'),
+    status: text('status').notNull().default('new'),
+    priority: text('priority').notNull().default('normal'),
+    category: text('category').notNull().default('general'),
+    requestedBy: text('requested_by'),
+    assignedTo: text('assigned_to'),
+    vendorId: text('vendor_id'),
+    targetDate: text('target_date'),
+    notes: text('notes'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull()
+});
+
+export const ticketAreas = sqliteTable('ticket_areas', {
+    ticketId: text('ticket_id').notNull(),
+    areaId: text('area_id').notNull()
+}, (table) => ({
+    pk: primaryKey({ columns: [table.ticketId, table.areaId] })
+}));
+
 export const eventCategories = sqliteTable('event_categories', {
     id: integer('id').primaryKey({ autoIncrement: true }),
     name: text('name').notNull(),
@@ -270,6 +293,52 @@ export const recurringTaskTemplates = sqliteTable('recurring_task_templates', {
     scheduleRule: text('schedule_rule'),
     priorityBase: integer('priority_base').notNull().default(50),
     active: integer('active').notNull().default(1),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull()
+});
+
+export const purchaseOrders = sqliteTable('purchase_orders', {
+    id: text('id').primaryKey(),
+    vendorName: text('vendor_name').notNull(),
+    orderNumber: text('order_number'),
+    status: text('status').notNull().default('draft'),
+    placedAt: text('placed_at'),
+    expectedDeliveryAt: text('expected_delivery_at'),
+    deliveredAt: text('delivered_at'),
+    trackingNumber: text('tracking_number'),
+    shippingCost: real('shipping_cost'),
+    subtotalAmount: real('subtotal_amount'),
+    taxAmount: real('tax_amount'),
+    totalAmount: real('total_amount'),
+    returnDeadline: text('return_deadline'),
+    orderUrl: text('order_url'),
+    notes: text('notes'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull()
+});
+
+export const orderItems = sqliteTable('order_items', {
+    id: text('id').primaryKey(),
+    purchaseOrderId: text('purchase_order_id'),
+    title: text('title').notNull(),
+    description: text('description'),
+    vendorName: text('vendor_name'),
+    category: text('category').notNull().default('other'),
+    priority: text('priority').notNull().default('normal'),
+    quantity: integer('quantity').notNull().default(1),
+    unit: text('unit'),
+    estimatedCost: real('estimated_cost'),
+    requestedBy: text('requested_by'),
+    neededBy: text('needed_by'),
+    status: text('status').notNull().default('needed'),
+    orderUrl: text('order_url'),
+    notes: text('notes'),
+    receivedQuantity: integer('received_quantity').notNull().default(0),
+    returnedQuantity: integer('returned_quantity').notNull().default(0),
+    returnReason: text('return_reason'),
+    returnRequestedAt: text('return_requested_at'),
+    returnedAt: text('returned_at'),
+    refundReceivedAt: text('refund_received_at'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull()
 });

@@ -10,7 +10,9 @@ import {
     FaMailBulk,
     FaFileAlt,
     FaLayerGroup,
+    FaLandmark,
     FaMusic,
+    FaBoxes,
     FaTools,
     FaUsers,
     FaUtensils
@@ -40,6 +42,8 @@ const SECTION_ICON_MAP = {
     followup: FaCalendarCheck,
     hospitality: FaUtensils,
     finance: FaDollarSign,
+    orders: FaBoxes,
+    deposits: FaLandmark,
     receivables: ReceivablesIcon,
     payables: PayablesIcon,
     general: FaClipboardList

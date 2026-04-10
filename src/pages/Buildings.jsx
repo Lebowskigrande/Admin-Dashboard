@@ -1,10 +1,9 @@
-import { FaTools, FaClipboardList, FaAddressBook, FaFileAlt } from 'react-icons/fa';
+import { FaTools, FaClipboardList, FaAddressBook } from 'react-icons/fa';
 import BuildingsNeeds from './buildings/BuildingsNeeds';
 import BuildingsVendors from './buildings/BuildingsVendors';
 import BuildingsTickets from './buildings/BuildingsTickets';
 import BuildingsMap from './buildings/BuildingsMap';
 import BuildingsTicketModal from './buildings/BuildingsTicketModal';
-import BuildingsRecords from './buildings/BuildingsRecords';
 import { useBuildingsData } from './buildings/useBuildingsData';
 import './Buildings.css';
 
@@ -17,18 +16,16 @@ const Buildings = () => {
         tickets,
         ticketsLoading,
         ticketsError,
-        ticketRecommendations,
-        ticketRecommendationsLoading,
-        ticketRecommendationsError,
         showTicketModal,
+        ticketFocus,
+        editingTicketId,
         selectedTicketId,
         archiveExpanded,
-        ticketStatusExpandedKey,
         ticketsViewRef,
         roomsExpanded,
         roomsListRef,
         roomsHeight,
-        newTicket,
+        ticketDraft,
         newNote,
         newTaskText,
         needs,
@@ -38,37 +35,31 @@ const Buildings = () => {
         vendors,
         vendorsLoading,
         vendorsError,
-        architecturalOverview,
-        architecturalOverviewLoading,
-        architecturalOverviewError,
-        activeArchitecturalRecords,
-        activeArchitecturalLayers,
-        activeArchitecturalUtilities,
-        activeArchitecturalSystems,
-        activeArchitecturalSummary,
         mapAreas,
         orderedAreas,
         areaById,
         activeDetails,
         activeBuilding,
+        activeBuildingEvents,
+        buildingEventsLoading,
         activeAreaTickets,
         selectedTicket,
         formatSqft,
         setActiveTab,
         setActiveArea,
         setHoveredArea,
-        setShowTicketModal,
+        setTicketFocus,
         setSelectedTicketId,
         setArchiveExpanded,
-        setTicketStatusExpandedKey,
         setRoomsExpanded,
-        setNewTicket,
+        setTicketDraft,
         setNewNote,
         setNewTaskText,
         setNewNeed,
         openTicketModal,
+        closeTicketModal,
         toggleTicketArea,
-        createTicket,
+        saveTicket,
         updateTicket,
         addTicketNote,
         addTicketTask,
@@ -93,7 +84,7 @@ const Buildings = () => {
             <header className="buildings-header page-header-bar">
                 <div className="page-header-title">
                     <h1>Buildings & Grounds</h1>
-                    <p className="page-header-subtitle">Facilities tickets, campus map context, vendors, and architectural records in one workspace.</p>
+                    <p className="page-header-subtitle">Facilities tickets, campus map context, vendors, and long-term needs in one workspace.</p>
                 </div>
             </header>
 
@@ -107,9 +98,6 @@ const Buildings = () => {
                 <button className={`tab-btn ${activeTab === 'vendors' ? 'active' : ''}`} onClick={() => setActiveTab('vendors')}>
                     <FaAddressBook /> Preferred Vendors
                 </button>
-                <button className={`tab-btn ${activeTab === 'records' ? 'active' : ''}`} onClick={() => setActiveTab('records')}>
-                    <FaFileAlt /> Architectural Records
-                </button>
                 <button className={`tab-btn ${activeTab === 'needs' ? 'active' : ''}`} onClick={() => setActiveTab('needs')}>
                     <FaClipboardList /> Long Term Needs
                 </button>
@@ -120,22 +108,21 @@ const Buildings = () => {
                     tickets={tickets}
                     ticketsLoading={ticketsLoading}
                     ticketsError={ticketsError}
-                    ticketRecommendations={ticketRecommendations}
-                    ticketRecommendationsLoading={ticketRecommendationsLoading}
-                    ticketRecommendationsError={ticketRecommendationsError}
                     selectedTicketId={selectedTicketId}
                     selectedTicket={selectedTicket}
                     archiveExpanded={archiveExpanded}
-                    ticketStatusExpandedKey={ticketStatusExpandedKey}
+                    ticketFocus={ticketFocus}
                     ticketsViewRef={ticketsViewRef}
                     areaById={areaById}
+                    vendors={vendors}
                     newNote={newNote}
                     newTaskText={newTaskText}
                     setNewNote={setNewNote}
                     setNewTaskText={setNewTaskText}
+                    setActiveTab={setActiveTab}
                     setSelectedTicketId={setSelectedTicketId}
                     setArchiveExpanded={setArchiveExpanded}
-                    setTicketStatusExpandedKey={setTicketStatusExpandedKey}
+                    setTicketFocus={setTicketFocus}
                     openTicketModal={openTicketModal}
                     updateTicket={updateTicket}
                     addTicketTask={addTicketTask}
@@ -154,6 +141,8 @@ const Buildings = () => {
                     setHoveredArea={setHoveredArea}
                     activeDetails={activeDetails}
                     activeBuilding={activeBuilding}
+                    activeBuildingEvents={activeBuildingEvents}
+                    buildingEventsLoading={buildingEventsLoading}
                     buildingsError={buildingsError}
                     roomsExpanded={roomsExpanded}
                     setRoomsExpanded={setRoomsExpanded}
@@ -162,13 +151,6 @@ const Buildings = () => {
                     formatSqft={formatSqft}
                     activeAreaTickets={activeAreaTickets}
                     focusTicket={focusTicket}
-                    setActiveTab={setActiveTab}
-                    activeArchitecturalRecords={activeArchitecturalRecords}
-                    activeArchitecturalLayers={activeArchitecturalLayers}
-                    activeArchitecturalUtilities={activeArchitecturalUtilities}
-                    activeArchitecturalSystems={activeArchitecturalSystems}
-                    activeArchitecturalSummary={activeArchitecturalSummary}
-                    architecturalAreaLoading={architecturalOverviewLoading}
                 />
             )}
             {activeTab === 'vendors' && (
@@ -176,17 +158,6 @@ const Buildings = () => {
                     vendors={vendors}
                     vendorsLoading={vendorsLoading}
                     vendorsError={vendorsError}
-                />
-            )}
-            {activeTab === 'records' && (
-                <BuildingsRecords
-                    recordsOverview={architecturalOverview}
-                    recordsLoading={architecturalOverviewLoading}
-                    recordsError={architecturalOverviewError}
-                    mapAreas={mapAreas}
-                    areaById={areaById}
-                    setActiveTab={setActiveTab}
-                    setActiveArea={setActiveArea}
                 />
             )}
             {activeTab === 'needs' && (
@@ -203,12 +174,14 @@ const Buildings = () => {
 
             <BuildingsTicketModal
                 isOpen={showTicketModal}
-                onClose={() => setShowTicketModal(false)}
-                newTicket={newTicket}
-                setNewTicket={setNewTicket}
+                onClose={closeTicketModal}
+                editingTicketId={editingTicketId}
+                ticketDraft={ticketDraft}
+                setTicketDraft={setTicketDraft}
                 mapAreas={mapAreas}
+                vendors={vendors}
                 toggleTicketArea={toggleTicketArea}
-                createTicket={createTicket}
+                saveTicket={saveTicket}
             />
         </div>
     );

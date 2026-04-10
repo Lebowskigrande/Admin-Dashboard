@@ -15,6 +15,7 @@ import {
     sortTasksByPriority
 } from './todo/todoHelpers';
 import { getSectionIconComponent } from './todo/todoVisuals';
+import { isTicketClosedStatus, summarizeTickets } from '../../shared/tickets.js';
 import './Dashboard.css';
 
 const REGULAR_SUNDAY_SERVICE_SLUGS = new Set(['weekly-service', 'rite-i-service', 'rite-ii-service']);
@@ -114,6 +115,12 @@ const eventSourceLabel = (event) => {
     return event?.category_name || 'Event';
 };
 
+const buildBuildingsRoute = (focus = '') => {
+    const params = new URLSearchParams({ tab: 'tickets' });
+    if (focus) params.set('focus', focus);
+    return `${APP_ROUTES.buildings}?${params.toString()}`;
+};
+
 const Dashboard = () => {
     const navigate = useNavigate();
     const { events, loading: eventsLoading, lastSynced, refreshEvents } = useEvents();
@@ -197,7 +204,8 @@ const Dashboard = () => {
     const blocked = useMemo(() => openTasks.filter((task) => Number(task?.blocked) || String(task?.instance_state || '').toLowerCase() === 'blocked'), [openTasks]);
     const routing = useMemo(() => ([...(snapshot.ap?.entries || []), ...(snapshot.ar?.entries || [])]), [snapshot.ap?.entries, snapshot.ar?.entries]);
     const routingFailures = useMemo(() => routing.filter((entry) => entry?.status === 'failure'), [routing]);
-    const openTickets = useMemo(() => snapshot.tickets.filter((ticket) => !['done', 'wont_do'].includes(String(ticket?.status || '').toLowerCase())), [snapshot.tickets]);
+    const ticketSummary = useMemo(() => summarizeTickets(snapshot.tickets), [snapshot.tickets]);
+    const openTickets = useMemo(() => snapshot.tickets.filter((ticket) => !isTicketClosedStatus(ticket?.status)), [snapshot.tickets]);
     const blockedTickets = useMemo(() => openTickets.filter((ticket) => String(ticket?.status || '').toLowerCase() === 'blocked'), [openTickets]);
 
     const nextSundayOrigin = useMemo(() => {
@@ -280,11 +288,11 @@ const Dashboard = () => {
             key: 'buildings',
             label: 'Buildings',
             icon: <FaBuilding />,
-            route: APP_ROUTES.buildings,
+            route: ticketSummary.blocked ? buildBuildingsRoute('blocked') : buildBuildingsRoute(ticketSummary.triage ? 'triage' : ''),
             accent: 'accent-buildings',
             value: `${openTickets.length} open`,
             detail: `${blockedTickets.length} blocked · ${snapshot.buildings.length} mapped areas`,
-            note: `${Number(snapshot.records?.summary?.documentCount || 0)} records on file`
+            note: `${ticketSummary.overdue} past target · ${ticketSummary.no_vendor} without vendor`
         },
         {
             key: 'people',
@@ -317,14 +325,17 @@ const Dashboard = () => {
         overdue.length,
         routing.length,
         routingFailures.length,
-        snapshot.buildings.length,
         snapshot.engine?.runtime?.lastSeedAt,
         snapshot.people.length,
-        snapshot.records?.summary?.documentCount,
         snapshot.vendors.length,
         sundayEvents.length,
         sundayServices,
         sundayTasks.length,
+        ticketSummary.blocked,
+        ticketSummary.no_vendor,
+        ticketSummary.overdue,
+        ticketSummary.triage,
+        ticketSummary.urgent,
         todayEvents.length,
         visibleEvents.length,
         week
@@ -382,8 +393,17 @@ const Dashboard = () => {
                 key: 'blocked-tickets',
                 title: 'Blocked building tickets',
                 detail: `${blockedTickets.length} facilities ticket${blockedTickets.length === 1 ? '' : 's'} waiting on a dependency.`,
-                route: APP_ROUTES.buildings,
+                route: buildBuildingsRoute('blocked'),
                 tone: 'warning'
+            });
+        }
+        if (ticketSummary.overdue) {
+            rows.push({
+                key: 'ticket-overdue',
+                title: 'Facilities past target date',
+                detail: `${ticketSummary.overdue} building ticket${ticketSummary.overdue === 1 ? ' is' : 's are'} past target date.`,
+                route: buildBuildingsRoute('due_soon'),
+                tone: 'danger'
             });
         }
         return rows.slice(0, 6);
@@ -394,10 +414,10 @@ const Dashboard = () => {
         overdue.length,
         routingFailures.length,
         snapshot.warnings.length,
-        APP_ROUTES.buildings,
         APP_ROUTES.finance,
         APP_ROUTES.settings,
-        APP_ROUTES.todo
+        APP_ROUTES.todo,
+        ticketSummary.overdue
     ]);
 
     const focusQueue = useMemo(() => (

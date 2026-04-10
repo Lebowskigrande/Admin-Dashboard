@@ -12,11 +12,18 @@ import {
     recommendArchitecturalRecordsForTicket
 } from '../helpers/architectural-records.js';
 import { listTaskInstances, deleteTaskInstance } from '../services/taskEngine.js';
+import {
+    TICKET_STATUS_OPTIONS,
+    normalizeTicketCategory,
+    normalizeTicketPriority,
+    normalizeTicketRecord,
+    normalizeTicketStatus
+} from '../../shared/tickets.js';
 
 const router = express.Router();
 const DROPBOX_ROOT = process.env.DB_BACKUP_DIR ? join(process.env.DB_BACKUP_DIR, '..') : 'C:\\Users\\Secretary\\Dropbox\\MacMini';
 
-const TICKET_STATUSES = ['new', 'open', 'in_progress', 'blocked', 'done', 'wont_do'];
+const TICKET_STATUSES = TICKET_STATUS_OPTIONS.map((option) => option.value);
 
 const buildBuildingMapId = (name = '') => {
     const normalized = slugifyName(name);
@@ -113,6 +120,36 @@ router.get('/buildings', (req, res) => {
         };
     });
     res.json(buildings);
+});
+
+router.get('/buildings/:id/events', (req, res) => {
+    const buildingId = String(req.params?.id || '').trim();
+    if (!buildingId) {
+        return res.status(400).json({ error: 'building id is required' });
+    }
+    if (!tableExists('event_occurrences') || !tableExists('events')) {
+        return res.json([]);
+    }
+    const rows = db.prepare(`
+        SELECT
+            o.id AS occurrence_id,
+            o.date,
+            o.start_time,
+            o.end_time,
+            e.id AS event_id,
+            e.title,
+            e.description,
+            t.name AS type_name,
+            t.slug AS type_slug
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        LEFT JOIN event_types t ON t.id = e.event_type_id
+        WHERE o.building_id = ?
+          AND o.date >= date('now')
+        ORDER BY o.date ASC, COALESCE(o.start_time, '') ASC
+        LIMIT 24
+    `).all(buildingId);
+    return res.json(rows);
 });
 
 router.get('/buildings/records/overview', async (_req, res) => {
@@ -376,17 +413,23 @@ const buildTicketResponse = (ticketRow) => {
         priority_tier: task.priority_tier
     }));
 
-    return {
+    return normalizeTicketRecord({
         id: ticketRow.id,
         title: ticketRow.title,
         description: ticketRow.description || '',
         status: ticketRow.status,
+        priority: ticketRow.priority,
+        category: ticketRow.category,
+        requested_by: ticketRow.requested_by || '',
+        assigned_to: ticketRow.assigned_to || '',
+        vendor_id: ticketRow.vendor_id || '',
+        target_date: ticketRow.target_date || '',
         notes: parseJsonField(ticketRow.notes),
         areas,
         tasks,
         created_at: ticketRow.created_at,
         updated_at: ticketRow.updated_at
-    };
+    });
 };
 
 router.get('/tickets', (req, res) => {
@@ -449,6 +492,12 @@ router.post('/tickets', (req, res) => {
         title,
         description = '',
         status = 'new',
+        priority = 'normal',
+        category = 'general',
+        requested_by = '',
+        assigned_to = '',
+        vendor_id = '',
+        target_date = '',
         notes = [],
         area_ids = []
     } = req.body || {};
@@ -458,22 +507,39 @@ router.post('/tickets', (req, res) => {
         return res.status(400).json({ error: 'Title is required' });
     }
 
-    if (!TICKET_STATUSES.includes(status)) {
+    const normalizedStatus = normalizeTicketStatus(status, '');
+    if (!normalizedStatus || !TICKET_STATUSES.includes(normalizedStatus)) {
         return res.status(400).json({ error: 'Invalid status' });
     }
+    const normalizedPriority = normalizeTicketPriority(priority);
+    const normalizedCategory = normalizeTicketCategory(category);
+    const normalizedRequestedBy = String(requested_by || '').trim();
+    const normalizedAssignedTo = String(assigned_to || '').trim();
+    const normalizedVendorId = String(vendor_id || '').trim();
+    const normalizedTargetDate = String(target_date || '').trim();
 
     const now = new Date().toISOString();
     const baseId = slugifyName(normalizedTitle) || `ticket-${Date.now()}`;
     const id = ensureUniqueId(baseId, 'tickets');
 
     db.prepare(`
-        INSERT INTO tickets (id, title, description, status, notes, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tickets (
+            id, title, description, status, priority, category,
+            requested_by, assigned_to, vendor_id, target_date,
+            notes, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         id,
         normalizedTitle,
         description,
-        status,
+        normalizedStatus,
+        normalizedPriority,
+        normalizedCategory,
+        normalizedRequestedBy,
+        normalizedAssignedTo,
+        normalizedVendorId,
+        normalizedTargetDate,
         JSON.stringify(Array.isArray(notes) ? notes : []),
         now,
         now
@@ -498,6 +564,12 @@ router.put('/tickets/:id', (req, res) => {
         title = existing.title,
         description = existing.description || '',
         status = existing.status,
+        priority = existing.priority || 'normal',
+        category = existing.category || 'general',
+        requested_by = existing.requested_by || '',
+        assigned_to = existing.assigned_to || '',
+        vendor_id = existing.vendor_id || '',
+        target_date = existing.target_date || '',
         notes,
         area_ids
     } = req.body || {};
@@ -507,9 +579,16 @@ router.put('/tickets/:id', (req, res) => {
         return res.status(400).json({ error: 'Title is required' });
     }
 
-    if (!TICKET_STATUSES.includes(status)) {
+    const normalizedStatus = normalizeTicketStatus(status, '');
+    if (!normalizedStatus || !TICKET_STATUSES.includes(normalizedStatus)) {
         return res.status(400).json({ error: 'Invalid status' });
     }
+    const normalizedPriority = normalizeTicketPriority(priority);
+    const normalizedCategory = normalizeTicketCategory(category);
+    const normalizedRequestedBy = String(requested_by || '').trim();
+    const normalizedAssignedTo = String(assigned_to || '').trim();
+    const normalizedVendorId = String(vendor_id || '').trim();
+    const normalizedTargetDate = String(target_date || '').trim();
 
     const updatedNotes = Array.isArray(notes) ? notes : parseJsonField(existing.notes);
 
@@ -518,13 +597,25 @@ router.put('/tickets/:id', (req, res) => {
             title = ?,
             description = ?,
             status = ?,
+            priority = ?,
+            category = ?,
+            requested_by = ?,
+            assigned_to = ?,
+            vendor_id = ?,
+            target_date = ?,
             notes = ?,
             updated_at = ?
         WHERE id = ?
     `).run(
         normalizedTitle,
         description,
-        status,
+        normalizedStatus,
+        normalizedPriority,
+        normalizedCategory,
+        normalizedRequestedBy,
+        normalizedAssignedTo,
+        normalizedVendorId,
+        normalizedTargetDate,
         JSON.stringify(updatedNotes),
         new Date().toISOString(),
         id

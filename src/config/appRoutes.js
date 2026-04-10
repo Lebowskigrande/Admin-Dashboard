@@ -23,7 +23,10 @@ export const getOriginRoute = ({ originType, originId = '', taskId = '' } = {}) 
     if (type === 'event') return APP_ROUTES.calendar;
 
     if (type === 'ticket') {
-        const query = originId ? `?ticket=${encodeURIComponent(originId)}` : '';
+        const params = new URLSearchParams();
+        params.set('tab', 'tickets');
+        if (originId) params.set('ticket', originId);
+        const query = params.toString();
         return `${APP_ROUTES.buildings}${query}`;
     }
 

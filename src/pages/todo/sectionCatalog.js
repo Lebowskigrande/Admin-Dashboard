@@ -26,8 +26,9 @@ const SECTION_CATALOG = {
     followup: { iconKey: 'followup', shortLabel: 'Follow-up' },
     postvestry: { iconKey: 'followup', shortLabel: 'Follow-up' },
     finance: { iconKey: 'finance', shortLabel: 'Finance' },
+    orders: { iconKey: 'orders', shortLabel: 'Orders' },
     bills: { iconKey: 'payables', shortLabel: 'Payables' },
-    deposits: { iconKey: 'finance', shortLabel: 'Deposits' },
+    deposits: { iconKey: 'deposits', shortLabel: 'Deposits' },
     timesheets: { iconKey: 'finance', shortLabel: 'Payroll' },
     payroll: { iconKey: 'finance', shortLabel: 'Payroll' },
     records: { iconKey: 'documents', shortLabel: 'Records' }
@@ -66,6 +67,7 @@ const getOperationsSectionTitle = (listTitle, taskText) => {
     if (/(donation|receivable|esp)/.test(raw)) return 'Receivables';
     if (/(bill|invoice|expense|accounts payable|ap )/.test(raw)) return 'Payables';
     if (/\bbirthday\b/.test(raw)) return 'Birthday Cards';
+    if (/(order|purchase|procure|vendor|supply request)/.test(raw)) return 'Orders';
     if (/\bmail\b/.test(raw) && !/\bemail\b/.test(raw)) return 'Mail';
     const normalizedTitle = normalizeDisplayText(listTitle);
     if (!isGenericSectionTitle(normalizedTitle)) return normalizedTitle || normalizeDisplayText(taskText) || 'Operations';
@@ -77,6 +79,7 @@ const getOperationsShortLabel = (title, taskText) => {
     if (/(donation|receivable|esp)/.test(raw)) return 'Receivables';
     if (/(bill|invoice|expense|ap |accounts payable)/.test(raw)) return 'Payables';
     if (/\bbirthday\b/.test(raw)) return 'Birthday';
+    if (/(order|purchase|procure|vendor|supply request)/.test(raw)) return 'Orders';
     if (/\bmail\b/.test(raw) && !/\bemail\b/.test(raw)) return 'Mail';
     if (/(deposit|check|bank)/.test(raw)) return 'Deposits';
     if (/(timesheet|payroll|staff hours)/.test(raw)) return 'Payroll';
@@ -101,6 +104,9 @@ const getFallbackSectionConfig = (raw = '') => {
     }
     if (/(bill|invoice|expense|ap |accounts payable)/.test(raw)) {
         return { iconKey: 'payables', shortLabel: 'Payables' };
+    }
+    if (/(order|purchase|procure|vendor|supply request)/.test(raw)) {
+        return { iconKey: 'orders', shortLabel: 'Orders' };
     }
     if (/\bbirthday\b/.test(raw)) {
         return { iconKey: 'birthday', shortLabel: 'Birthday' };

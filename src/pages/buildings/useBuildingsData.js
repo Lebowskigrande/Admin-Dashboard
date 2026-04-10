@@ -3,6 +3,14 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { API_URL } from '../../services/apiConfig';
 import { MAP_AREAS } from '../../data/areas';
 import { getTaskProgressMeta } from '../../utils/taskProgress';
+import {
+    isTicketClosedStatus,
+    TICKET_FOCUS_OPTIONS,
+    normalizeTicketCategory,
+    normalizeTicketPriority,
+    normalizeTicketRecord,
+    normalizeTicketStatus
+} from '../../../shared/tickets.js';
 
 const slugify = (value = '') => value
     .toString()
@@ -34,6 +42,34 @@ const uniqueValues = (values = []) => Array.from(new Set(
         .map((value) => String(value || '').trim())
         .filter(Boolean)
 ));
+
+const VALID_TICKET_FOCI = new Set(TICKET_FOCUS_OPTIONS.map((option) => option.value));
+
+const buildEmptyTicketDraft = (areaIds = []) => ({
+    title: '',
+    description: '',
+    status: 'new',
+    priority: 'normal',
+    category: 'general',
+    requestedBy: '',
+    assignedTo: '',
+    vendorId: '',
+    targetDate: '',
+    areaIds
+});
+
+const buildTicketDraftFromRecord = (ticket = {}) => ({
+    title: String(ticket?.title || '').trim(),
+    description: String(ticket?.description || '').trim(),
+    status: normalizeTicketStatus(ticket?.status),
+    priority: normalizeTicketPriority(ticket?.priority),
+    category: normalizeTicketCategory(ticket?.category),
+    requestedBy: String(ticket?.requested_by || '').trim(),
+    assignedTo: String(ticket?.assigned_to || '').trim(),
+    vendorId: String(ticket?.vendor_id || '').trim(),
+    targetDate: String(ticket?.target_date || '').trim(),
+    areaIds: Array.isArray(ticket?.areas) ? ticket.areas.map((areaId) => String(areaId || '').trim()).filter(Boolean) : []
+});
 
 const normalizeArchitecturalLayerLabel = (value = '') => {
     const text = String(value || '').trim();
@@ -328,22 +364,15 @@ export const useBuildingsData = () => {
     const [ticketsError, setTicketsError] = useState('');
     const [showTicketModal, setShowTicketModal] = useState(false);
     const [selectedTicketId, setSelectedTicketId] = useState(null);
-    const [ticketRecommendations, setTicketRecommendations] = useState([]);
-    const [ticketRecommendationsLoading, setTicketRecommendationsLoading] = useState(false);
-    const [ticketRecommendationsError, setTicketRecommendationsError] = useState('');
     const [pendingTicketScroll, setPendingTicketScroll] = useState(false);
     const [archiveExpanded, setArchiveExpanded] = useState(false);
-    const [ticketStatusExpandedKey, setTicketStatusExpandedKey] = useState(null);
+    const [ticketFocus, setTicketFocus] = useState('active');
     const ticketsViewRef = useRef(null);
     const [roomsExpanded, setRoomsExpanded] = useState(false);
     const roomsListRef = useRef(null);
     const [roomsHeight, setRoomsHeight] = useState(0);
-    const [newTicket, setNewTicket] = useState({
-        title: '',
-        description: '',
-        status: 'new',
-        areaIds: []
-    });
+    const [editingTicketId, setEditingTicketId] = useState(null);
+    const [ticketDraft, setTicketDraft] = useState(buildEmptyTicketDraft());
     const [newNote, setNewNote] = useState('');
     const [newTaskText, setNewTaskText] = useState('');
 
@@ -357,35 +386,8 @@ export const useBuildingsData = () => {
     const [vendors, setVendors] = useState([]);
     const [vendorsLoading, setVendorsLoading] = useState(true);
     const [vendorsError, setVendorsError] = useState('');
-
-    const [architecturalOverview, setArchitecturalOverview] = useState({
-        records: [],
-        layers: [],
-        systems: [],
-        areas: [],
-        summary: {
-            recordCount: 0,
-            layerCount: 0,
-            systemCount: 0,
-            areaCount: 0,
-            buildingCount: 0,
-            utilityCount: 0
-        },
-        stats: {
-            recordCount: 0,
-            layerCount: 0,
-            systemCount: 0,
-            areaCount: 0,
-            buildingCount: 0,
-            utilityCount: 0
-        },
-        buildings: [],
-        utilities: []
-    });
-    const [architecturalOverviewLoading, setArchitecturalOverviewLoading] = useState(true);
-    const [architecturalOverviewError, setArchitecturalOverviewError] = useState('');
-    const [architecturalAreaRecords, setArchitecturalAreaRecords] = useState({});
-    const [architecturalAreaLoading, setArchitecturalAreaLoading] = useState(false);
+    const [buildingEventsById, setBuildingEventsById] = useState({});
+    const [buildingEventsLoading, setBuildingEventsLoading] = useState(false);
 
     const formatSqft = (value) => {
         if (value === null || value === undefined || value === '') return '';
@@ -481,12 +483,12 @@ export const useBuildingsData = () => {
 
     useEffect(() => {
         const queryTab = searchParams.get('tab');
-        if (queryTab && ['tickets', 'map', 'vendors', 'records', 'needs'].includes(queryTab)) {
+        if (queryTab && ['tickets', 'map', 'vendors', 'needs'].includes(queryTab)) {
             setActiveTab(queryTab);
             return;
         }
         const storedTab = sessionStorage.getItem('bgActiveTab');
-        if (storedTab && ['tickets', 'map', 'vendors', 'records', 'needs'].includes(storedTab)) {
+        if (storedTab && ['tickets', 'map', 'vendors', 'needs'].includes(storedTab)) {
             setActiveTab(storedTab);
         }
     }, [searchParams]);
@@ -494,6 +496,13 @@ export const useBuildingsData = () => {
     useEffect(() => {
         sessionStorage.setItem('bgActiveTab', activeTab);
     }, [activeTab]);
+
+    useEffect(() => {
+        const queryFocus = String(searchParams.get('focus') || '').trim().toLowerCase();
+        if (queryFocus && VALID_TICKET_FOCI.has(queryFocus)) {
+            setTicketFocus(queryFocus);
+        }
+    }, [searchParams]);
 
     useEffect(() => {
         let canceled = false;
@@ -524,69 +533,21 @@ export const useBuildingsData = () => {
         };
     }, []);
 
-    useEffect(() => {
-        let canceled = false;
-        const loadArchitecturalOverview = async () => {
-            setArchitecturalOverviewLoading(true);
-            setArchitecturalOverviewError('');
-            try {
-                const payload = await fetchJsonWithFallback([
-                    `${API_URL}/buildings/records/overview`,
-                    '/api/buildings/records/overview'
-                ]);
-                if (!canceled) {
-                    setArchitecturalOverview(normalizeArchitecturalPayload(payload));
-                }
-            } catch (error) {
-                console.error('Failed to load architectural records:', error);
-                if (!canceled) {
-                    setArchitecturalOverview({
-                        records: [],
-                        layers: [],
-                        systems: [],
-                        areas: [],
-                        summary: {
-                            recordCount: 0,
-                            layerCount: 0,
-                            systemCount: 0,
-                            areaCount: 0,
-                            buildingCount: 0,
-                            utilityCount: 0
-                        },
-                        stats: {
-                            recordCount: 0,
-                            layerCount: 0,
-                            systemCount: 0,
-                            areaCount: 0,
-                            buildingCount: 0,
-                            utilityCount: 0
-                        },
-                        buildings: [],
-                        utilities: []
-                    });
-                    setArchitecturalOverviewError('Unable to load architectural records.');
-                }
-            } finally {
-                if (!canceled) {
-                    setArchitecturalOverviewLoading(false);
-                }
-            }
-        };
-
-        loadArchitecturalOverview();
-        return () => {
-            canceled = true;
-        };
-    }, []);
-
-    const openTicketModal = (defaultAreaId = null) => {
-        const areaIds = defaultAreaId ? [defaultAreaId] : [];
-        setNewTicket({ title: '', description: '', status: 'new', areaIds });
+    const openTicketModal = (ticketOrArea = null) => {
+        if (ticketOrArea && typeof ticketOrArea === 'object' && !Array.isArray(ticketOrArea)) {
+            setEditingTicketId(ticketOrArea.id);
+            setTicketDraft(buildTicketDraftFromRecord(ticketOrArea));
+        } else {
+            const areaIds = ticketOrArea ? [String(ticketOrArea).trim()].filter(Boolean) : [];
+            setEditingTicketId(null);
+            setTicketDraft(buildEmptyTicketDraft(areaIds));
+        }
+        setTicketsError('');
         setShowTicketModal(true);
     };
 
     const toggleTicketArea = (areaId) => {
-        setNewTicket((prev) => {
+        setTicketDraft((prev) => {
             const exists = prev.areaIds.includes(areaId);
             return {
                 ...prev,
@@ -595,44 +556,74 @@ export const useBuildingsData = () => {
         });
     };
 
-    const createTicket = async (event) => {
+    const closeTicketModal = () => {
+        setShowTicketModal(false);
+        setEditingTicketId(null);
+        setTicketDraft(buildEmptyTicketDraft());
+    };
+
+    const saveTicket = async (event) => {
         event.preventDefault();
-        if (!newTicket.title.trim()) return;
+        if (!ticketDraft.title.trim()) return;
         try {
-            const response = await fetch(`${API_URL}/tickets`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    title: newTicket.title,
-                    description: newTicket.description,
-                    status: newTicket.status,
-                    area_ids: newTicket.areaIds
-                })
+            const payload = {
+                title: ticketDraft.title,
+                description: ticketDraft.description,
+                status: ticketDraft.status,
+                priority: ticketDraft.priority,
+                category: ticketDraft.category,
+                requested_by: ticketDraft.requestedBy,
+                assigned_to: ticketDraft.assignedTo,
+                vendor_id: ticketDraft.vendorId,
+                target_date: ticketDraft.targetDate,
+                area_ids: ticketDraft.areaIds
+            };
+            const isEditing = Boolean(editingTicketId);
+            const response = await fetch(
+                isEditing ? `${API_URL}/tickets/${editingTicketId}` : `${API_URL}/tickets`,
+                {
+                    method: isEditing ? 'PUT' : 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                }
+            );
+            const responsePayload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(responsePayload?.error || 'Failed to save ticket'));
+            const saved = normalizeTicketRecord(responsePayload);
+            setTickets((prev) => {
+                if (isEditing) {
+                    return prev.map((ticket) => (ticket.id === saved.id ? saved : ticket));
+                }
+                return [saved, ...prev];
             });
-            if (!response.ok) throw new Error('Failed to create ticket');
-            const created = await response.json();
-            setTickets((prev) => [created, ...prev]);
-            setSelectedTicketId(created.id);
-            setShowTicketModal(false);
+            setSelectedTicketId(saved.id);
+            closeTicketModal();
         } catch (error) {
-            console.error('Failed to create ticket:', error);
-            setTicketsError('Unable to create ticket. Please try again.');
+            console.error('Failed to save ticket:', error);
+            setTicketsError(error?.message || 'Unable to save ticket. Please try again.');
         }
     };
 
     const updateTicket = async (ticketId, updates) => {
         try {
+            const payload = {
+                ...updates,
+                status: updates?.status ? normalizeTicketStatus(updates.status) : updates?.status,
+                priority: updates?.priority ? normalizeTicketPriority(updates.priority) : updates?.priority,
+                category: updates?.category ? normalizeTicketCategory(updates.category) : updates?.category
+            };
             const response = await fetch(`${API_URL}/tickets/${ticketId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updates)
+                body: JSON.stringify(payload)
             });
-            if (!response.ok) throw new Error('Failed to update ticket');
-            const updated = await response.json();
+            const responsePayload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(String(responsePayload?.error || 'Failed to update ticket'));
+            const updated = normalizeTicketRecord(responsePayload);
             setTickets((prev) => prev.map((ticket) => (ticket.id === ticketId ? updated : ticket)));
         } catch (error) {
             console.error('Failed to update ticket:', error);
-            setTicketsError('Unable to update ticket. Please try again.');
+            setTicketsError(error?.message || 'Unable to update ticket. Please try again.');
         }
     };
 
@@ -740,21 +731,7 @@ export const useBuildingsData = () => {
         });
     }, [buildingsByMapId, buildingsById]);
 
-    const architecturalAreaCounts = useMemo(() => {
-        const counts = {};
-        const records = architecturalOverview.records || [];
-        baseMapAreas.forEach((area) => {
-            counts[area.id] = records.filter((record) => architecturalRecordMatchesArea(record, area)).length;
-        });
-        return counts;
-    }, [architecturalOverview.records, baseMapAreas]);
-
-    const mapAreas = useMemo(() => (
-        baseMapAreas.map((area) => ({
-            ...area,
-            architecturalRecordCount: architecturalAreaCounts[area.id] || 0
-        }))
-    ), [architecturalAreaCounts, baseMapAreas]);
+    const mapAreas = useMemo(() => baseMapAreas, [baseMapAreas]);
 
     useEffect(() => {
         const locationParam = searchParams.get('location');
@@ -799,38 +776,49 @@ export const useBuildingsData = () => {
         ? (buildingsByMapId.get(activeDetails.id) || buildingsById.get(activeDetails.id))
         : null;
 
-    const activeArchitecturalRecords = useMemo(() => {
-        const areaId = activeDetails?.id;
-        if (!areaId) return [];
-        const cached = architecturalAreaRecords[areaId];
-        if (cached?.records) return cached.records;
-        const baseArea = baseMapAreas.find((area) => area.id === areaId) || activeDetails;
-        if (!baseArea) return [];
-        return (architecturalOverview.records || []).filter((record) => architecturalRecordMatchesArea(record, baseArea));
-    }, [activeDetails, architecturalAreaRecords, architecturalOverview.records, baseMapAreas]);
-
-    const activeArchitecturalLayers = useMemo(() => uniqueValues(
-        activeArchitecturalRecords.map((record) => record.layerLabel || record.layer)
-    ), [activeArchitecturalRecords]);
-
-    const activeArchitecturalUtilities = useMemo(() => (
-        activeArchitecturalRecords.filter((record) => record.utilityCategory || /electrical|plumbing|mechanical|hvac|life safety|low voltage/i.test(`${record.layerLabel || ''} ${record.summary || ''} ${record.title || ''}`))
-    ), [activeArchitecturalRecords]);
-
-    const activeArchitecturalSystems = useMemo(() => uniqueValues(
-        activeArchitecturalRecords.flatMap((record) => record.utilitySystems || [])
-    ), [activeArchitecturalRecords]);
-
-    const activeArchitecturalSummary = useMemo(() => {
-        const records = activeArchitecturalRecords;
-        const layers = uniqueValues(records.map((record) => record.layerLabel || record.layer));
-        return {
-            recordCount: records.length,
-            layerCount: layers.length,
-            utilityCount: activeArchitecturalUtilities.length,
-            systemCount: activeArchitecturalSystems.length
+    useEffect(() => {
+        const buildingId = String(activeBuilding?.id || '').trim();
+        if (!buildingId) {
+            setBuildingEventsLoading(false);
+            return undefined;
+        }
+        if (buildingEventsById[buildingId]) return undefined;
+        let canceled = false;
+        const loadBuildingEvents = async () => {
+            setBuildingEventsLoading(true);
+            try {
+                const response = await fetch(`${API_URL}/buildings/${encodeURIComponent(buildingId)}/events`);
+                if (!response.ok) throw new Error('Failed to load building events');
+                const payload = await response.json();
+                if (!canceled) {
+                    setBuildingEventsById((prev) => ({
+                        ...prev,
+                        [buildingId]: Array.isArray(payload) ? payload : []
+                    }));
+                }
+            } catch (error) {
+                console.error('Failed to load building events:', error);
+                if (!canceled) {
+                    setBuildingEventsById((prev) => ({
+                        ...prev,
+                        [buildingId]: []
+                    }));
+                }
+            } finally {
+                if (!canceled) {
+                    setBuildingEventsLoading(false);
+                }
+            }
         };
-    }, [activeArchitecturalRecords, activeArchitecturalUtilities, activeArchitecturalSystems]);
+        loadBuildingEvents();
+        return () => {
+            canceled = true;
+        };
+    }, [activeBuilding?.id, buildingEventsById]);
+
+    const activeBuildingEvents = useMemo(() => (
+        activeBuilding?.id ? (buildingEventsById[activeBuilding.id] || []) : []
+    ), [activeBuilding?.id, buildingEventsById]);
 
     useLayoutEffect(() => {
         if (!roomsListRef.current) {
@@ -844,72 +832,6 @@ export const useBuildingsData = () => {
     useEffect(() => {
         setRoomsExpanded(false);
     }, [activeDetails?.id]);
-
-    useEffect(() => {
-        const areaId = activeArea?.id;
-        if (!areaId) {
-            setArchitecturalAreaLoading(false);
-            return;
-        }
-        if (architecturalAreaRecords[areaId]) return;
-
-        let canceled = false;
-        const loadArchitecturalArea = async () => {
-            setArchitecturalAreaLoading(true);
-            try {
-                const payload = await fetchJsonWithFallback([
-                    `${API_URL}/buildings/records/by-area/${encodeURIComponent(areaId)}`,
-                    `/api/buildings/records/by-area/${encodeURIComponent(areaId)}`
-                ]);
-                if (!canceled) {
-                    setArchitecturalAreaRecords((prev) => ({
-                        ...prev,
-                        [areaId]: normalizeArchitecturalPayload(payload)
-                    }));
-                }
-            } catch (error) {
-                console.error('Failed to load architectural area records:', error);
-                if (!canceled) {
-                    setArchitecturalAreaRecords((prev) => ({
-                        ...prev,
-                        [areaId]: {
-                            records: [],
-                            layers: [],
-                            systems: [],
-                            areas: [],
-                            summary: {
-                                recordCount: 0,
-                                layerCount: 0,
-                                systemCount: 0,
-                                areaCount: 0,
-                                buildingCount: 0,
-                                utilityCount: 0
-                            },
-                            stats: {
-                                recordCount: 0,
-                                layerCount: 0,
-                                systemCount: 0,
-                                areaCount: 0,
-                                buildingCount: 0,
-                                utilityCount: 0
-                            },
-                            buildings: [],
-                            utilities: []
-                        }
-                    }));
-                }
-            } finally {
-                if (!canceled) {
-                    setArchitecturalAreaLoading(false);
-                }
-            }
-        };
-
-        loadArchitecturalArea();
-        return () => {
-            canceled = true;
-        };
-    }, [activeArea?.id, architecturalAreaRecords]);
 
     const clearSelection = () => {
         setHoveredArea(null);
@@ -954,7 +876,7 @@ export const useBuildingsData = () => {
     const activeAreaTickets = useMemo(() => {
         if (!activeDetails?.id) return [];
         return tickets.filter((ticket) => (
-            (ticket.areas || []).includes(activeDetails.id) && ticket.status !== 'closed'
+            (ticket.areas || []).includes(activeDetails.id) && !isTicketClosedStatus(ticket.status)
         ));
     }, [activeDetails, tickets]);
 
@@ -972,9 +894,10 @@ export const useBuildingsData = () => {
                 const response = await fetch(`${API_URL}/tickets`);
                 if (!response.ok) throw new Error('Failed to load tickets');
                 const data = await response.json();
-                setTickets(Array.isArray(data) ? data : []);
+                const normalizedTickets = Array.isArray(data) ? data.map(normalizeTicketRecord) : [];
+                setTickets(normalizedTickets);
                 if (!selectedTicketId && Array.isArray(data) && data.length > 0) {
-                    const firstActive = data.find((ticket) => ticket.status !== 'closed') || data[0];
+                    const firstActive = normalizedTickets.find((ticket) => !isTicketClosedStatus(ticket.status)) || normalizedTickets[0];
                     setSelectedTicketId(firstActive.id);
                 }
             } catch (error) {
@@ -1025,46 +948,6 @@ export const useBuildingsData = () => {
         return tickets.find((ticket) => ticket.id === selectedTicketId) || null;
     }, [tickets, selectedTicketId]);
 
-    useEffect(() => {
-        if (!selectedTicketId) {
-            setTicketRecommendations([]);
-            setTicketRecommendationsLoading(false);
-            setTicketRecommendationsError('');
-            return;
-        }
-        let canceled = false;
-        const loadTicketRecommendations = async () => {
-            setTicketRecommendationsLoading(true);
-            setTicketRecommendationsError('');
-            try {
-                const payload = await fetchJsonWithFallback([
-                    `${API_URL}/tickets/${encodeURIComponent(selectedTicketId)}/recommendations`,
-                    `/api/tickets/${encodeURIComponent(selectedTicketId)}/recommendations`
-                ]);
-                if (!payload?.ok) throw new Error(payload?.error || 'Failed to load recommendations');
-                if (!canceled) {
-                    setTicketRecommendations(
-                        (Array.isArray(payload.recommendations) ? payload.recommendations : []).map(normalizeArchitecturalRecord)
-                    );
-                }
-            } catch (error) {
-                console.error('Failed to load ticket recommendations:', error);
-                if (!canceled) {
-                    setTicketRecommendations([]);
-                    setTicketRecommendationsError('Unable to load suggested architectural sheets.');
-                }
-            } finally {
-                if (!canceled) {
-                    setTicketRecommendationsLoading(false);
-                }
-            }
-        };
-        loadTicketRecommendations();
-        return () => {
-            canceled = true;
-        };
-    }, [selectedTicketId]);
-
     return {
         location,
         activeTab,
@@ -1075,19 +958,17 @@ export const useBuildingsData = () => {
         tickets,
         ticketsLoading,
         ticketsError,
-        ticketRecommendations,
-        ticketRecommendationsLoading,
-        ticketRecommendationsError,
         showTicketModal,
+        ticketFocus,
+        editingTicketId,
         selectedTicketId,
         pendingTicketScroll,
         archiveExpanded,
-        ticketStatusExpandedKey,
         ticketsViewRef,
         roomsExpanded,
         roomsListRef,
         roomsHeight,
-        newTicket,
+        ticketDraft,
         newNote,
         newTaskText,
         needs,
@@ -1097,39 +978,31 @@ export const useBuildingsData = () => {
         vendors,
         vendorsLoading,
         vendorsError,
-        architecturalOverview,
-        architecturalOverviewLoading,
-        architecturalOverviewError,
-        architecturalAreaRecords,
-        architecturalAreaLoading,
-        activeArchitecturalRecords,
-        activeArchitecturalLayers,
-        activeArchitecturalUtilities,
-        activeArchitecturalSystems,
-        activeArchitecturalSummary,
         mapAreas,
         orderedAreas,
         areaById,
         activeDetails,
         activeBuilding,
+        activeBuildingEvents,
+        buildingEventsLoading,
         activeAreaTickets,
         selectedTicket,
         formatSqft,
         setActiveTab,
         setActiveArea,
         setHoveredArea,
-        setShowTicketModal,
+        setTicketFocus,
         setSelectedTicketId,
         setArchiveExpanded,
-        setTicketStatusExpandedKey,
         setRoomsExpanded,
-        setNewTicket,
+        setTicketDraft,
         setNewNote,
         setNewTaskText,
         setNewNeed,
         openTicketModal,
+        closeTicketModal,
         toggleTicketArea,
-        createTicket,
+        saveTicket,
         updateTicket,
         addTicketNote,
         addTicketTask,

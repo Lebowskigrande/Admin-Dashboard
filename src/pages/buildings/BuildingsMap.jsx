@@ -1,6 +1,13 @@
 import Card from '../../components/Card';
 import { formatCurrency } from '../../utils/formatters';
 
+const formatEventDate = (value) => {
+    if (!value) return '';
+    const parsed = new Date(`${value}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', weekday: 'short' });
+};
+
 const BuildingsMap = ({
     mapAreas,
     orderedAreas,
@@ -10,6 +17,8 @@ const BuildingsMap = ({
     setHoveredArea,
     activeDetails,
     activeBuilding,
+    activeBuildingEvents,
+    buildingEventsLoading,
     buildingsError,
     roomsExpanded,
     setRoomsExpanded,
@@ -17,14 +26,7 @@ const BuildingsMap = ({
     roomsListRef,
     formatSqft,
     activeAreaTickets,
-    focusTicket,
-    setActiveTab,
-    activeArchitecturalRecords,
-    activeArchitecturalLayers,
-    activeArchitecturalUtilities,
-    activeArchitecturalSystems,
-    activeArchitecturalSummary,
-    architecturalAreaLoading
+    focusTicket
 }) => (
     <Card className="campus-map-card">
         <div className="campus-map-layout">
@@ -56,9 +58,6 @@ const BuildingsMap = ({
                                 <span className="map-list-label">
                                     {area.name}
                                 </span>
-                                {area.architecturalRecordCount ? (
-                                    <span className="map-record-count">{area.architecturalRecordCount}</span>
-                                ) : null}
                             </button>
                         );
                     })}
@@ -194,6 +193,32 @@ const BuildingsMap = ({
                                         </div>
                                     ) : null}
                                 </div>
+                                <div className="building-events-panel">
+                                    <div className="building-events-header">
+                                        <span>Upcoming events</span>
+                                        <strong>{activeBuildingEvents.length}</strong>
+                                    </div>
+                                    {buildingEventsLoading ? (
+                                        <div className="map-note">Loading events...</div>
+                                    ) : activeBuildingEvents.length > 0 ? (
+                                        <div className="building-events-list">
+                                            {activeBuildingEvents.slice(0, 8).map((event) => (
+                                                <div key={event.occurrence_id} className="building-event-row">
+                                                    <div>
+                                                        <div className="building-event-title">{event.title}</div>
+                                                        <div className="building-event-meta">
+                                                            {formatEventDate(event.date)}
+                                                            {event.start_time ? ` • ${event.start_time}` : ''}
+                                                            {event.type_name ? ` • ${event.type_name}` : ''}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="map-note">No upcoming events for this location.</div>
+                                    )}
+                                </div>
                                 {Array.isArray(activeBuilding.rooms) && activeBuilding.rooms.length > 0 && (
                                     <div className="rooms-section">
                                         <div className="rooms-header">
@@ -290,73 +315,6 @@ const BuildingsMap = ({
                                 </div>
                             </div>
                         )}
-                        <div className="architectural-detail-section">
-                            <div className="architectural-section-header">
-                                <div>
-                                    <h4>Architectural Records</h4>
-                                    <p>
-                                        {architecturalAreaLoading
-                                            ? 'Loading sheet associations...'
-                                            : activeArchitecturalSummary?.recordCount
-                                                ? `${activeArchitecturalSummary.recordCount} records linked across ${activeArchitecturalSummary.layerCount || 0} layers and ${activeArchitecturalSummary.systemCount || 0} systems.`
-                                                : 'No records linked to this area yet.'}
-                                    </p>
-                                </div>
-                                <button
-                                    type="button"
-                                    className="code-lookup-detail-btn"
-                                    onClick={() => setActiveTab('records')}
-                                >
-                                    Open archive
-                                </button>
-                            </div>
-                            {activeArchitecturalLayers?.length ? (
-                                <div className="architectural-layer-row">
-                                    {activeArchitecturalLayers.slice(0, 6).map((layer) => (
-                                        <span key={layer} className="architectural-layer-chip">{layer}</span>
-                                    ))}
-                                </div>
-                            ) : null}
-                            {activeArchitecturalSystems?.length ? (
-                                <div className="architectural-layer-row">
-                                    {activeArchitecturalSystems.slice(0, 6).map((system) => (
-                                        <span key={system} className="architectural-layer-chip system">{system}</span>
-                                    ))}
-                                </div>
-                            ) : null}
-                            {activeArchitecturalUtilities?.length ? (
-                                <div className="architectural-utility-strip">
-                                    {activeArchitecturalUtilities.slice(0, 3).map((record) => (
-                                        <button
-                                            key={record.id}
-                                            type="button"
-                                            className="architectural-utility-card"
-                                            onClick={() => setActiveTab('records')}
-                                        >
-                                            <strong>{record.layerLabel || record.layer || 'Utility'}</strong>
-                                            <span>{record.title}</span>
-                                        </button>
-                                    ))}
-                                </div>
-                            ) : null}
-                            <div className="architectural-record-snippets">
-                                {activeArchitecturalRecords?.length ? activeArchitecturalRecords.slice(0, 4).map((record) => (
-                                    <div key={record.id} className="architectural-record-snippet">
-                                        <div>
-                                            <strong>{record.title}</strong>
-                                            <span>{record.summary || record.fileName || 'No summary available.'}</span>
-                                        </div>
-                                        <div className="architectural-record-snippet-meta">
-                                            <span>{record.layerLabel || record.layer || 'General'}</span>
-                                            {record.utilitySystems?.length ? <span>{record.utilitySystems.slice(0, 2).join(', ')}</span> : null}
-                                            {record.pageCount ? <span>{record.pageCount} pages</span> : null}
-                                        </div>
-                                    </div>
-                                )) : (
-                                    <p className="map-ticket-empty">Select an area with linked sheets to see architectural records here.</p>
-                                )}
-                            </div>
-                        </div>
                     </>
                 )}
             </Card>

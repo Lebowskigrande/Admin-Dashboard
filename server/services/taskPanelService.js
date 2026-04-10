@@ -5,7 +5,7 @@ import { google } from 'googleapis';
 import xlsx from 'xlsx';
 
 import { sqlite as db } from '../db.js';
-import { tableExists } from '../helpers/db-utils.js';
+import { parseNotes, tableExists } from '../helpers/db-utils.js';
 import {
     getSharefileGmailTokens,
     getSharefileRoutingAccounts,
@@ -13,9 +13,11 @@ import {
 } from '../helpers/auth.js';
 import { extractGmailMessageText } from '../helpers/hgk-utils.js';
 import { findBulletinFile, findInsertFile } from '../helpers/file-utils.js';
+import { normalizePersonName } from '../helpers/people-utils.js';
 import { loadSundayOccurrences } from '../helpers/sunday-utils.js';
 import { createOAuthClient, setStoredCredentials } from '../googleAuth.js';
-import { buildDocumentStatus } from './bulletinService.js';
+import { buildDocumentPreview, buildDocumentStatus } from './bulletinService.js';
+import { buildOrdersPanelData } from './ordersService.js';
 
 const TASK_PANEL_TIME_ZONE = 'America/Los_Angeles';
 const WORKSPACE_ROOT = resolve(process.cwd());
@@ -832,14 +834,20 @@ const getUpcomingBirthdayRange = () => {
 
 const getUpcomingBirthdays = () => {
     const birthdays = parseBirthdayWorkbook();
+    const peopleDirectory = getPeopleDirectory();
     const range = getUpcomingBirthdayRange();
     const startYear = range.start.getFullYear();
     const candidates = birthdays.map((entry) => {
         const [month, day] = String(entry.monthDay || '').split('/').map((part) => Number(part));
         if (!month || !day) return null;
         const candidate = new Date(startYear, month - 1, day, 12, 0, 0, 0);
+        const matchedPerson = findBirthdayPerson(entry, peopleDirectory);
         return {
             ...entry,
+            personId: matchedPerson?.id || '',
+            personCategory: matchedPerson?.category || '',
+            displayName: matchedPerson?.display_name || normalizeBirthdayDisplayName(entry.name),
+            address: matchedPerson?.address || '',
             date: candidate.toISOString(),
             weekday: WEEKDAY_LABELS[candidate.getDay()] || ''
         };
@@ -908,6 +916,170 @@ const getTaskInstanceMeta = (taskId) => {
     `).get(taskId);
 };
 
+const normalizeBirthdayDisplayName = (value = '') => {
+    const text = String(value || '').trim().replace(/\s+/g, ' ');
+    if (!text) return '';
+    const commaMatch = text.match(/^([^,]+),\s*(.+)$/);
+    if (commaMatch) {
+        return `${commaMatch[2]} ${commaMatch[1]}`.replace(/\s+/g, ' ').trim();
+    }
+    return text;
+};
+
+const formatPersonAddress = (row = {}) => {
+    const street = [row.address_line1, row.address_line2].filter(Boolean).join(', ');
+    const cityStateZip = [
+        row.city,
+        [row.state, row.postal_code].filter(Boolean).join(' ')
+    ].filter(Boolean).join(', ');
+    return [street, cityStateZip].filter(Boolean).join(', ');
+};
+
+const getPeopleDirectory = () => {
+    if (!tableExists('people')) return [];
+    return db.prepare(`
+        SELECT
+            id,
+            display_name,
+            category,
+            address_line1,
+            address_line2,
+            city,
+            state,
+            postal_code
+        FROM people
+        ORDER BY display_name
+    `).all().map((row) => ({
+        ...row,
+        display_name: String(row.display_name || '').trim(),
+        normalized_name: normalizePersonName(row.display_name || ''),
+        address: formatPersonAddress(row)
+    }));
+};
+
+const findBirthdayPerson = (entry, peopleDirectory = []) => {
+    const normalizedVariants = Array.from(new Set([
+        normalizePersonName(entry?.name || ''),
+        normalizePersonName(normalizeBirthdayDisplayName(entry?.name || ''))
+    ].filter(Boolean)));
+    if (!normalizedVariants.length) return null;
+
+    const exact = peopleDirectory.find((person) => normalizedVariants.includes(person.normalized_name));
+    if (exact) return exact;
+
+    const tokens = normalizePersonName(normalizeBirthdayDisplayName(entry?.name || '')).split(' ').filter(Boolean);
+    if (tokens.length < 2) return null;
+    const first = tokens[0];
+    const last = tokens[tokens.length - 1];
+    return peopleDirectory.find((person) => {
+        const personTokens = String(person.normalized_name || '').split(' ').filter(Boolean);
+        if (personTokens.length < 2) return false;
+        const personFirst = personTokens[0];
+        const personLast = personTokens[personTokens.length - 1];
+        return personLast === last && (personFirst === first || personFirst.startsWith(first) || first.startsWith(personFirst));
+    }) || null;
+};
+
+const getEventOccurrencePanelContext = (occurrenceId) => {
+    if (!occurrenceId || !tableExists('event_occurrences') || !tableExists('events')) return null;
+    const row = db.prepare(`
+        SELECT
+            o.id AS occurrence_id,
+            o.date,
+            o.start_time,
+            o.end_time,
+            o.building_id,
+            o.notes,
+            e.id AS event_id,
+            e.title,
+            e.description,
+            e.metadata,
+            t.name AS type_name,
+            t.slug AS type_slug,
+            c.name AS category_name
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        LEFT JOIN event_types t ON t.id = e.event_type_id
+        LEFT JOIN event_categories c ON c.id = t.category_id
+        WHERE o.id = ?
+        LIMIT 1
+    `).get(occurrenceId);
+    if (!row) return null;
+    return {
+        ...row,
+        notes: parseNotes(row.notes),
+        metadata: parseNotes(row.metadata)
+    };
+};
+
+const getEventAssignments = (occurrenceId) => {
+    if (!occurrenceId || !tableExists('assignments')) return [];
+    return db.prepare(`
+        SELECT
+            a.role_key,
+            a.person_id,
+            COALESCE(p.display_name, a.person_id) AS display_name,
+            COALESCE(p.category, '') AS category
+        FROM assignments a
+        LEFT JOIN people p ON p.id = a.person_id
+        WHERE a.occurrence_id = ?
+        ORDER BY a.role_key ASC, COALESCE(p.display_name, a.person_id) ASC
+    `).all(occurrenceId);
+};
+
+const listEventDocuments = async (occurrenceId, sectionKey = '') => {
+    if (!occurrenceId || !tableExists('event_documents')) return [];
+    const rows = db.prepare(`
+        SELECT id, doc_type, label, file_name, file_path, created_at
+        FROM event_documents
+        WHERE occurrence_id = ?
+        ORDER BY created_at DESC
+        LIMIT 24
+    `).all(occurrenceId);
+
+    const normalizedSectionKey = String(sectionKey || '').trim().toLowerCase();
+    const filtered = rows.filter((row) => {
+        if (normalizedSectionKey === 'contracts') return row.doc_type === 'contract';
+        if (['bulletin', 'bulletin8', 'bulletin10'].includes(normalizedSectionKey)) {
+            return row.doc_type === 'bulletin' || /bulletin/i.test(row.file_name || '');
+        }
+        if (normalizedSectionKey === 'insert') {
+            return /insert/i.test(row.file_name || '') || row.doc_type === 'attachment';
+        }
+        if (normalizedSectionKey === 'documents') return true;
+        return true;
+    });
+
+    return Promise.all(filtered.map(async (row, index) => {
+        const preview = index < 3 ? await buildDocumentPreview(row.file_path).catch(() => '') : '';
+        return {
+            id: row.id,
+            docType: row.doc_type,
+            label: row.label || row.file_name || 'Document',
+            name: row.file_name || '',
+            path: row.file_path || '',
+            createdAt: row.created_at || '',
+            preview
+        };
+    }));
+};
+
+const getEventContactSummary = (context = {}) => {
+    const template = context.notes?.template && typeof context.notes.template === 'object'
+        ? context.notes.template
+        : {};
+    const metadata = context.metadata && typeof context.metadata === 'object'
+        ? context.metadata
+        : {};
+    return String(
+        template.contact_person
+        || metadata.contact_person
+        || metadata.contactName
+        || metadata.family_contact
+        || ''
+    ).trim();
+};
+
 const getSundayLiturgicalContext = (dateKey) => {
     const liturgical = tableExists('liturgical_days')
         ? db.prepare(`
@@ -962,7 +1134,7 @@ const buildMailPanel = async () => ({
     kind: 'mail',
     title: 'Mail',
     lastCheckedAt: getLastMailCheckedAt(),
-    expectedPackages: await getExpectedPackages()
+    autoProgress: false
 });
 
 const buildDepositsPanel = async () => ({
@@ -977,7 +1149,8 @@ const buildDepositsPanel = async () => ({
     branch: {
         ...BANK_BRANCH,
         ...getBranchStatus()
-    }
+    },
+    autoProgress: false
 });
 
 const buildReceivablesPanel = async () => ({
@@ -988,7 +1161,8 @@ const buildReceivablesPanel = async () => ({
         limit: 18,
         maxDepth: 2,
         includeFile: (filePath) => extname(filePath).toLowerCase() === '.pdf'
-    })
+    }),
+    autoProgress: false
 });
 
 const buildPayablesPanel = async () => ({
@@ -999,13 +1173,15 @@ const buildPayablesPanel = async () => ({
         limit: 18,
         maxDepth: 2,
         includeFile: (filePath) => extname(filePath).toLowerCase() === '.pdf'
-    })
+    }),
+    autoProgress: false
 });
 
 const buildBirthdaysPanel = async () => ({
     kind: 'birthdays',
     title: 'Birthday Cards',
-    upcoming: getUpcomingBirthdays()
+    upcoming: getUpcomingBirthdays(),
+    autoProgress: false
 });
 
 const buildPayrollPanel = async (taskMeta = null) => {
@@ -1026,7 +1202,8 @@ const buildPayrollPanel = async (taskMeta = null) => {
         repoDocument: repoDocument || (history.files[0] ? {
             name: history.files[0].name,
             path: history.files[0].path
-        } : null)
+        } : null),
+        autoProgress: !!(repoDocument?.path || history.files[0]?.path)
     };
 };
 
@@ -1041,7 +1218,67 @@ const buildSundayPanel = async (dateKey, sectionKey) => {
         context: liturgical,
         selectedView: sectionKey || 'bulletin10',
         documents,
-        roster: getSundayRoster(dateKey)
+        roster: getSundayRoster(dateKey),
+        autoProgress: ['bulletin8', 'bulletin10', 'insert'].includes(String(sectionKey || '').toLowerCase())
+            && !!(documents.bulletin8?.path || documents.bulletin10?.path || documents.insert?.path)
+    };
+};
+
+const buildEventPanel = async (occurrenceId, sectionKey) => {
+    const context = getEventOccurrencePanelContext(occurrenceId);
+    if (!context) {
+        return {
+            kind: 'empty',
+            title: 'Task Data'
+        };
+    }
+    const normalizedSectionKey = String(sectionKey || '').trim().toLowerCase();
+    const assignments = getEventAssignments(occurrenceId);
+    const documents = await listEventDocuments(occurrenceId, normalizedSectionKey);
+    const roleGroups = assignments.reduce((acc, row) => {
+        const key = String(row.role_key || '').trim() || 'people';
+        if (!acc[key]) {
+            acc[key] = {
+                roleKey: key,
+                people: []
+            };
+        }
+        acc[key].people.push({
+            id: row.person_id,
+            displayName: row.display_name,
+            category: row.category || 'parishioner'
+        });
+        return acc;
+    }, {});
+    return {
+        kind: 'event',
+        title: context.title || context.type_name || 'Event',
+        selectedView: normalizedSectionKey || 'people',
+        context: {
+            occurrenceId: context.occurrence_id,
+            eventId: context.event_id,
+            title: context.title || 'Event',
+            typeName: context.type_name || 'Event',
+            categoryName: context.category_name || '',
+            date: context.date || '',
+            startTime: context.start_time || '',
+            endTime: context.end_time || '',
+            buildingId: context.building_id || '',
+            description: context.description || '',
+            contactPerson: getEventContactSummary(context)
+        },
+        notes: {
+            internal: String(context.notes?.internal || '').trim()
+        },
+        roleGroups: Object.values(roleGroups),
+        documents,
+        autoProgress: (
+            ['bulletin', 'bulletin8', 'bulletin10', 'insert', 'documents', 'contracts'].includes(normalizedSectionKey)
+            && documents.some((document) => document.path)
+        ) || (
+            ['clergy', 'music', 'people', 'roles'].includes(normalizedSectionKey)
+            && assignments.length > 0
+        )
     };
 };
 
@@ -1057,6 +1294,9 @@ export const getTaskPanelData = async ({
 
     if (normalizedOriginType === 'sunday' && originId) {
         return buildSundayPanel(originId, normalizedSectionKey);
+    }
+    if (normalizedOriginType === 'event' && originId) {
+        return buildEventPanel(originId, normalizedSectionKey);
     }
 
     if (normalizedSectionKey === 'mail') {
@@ -1077,9 +1317,15 @@ export const getTaskPanelData = async ({
     if (normalizedSectionKey === 'timesheets' || normalizedSectionKey === 'payroll') {
         return buildPayrollPanel(taskMeta);
     }
+    if (normalizedSectionKey === 'orders' || normalizedSectionKey === 'ordering') {
+        return await buildOrdersPanelData();
+    }
 
     if (normalizedOriginType === 'sunday' && originId) {
         return buildSundayPanel(originId, normalizedSectionKey);
+    }
+    if (normalizedOriginType === 'event' && originId) {
+        return buildEventPanel(originId, normalizedSectionKey);
     }
 
     return {
