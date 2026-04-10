@@ -449,6 +449,28 @@
     position: relative;
 }
 
+.deposit-card--embedded {
+    margin-top: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+}
+
+.deposit-card--embedded .deposit-header {
+    margin-bottom: 0.15rem;
+}
+
+.deposit-card--embedded .deposit-header h3 {
+    margin: 0;
+    font-size: 1.08rem;
+    color: var(--color-text-main);
+}
+
+.deposit-card--embedded .deposit-builder-body {
+    gap: 0.85rem;
+}
+
 .deposit-header {
     display: flex;
     justify-content: space-between;

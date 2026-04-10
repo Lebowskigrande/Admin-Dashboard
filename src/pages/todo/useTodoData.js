@@ -6,6 +6,11 @@ import { getOriginRoute } from '../../config/appRoutes';
 import { getTaskProgressMeta, getTaskNextStepLabel } from '../../utils/taskProgress';
 import { buildOriginGroups } from '../../../shared/taskRollups.js';
 import {
+    getNextTaskCycleState,
+    getTaskCycleState,
+    isSimpleStatusListKey
+} from '../../../shared/taskStatus.js';
+import {
     PRIORITY_OPTIONS,
     isDateString,
     normalizeOriginKey,
@@ -239,13 +244,78 @@ export const useTodoData = () => {
     }, [loadAllTasks]);
 
     const originGroups = useMemo(() => {
-        const isLegacySundayBulletinList = (task) => {
-            if (String(task?.origin_type || '').toLowerCase() !== 'sunday') return false;
+        const mailGroups = taskList.reduce((acc, task) => {
+            const originType = String(task?.origin_type || '').toLowerCase();
             const listKey = String(task?.list_key || '').toLowerCase();
-            return listKey === 'bulletins-10am' || listKey === 'bulletins-8am';
+            if (originType !== 'operations' || !/^mail-(mon|wed|fri)$/.test(listKey)) return acc;
+            const originId = String(task?.origin_id || '');
+            if (!acc[originId]) acc[originId] = [];
+            acc[originId].push(task);
+            return acc;
+        }, {});
+
+        const normalizedMailMeta = Object.fromEntries(
+            Object.entries(mailGroups).map(([originId, tasks]) => {
+                const latestCompleted = tasks
+                    .filter((task) => task?.completed_at)
+                    .sort((a, b) => String(b.completed_at || '').localeCompare(String(a.completed_at || '')))[0] || null;
+                const state = tasks.some((task) => getTaskCycleState(task) === 'done')
+                    ? 'done'
+                    : tasks.some((task) => getTaskCycleState(task) === 'in_progress')
+                        ? 'in_progress'
+                        : tasks.some((task) => getTaskCycleState(task) === 'blocked')
+                            ? 'blocked'
+                            : 'open';
+                return [originId, {
+                    state,
+                    completedAt: state === 'done' ? (latestCompleted?.completed_at || null) : null
+                }];
+            })
+        );
+
+        const normalizedTasks = taskList.map((task) => {
+            if (!task) return task;
+            const nextTask = { ...task };
+            const originType = String(nextTask.origin_type || '').toLowerCase();
+            const listKey = String(nextTask.list_key || '').toLowerCase();
+
+            if (originType === 'operations' && /^mail-(mon|wed|fri)$/.test(listKey)) {
+                nextTask.list_key = 'mail';
+                nextTask.list_title = 'Mail';
+                const mailMeta = normalizedMailMeta[String(nextTask.origin_id || '')];
+                if (mailMeta) {
+                    nextTask.state = mailMeta.state;
+                    nextTask.completed_at = mailMeta.completedAt;
+                }
+            }
+
+            if (originType === 'operations' && String(nextTask.origin_id || '').startsWith('timesheets-')) {
+                const dueDate = parseDueDate(nextTask.due_at);
+                if (dueDate) {
+                    const weekStart = startOfWeek(dueDate, { weekStartsOn: 1 });
+                    nextTask.source_origin_id = nextTask.origin_id;
+                    nextTask.origin_id = `weekly-${toDateKey(weekStart)}`;
+                }
+            }
+
+            return nextTask;
+        });
+        const isLegacyOrCanonicalSundayServiceEventTask = (task) => {
+            const originType = String(task?.origin_type || '').toLowerCase();
+            const listKey = String(task?.list_key || '').toLowerCase();
+            const eventTypeSlug = String(task?.event_type_slug || '').toLowerCase();
+            const eventTypeName = String(task?.event_type_name || '').toLowerCase();
+
+            if (originType === 'sunday') {
+                return listKey === 'bulletins-10am' || listKey === 'bulletins-8am';
+            }
+
+            if (originType !== 'event') return false;
+            if (['weekly-service', 'rite-i-service', 'rite-ii-service'].includes(eventTypeSlug)) return true;
+            return eventTypeName === 'sunday service (legacy)' || eventTypeName === 'rite i' || eventTypeName === 'rite ii';
         };
-        return buildOriginGroups(taskList, {
-            excludeTask: isLegacySundayBulletinList,
+        return buildOriginGroups(normalizedTasks, {
+            excludeTask: isLegacyOrCanonicalSundayServiceEventTask,
             sortTasks: sortTasksByPriority
         });
     }, [taskList]);
@@ -323,12 +393,10 @@ export const useTodoData = () => {
         };
     }, [visibleTaskRows]);
 
-    const selectedOrigin = useMemo(() => (
-        filteredOriginGroups.find((group) => group.key === selection.originKey)
-        || visibleTaskRows[0]?.origin
-        || filteredOriginGroups[0]
-        || null
-    ), [filteredOriginGroups, selection.originKey, visibleTaskRows]);
+    const selectedOrigin = useMemo(() => {
+        if (!selection.originKey) return null;
+        return filteredOriginGroups.find((group) => group.key === selection.originKey) || null;
+    }, [filteredOriginGroups, selection.originKey]);
 
     const selectedOriginKey = selectedOrigin?.key || '';
 
@@ -512,8 +580,40 @@ export const useTodoData = () => {
         }
     };
 
+    const updateTaskState = async (task, nextState) => {
+        if (!task) return;
+        try {
+            const response = await fetch(`${API_URL}/tasks/${task.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: task.text,
+                    state: nextState,
+                    progress_key: ''
+                })
+            });
+            if (!response.ok) throw new Error('Failed to update task state');
+            const updated = await response.json();
+            upsertTaskInState(updated);
+        } catch (err) {
+            console.error('Failed to update task state:', err);
+            setError('Unable to update task. Please try again.');
+        }
+    };
+
     const toggleTask = async (task) => {
         if (!task) return;
+        if (Array.isArray(task.group_tasks) && task.group_tasks.length > 0) {
+            const nextState = getNextTaskCycleState(task);
+            for (const groupTask of task.group_tasks) {
+                await updateTaskState(groupTask, nextState);
+            }
+            return;
+        }
+        if (isSimpleStatusListKey(task.list_key)) {
+            await updateTaskState(task, getNextTaskCycleState(task));
+            return;
+        }
         const progressMeta = getTaskProgressMeta(task);
         if (progressMeta?.nextStep) {
             await updateTaskProgress(task, progressMeta.nextStep.key);

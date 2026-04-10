@@ -16,6 +16,7 @@ import {
     listTaskProgressHistory,
     buildTaskProgressAudit
 } from '../helpers/task-progress-history.js';
+import { isSimpleStatusListKey } from '../../shared/taskStatus.js';
 import {
     listTaskInstances,
     createTaskInstance,
@@ -28,9 +29,16 @@ import {
     previewOperationsSeedPlan,
     getTaskEngineHealth
 } from '../services/taskEngine.js';
+import { getTaskPanelData } from '../services/taskPanelService.js';
 import { upsertEntityLink } from '../helpers/entity-utils.js';
 
 const router = express.Router();
+
+const normalizeTaskState = (value, fallback = 'open') => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (['open', 'in_progress', 'blocked', 'done'].includes(normalized)) return normalized;
+    return fallback;
+};
 
 const filterVisibleTasks = (tasks, { includeArchived = false, includeFuture = false } = {}) => {
     const todayKey = new Date().toISOString().slice(0, 10);
@@ -244,6 +252,21 @@ router.get('/tasks/progress-audit', (req, res) => {
         cluster_window_minutes: clusterWindowMinutes,
         min_cluster_size: minClusterSize
     }));
+});
+
+router.get('/tasks/panel-data', async (req, res) => {
+    try {
+        const payload = await getTaskPanelData({
+            originType: String(req.query.origin_type || '').trim(),
+            originId: String(req.query.origin_id || '').trim(),
+            sectionKey: String(req.query.section_key || '').trim(),
+            taskId: String(req.query.task_id || '').trim()
+        });
+        return res.json(payload);
+    } catch (error) {
+        console.error('Task panel data error:', error);
+        return res.status(500).json({ error: 'Failed to load task panel data' });
+    }
 });
 
 router.get('/tasks/:id/progress-history', (req, res) => {
@@ -482,6 +505,9 @@ router.put('/tasks/:id', (req, res) => {
         return res.status(404).json({ error: 'Task not found' });
     }
 
+    const body = req.body || {};
+    const hasExplicitState = Object.prototype.hasOwnProperty.call(body, 'state');
+    const hasExplicitCompleted = Object.prototype.hasOwnProperty.call(body, 'completed');
     const {
         text = existing.title,
         completed = existing.state === 'done',
@@ -494,15 +520,21 @@ router.put('/tasks/:id', (req, res) => {
         keep_until = existing.keep_until || null,
         notes = existing.notes,
         progress_key = existing.progress_key || '',
-        progress_steps = null
-    } = req.body || {};
+        progress_steps = null,
+        state = existing.state || 'open'
+    } = body;
     const normalizedText = normalizeName(text);
     if (!normalizedText) {
         return res.status(400).json({ error: 'Task text is required' });
     }
 
-    let completedAt = completed ? (existing.completed_at || new Date().toISOString()) : null;
-    let nextState = completed ? 'done' : (Number(blocked) ? 'blocked' : 'open');
+    const isSimpleStatusList = isSimpleStatusListKey(existing.list_key);
+    const explicitState = normalizeTaskState(state, existing.state || 'open');
+    const completedFlag = hasExplicitCompleted ? !!completed : (existing.state === 'done' || !!existing.completed_at);
+    let completedAt = completedFlag ? (existing.completed_at || new Date().toISOString()) : null;
+    let nextState = hasExplicitState
+        ? explicitState
+        : (hasExplicitCompleted ? (completed ? 'done' : (Number(blocked) ? 'blocked' : 'open')) : normalizeTaskState(existing.state, 'open'));
     const progressKeyValue = progress_key != null ? String(progress_key) : (existing.progress_key || '');
     const parsedProgressSteps = Array.isArray(progress_steps)
         ? progress_steps
@@ -515,7 +547,11 @@ router.put('/tasks/:id', (req, res) => {
         && sortedProgressSteps.length > 0
         && progressKeyValue
         && sortedProgressSteps[sortedProgressSteps.length - 1]?.key === progressKeyValue;
-    if (isProgressive) {
+    if (hasExplicitState) {
+        completedAt = explicitState === 'done'
+            ? (existing.completed_at || new Date().toISOString())
+            : null;
+    } else if (isProgressive && !isSimpleStatusList) {
         if (isProgressComplete) {
             completedAt = completedAt || new Date().toISOString();
             nextState = 'done';
@@ -555,8 +591,8 @@ router.put('/tasks/:id', (req, res) => {
         completedAt,
         Number(archive_after_due) ? 1 : 0,
         keep_until,
-        progressKeyValue,
-        Array.isArray(progress_steps) ? JSON.stringify(parsedProgressSteps) : existing.progress_steps,
+        isSimpleStatusList ? null : progressKeyValue,
+        isSimpleStatusList ? null : (Array.isArray(progress_steps) ? JSON.stringify(parsedProgressSteps) : existing.progress_steps),
         notes != null ? String(notes).trim() : null,
         id
     );

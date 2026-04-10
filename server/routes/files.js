@@ -17,7 +17,10 @@ const router = express.Router();
 
 const ALLOWED_ROOTS = [
     resolve(DROPBOX_ROOT),
-    resolve(ARCHITECTURAL_RECORDS_ROOT)
+    resolve(ARCHITECTURAL_RECORDS_ROOT),
+    resolve(process.cwd()),
+    resolve('Y:\\Folders\\St. Edmunds (SEEC)\\2026\\AR & Contributions'),
+    resolve('Y:\\Folders\\St. Edmunds (SEEC)\\2026\\AP & Expenses')
 ];
 
 const resolveAllowedPath = async (rawPath) => resolveExistingPathWithinRoots(rawPath, ALLOWED_ROOTS);

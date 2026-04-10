@@ -1,9 +1,11 @@
 const SECTION_CATALOG = {
     bulletin: { iconKey: 'documents', shortLabel: 'Bulletin' },
+    bulletin8: { iconKey: 'documents', shortLabel: 'Rite I' },
+    bulletin10: { iconKey: 'documents', shortLabel: 'Rite II' },
     insert: { iconKey: 'documents', shortLabel: 'Insert' },
     music: { iconKey: 'music', shortLabel: 'Music' },
     clergy: { iconKey: 'people', shortLabel: 'Clergy' },
-    roles: { iconKey: 'people', shortLabel: 'Roles' },
+    roles: { iconKey: 'people', shortLabel: 'Roster' },
     roster: { iconKey: 'people', shortLabel: 'Roster' },
     contacts: { iconKey: 'people', shortLabel: 'People' },
     people: { iconKey: 'people', shortLabel: 'People' },
@@ -19,12 +21,14 @@ const SECTION_CATALOG = {
     communications: { iconKey: 'communications', shortLabel: 'Comms' },
     comms: { iconKey: 'communications', shortLabel: 'Comms' },
     email: { iconKey: 'communications', shortLabel: 'Comms' },
+    donations: { iconKey: 'receivables', shortLabel: 'Receivables' },
     outreach: { iconKey: 'communications', shortLabel: 'Comms' },
     followup: { iconKey: 'followup', shortLabel: 'Follow-up' },
     postvestry: { iconKey: 'followup', shortLabel: 'Follow-up' },
     finance: { iconKey: 'finance', shortLabel: 'Finance' },
-    bills: { iconKey: 'finance', shortLabel: 'Bills' },
+    bills: { iconKey: 'payables', shortLabel: 'Payables' },
     deposits: { iconKey: 'finance', shortLabel: 'Deposits' },
+    timesheets: { iconKey: 'finance', shortLabel: 'Payroll' },
     payroll: { iconKey: 'finance', shortLabel: 'Payroll' },
     records: { iconKey: 'documents', shortLabel: 'Records' }
 };
@@ -58,6 +62,11 @@ const toCompactPhrase = (value, maxWords = 2) => {
 const isGenericSectionTitle = (value) => GENERIC_SECTION_TITLES.has(normalizeDisplayText(value).toLowerCase());
 
 const getOperationsSectionTitle = (listTitle, taskText) => {
+    const raw = `${listTitle || ''} ${taskText || ''}`.toLowerCase();
+    if (/(donation|receivable|esp)/.test(raw)) return 'Receivables';
+    if (/(bill|invoice|expense|accounts payable|ap )/.test(raw)) return 'Payables';
+    if (/\bbirthday\b/.test(raw)) return 'Birthday Cards';
+    if (/\bmail\b/.test(raw) && !/\bemail\b/.test(raw)) return 'Mail';
     const normalizedTitle = normalizeDisplayText(listTitle);
     if (!isGenericSectionTitle(normalizedTitle)) return normalizedTitle || normalizeDisplayText(taskText) || 'Operations';
     return normalizeDisplayText(taskText) || normalizedTitle || 'Operations';
@@ -65,7 +74,10 @@ const getOperationsSectionTitle = (listTitle, taskText) => {
 
 const getOperationsShortLabel = (title, taskText) => {
     const raw = `${title} ${taskText || ''}`.toLowerCase();
-    if (/(bill|invoice|expense|ap |accounts payable)/.test(raw)) return 'Bills';
+    if (/(donation|receivable|esp)/.test(raw)) return 'Receivables';
+    if (/(bill|invoice|expense|ap |accounts payable)/.test(raw)) return 'Payables';
+    if (/\bbirthday\b/.test(raw)) return 'Birthday';
+    if (/\bmail\b/.test(raw) && !/\bemail\b/.test(raw)) return 'Mail';
     if (/(deposit|check|bank)/.test(raw)) return 'Deposits';
     if (/(timesheet|payroll|staff hours)/.test(raw)) return 'Payroll';
     if (/(email|newsletter|communication|announcement)/.test(raw)) return 'Comms';
@@ -83,6 +95,18 @@ const getFallbackSectionConfig = (raw = '') => {
     }
     if (/(music|musician|organ|choir|hymn|anthem)/.test(raw)) {
         return { iconKey: 'music', shortLabel: 'Music' };
+    }
+    if (/(donation|receivable|esp)/.test(raw)) {
+        return { iconKey: 'receivables', shortLabel: 'Receivables' };
+    }
+    if (/(bill|invoice|expense|ap |accounts payable)/.test(raw)) {
+        return { iconKey: 'payables', shortLabel: 'Payables' };
+    }
+    if (/\bbirthday\b/.test(raw)) {
+        return { iconKey: 'birthday', shortLabel: 'Birthday' };
+    }
+    if (/\bmail\b/.test(raw) && !/\bemail\b/.test(raw)) {
+        return { iconKey: 'mail', shortLabel: 'Mail' };
     }
     if (/(setup|ready|logistics|building|facility|room|site|campus|sacristy)/.test(raw)) {
         return { iconKey: 'setup', shortLabel: 'Setup' };

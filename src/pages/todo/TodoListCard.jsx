@@ -1,6 +1,10 @@
 import Card from '../../components/Card';
 import { getSectionIconComponent } from './todoVisuals';
-import { getTaskActionLabel } from '../../utils/taskProgress';
+import {
+    getTaskCycleChipText,
+    getTaskCycleLabel,
+    getTaskCycleState
+} from '../../../shared/taskStatus.js';
 
 const TodoListCard = ({
     title,
@@ -49,8 +53,8 @@ const TodoListCard = ({
                     const packageSubtitle = getWorkPackageSubtitle(origin);
                     const packageTitle = getWorkPackageTitle(origin);
                     const workPackage = getWorkPackageSummary(origin);
-                    const primarySection = workPackage.primarySection;
-                    const primaryTask = primarySection?.actionTask || task;
+                    const primarySection = workPackage.primarySection || workPackage.sections[0] || null;
+                    const primaryTask = primarySection?.actionTask || primarySection?.currentTask || null;
                     const isActive = row.originKey === selectedOriginKey;
                     const bucketLabel = row.bucket === 'this_week'
                         ? 'This Week'
@@ -92,78 +96,52 @@ const TodoListCard = ({
                                 <div className="package-card-subtitle">{packageSubtitle}</div>
                             </div>
 
-                            <div className="package-card-statusline">
-                                <div className="package-status-copy">
-                                    <span className="package-status-label">Current friction</span>
-                                    <strong>
-                                        {primarySection
-                                            ? `${primarySection.title}: ${primarySection.currentLabel}`
-                                            : 'Checklist complete'}
-                                    </strong>
-                                </div>
-                                {primaryTask ? (
-                                    <span className={`priority-pill ${getDisplayClass(primaryTask)}`}>
-                                        {getDisplayLabel(primaryTask)}
-                                    </span>
-                                ) : null}
-                            </div>
-
                             <div className="package-section-strip">
                                 {workPackage.sections.map((section) => {
                                     const Icon = getSectionIconComponent(section.iconKey);
                                     const isFocused = isActive && section.key === selectedSectionKey;
+                                    const chipText = getTaskCycleChipText(section.actionTask || section.currentTask);
+                                    const chipState = getTaskCycleState(section.actionTask || section.currentTask);
                                     return (
-                                        <button
+                                        <div
                                             key={section.key}
-                                            type="button"
                                             className={`section-node attention-${section.attention} ${isFocused ? 'is-focused' : ''}`}
-                                            onClick={(event) => {
-                                                event.stopPropagation();
-                                                onSelectRow(
-                                                    row.originKey,
-                                                    section.key,
-                                                    section.actionTask?.id || section.currentTask?.id || ''
-                                                );
-                                            }}
                                         >
-                                            <span className={`section-node-icon state-${section.status}`}>
-                                                <Icon />
-                                                {section.status === 'done' ? <span className="section-node-check">v</span> : null}
-                                            </span>
-                                            <span className="section-node-label">{section.shortLabel}</span>
-                                            <span className="section-node-meta">
-                                                {section.completedCount}/{section.totalCount}
-                                            </span>
-                                        </button>
+                                            <button
+                                                type="button"
+                                                className="section-node-icon-button"
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    if (section.actionTask) toggleTask(section.actionTask);
+                                                }}
+                                                disabled={!section.actionTask}
+                                                aria-label={section.actionTask ? `${section.title}: ${getTaskCycleLabel(section.actionTask)}` : section.title}
+                                                title={section.actionTask ? `${section.title}: click to cycle status` : section.title}
+                                            >
+                                                <span className={`section-node-icon state-${section.status}`}>
+                                                    <Icon />
+                                                    {chipText ? <span className={`section-state-chip status-${chipState}`}>{chipText}</span> : null}
+                                                </span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="section-node-select"
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    onSelectRow(
+                                                        row.originKey,
+                                                        section.key,
+                                                        section.actionTask?.id || section.currentTask?.id || ''
+                                                    );
+                                                }}
+                                            >
+                                                <span className="section-node-label">{section.shortLabel}</span>
+                                            </button>
+                                        </div>
                                     );
                                 })}
                             </div>
 
-                            <div className="package-card-footer">
-                                <div className="package-progress-copy">
-                                    <span>{workPackage.doneSectionCount}/{workPackage.sections.length} sections closed</span>
-                                    <span>{workPackage.completedCount}/{workPackage.totalCount} checklist items</span>
-                                </div>
-                                {primaryTask ? (
-                                    <button
-                                        type="button"
-                                        className="package-advance-btn"
-                                        onClick={(event) => {
-                                            event.stopPropagation();
-                                            toggleTask(primaryTask);
-                                        }}
-                                    >
-                                        {getTaskActionLabel(
-                                            primaryTask,
-                                            {
-                                                completeLabel: primarySection?.checklist?.mode === 'progressive'
-                                                    ? 'Advance'
-                                                    : 'Complete'
-                                            }
-                                        )}
-                                    </button>
-                                ) : null}
-                            </div>
                         </article>
                     );
                 })}

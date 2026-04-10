@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { sqlite as db } from '../db.js';
-import { tableExists, tableHasColumn } from '../helpers/db-utils.js';
+import { parseJsonField, tableExists, tableHasColumn } from '../helpers/db-utils.js';
 import { upsertEntityLink, deleteEntityLinks } from '../helpers/entity-utils.js';
 import {
     formatTaskInstanceRow,
@@ -8,6 +8,7 @@ import {
 } from '../helpers/task-utils.js';
 import { recordTaskProgressHistory } from '../helpers/task-progress-history.js';
 import { normalizeWorshipTypeSlug } from '../helpers/worship-service-utils.js';
+import { getSimpleStatusListTitle, isSimpleStatusListKey } from '../../shared/taskStatus.js';
 import {
     addDaysIso,
     getEventTaskSchedule,
@@ -240,14 +241,173 @@ const ensureProgressiveTemplateModes = () => {
 const migrateTaskListsToProgressive = () => {
     if (!tableExists('task_instances') || !tableHasColumn('task_instances', 'list_mode')) return;
 
-    // Migrate specific lists to progressive mode if needed
-    const updates = [
-        { list: 'bulletins', mode: 'progressive' },
-        { list: 'insert', mode: 'progressive' }
+    db.prepare(`
+        UPDATE task_instances
+        SET list_mode = 'progressive'
+        WHERE list_key = 'insert'
+          AND (list_mode IS NULL OR list_mode != 'progressive')
+          AND archived_at IS NULL
+          AND progress_steps IS NOT NULL
+    `).run();
+};
+
+const normalizeSimpleStatusTemplates = () => {
+    if (!tableExists('recurring_task_templates')) return;
+    const now = new Date().toISOString();
+    const keepDefinitions = [
+        {
+            id: 'tmpl-sun-bulletin-final',
+            listKey: 'bulletins',
+            listTitle: 'Bulletins',
+            title: 'Bulletins',
+            stepKey: 'bulletins',
+            sortOrder: 10,
+            dueOffsetDays: -1
+        },
+        {
+            id: 'tmpl-sun-email-schedule',
+            listKey: 'email',
+            listTitle: 'Comms',
+            title: 'Comms',
+            stepKey: 'email',
+            sortOrder: 10,
+            dueOffsetDays: -1
+        },
+        {
+            id: 'tmpl-sun-insert-stuff',
+            listKey: 'insert',
+            listTitle: 'Insert',
+            title: 'Insert',
+            stepKey: 'insert',
+            sortOrder: 10,
+            dueOffsetDays: 0
+        },
+        {
+            id: 'tmpl-ops-deposit-send',
+            listKey: 'deposits',
+            listTitle: 'Deposits',
+            title: 'Deposits',
+            stepKey: 'deposits',
+            sortOrder: 10,
+            dueOffsetDays: null
+        },
+        {
+            id: 'tmpl-ops-timesheets-send',
+            listKey: 'timesheets',
+            listTitle: 'Payroll',
+            title: 'Payroll',
+            stepKey: 'timesheets',
+            sortOrder: 10,
+            dueOffsetDays: null
+        }
+    ];
+    const deleteIds = [
+        'tmpl-sun-bulletin-draft',
+        'tmpl-sun-email-youtube',
+        'tmpl-sun-insert-draft',
+        'tmpl-sun-insert-final',
+        'tmpl-ops-deposit-collect',
+        'tmpl-ops-deposit-code',
+        'tmpl-ops-timesheets-make'
     ];
 
-    updates.forEach(({ list, mode }) => {
-        db.prepare('UPDATE task_instances SET list_mode = ? WHERE list_key = ? AND (list_mode IS NULL OR list_mode != ?)').run(mode, list, mode);
+    const updateStmt = db.prepare(`
+        UPDATE recurring_task_templates
+        SET list_key = ?,
+            list_title = ?,
+            list_mode = 'sequential',
+            step_key = ?,
+            title = ?,
+            sort_order = ?,
+            due_offset_days = ?,
+            updated_at = ?
+        WHERE id = ?
+    `);
+    keepDefinitions.forEach((definition) => {
+        updateStmt.run(
+            definition.listKey,
+            definition.listTitle,
+            definition.stepKey,
+            definition.title,
+            definition.sortOrder,
+            definition.dueOffsetDays,
+            now,
+            definition.id
+        );
+    });
+
+    if (deleteIds.length) {
+        const placeholders = deleteIds.map(() => '?').join(', ');
+        db.prepare(`
+            DELETE FROM recurring_task_templates
+            WHERE id IN (${placeholders})
+        `).run(...deleteIds);
+    }
+};
+
+const normalizeSimpleStatusTaskInstances = () => {
+    if (!tableExists('task_instances') || !tableExists('tasks_new')) return;
+    const rows = db.prepare(`
+        SELECT ti.id, ti.task_id, ti.state, ti.completed_at,
+               ti.list_key, ti.list_title, ti.list_mode, ti.progress_key, ti.progress_steps,
+               t.title, t.created_at AS task_created_at
+        FROM task_instances ti
+        JOIN tasks_new t ON t.id = ti.task_id
+        WHERE ti.archived_at IS NULL
+    `).all().filter((row) => isSimpleStatusListKey(row.list_key));
+
+    if (!rows.length) return;
+
+    const updateTaskStmt = db.prepare(`
+        UPDATE tasks_new
+        SET title = ?, updated_at = ?
+        WHERE id = ?
+    `);
+    const updateInstanceStmt = db.prepare(`
+        UPDATE task_instances
+        SET state = ?,
+            completed_at = ?,
+            list_mode = 'sequential',
+            progress_key = NULL,
+            progress_steps = NULL,
+            list_title = ?
+        WHERE id = ?
+    `);
+
+    rows.forEach((row) => {
+        const steps = row.progress_steps ? parseJsonField(row.progress_steps, []) : [];
+        const sortedSteps = Array.isArray(steps)
+            ? steps.slice().sort((a, b) => (a?.sort_order ?? 0) - (b?.sort_order ?? 0))
+            : [];
+        const progressKey = String(row.progress_key || '').trim();
+        const isProgressComplete = !!(
+            progressKey
+            && sortedSteps.length
+            && sortedSteps[sortedSteps.length - 1]?.key === progressKey
+        );
+        const nextState = row.completed_at || row.state === 'done' || isProgressComplete
+            ? 'done'
+            : row.state === 'blocked'
+                ? 'blocked'
+                : (row.state === 'in_progress' || progressKey ? 'in_progress' : 'open');
+        const completedAt = nextState === 'done'
+            ? (row.completed_at || row.task_created_at || new Date().toISOString())
+            : null;
+        const nextTitle = getSimpleStatusListTitle(row.list_key, row.list_title || row.title || 'Task');
+        const now = new Date().toISOString();
+        const titleChanged = String(row.title || '') !== String(nextTitle);
+        const listTitleChanged = String(row.list_title || '') !== String(nextTitle);
+        const stateChanged = String(row.state || 'open') !== String(nextState);
+        const completedAtChanged = String(row.completed_at || '') !== String(completedAt || '');
+        const modeChanged = String(row.list_mode || 'sequential').toLowerCase() !== 'sequential';
+        const progressChanged = Boolean(row.progress_key || row.progress_steps);
+
+        if (!titleChanged && !listTitleChanged && !stateChanged && !completedAtChanged && !modeChanged && !progressChanged) {
+            return;
+        }
+
+        updateTaskStmt.run(nextTitle, now, row.task_id);
+        updateInstanceStmt.run(nextState, completedAt, nextTitle, row.id);
     });
 };
 
@@ -600,6 +760,28 @@ export const seedSundayTasksFromTemplates = () => {
             const listKey = groupTemplates[0]?.list_key || null;
             const listTitle = groupTemplates[0]?.list_title || null;
             const listMode = groupTemplates[0]?.list_mode || 'sequential';
+            if (isSimpleStatusListKey(listKey) && groupTemplates.length === 1) {
+                const template = groupTemplates[0];
+                const dueOffset = Number.isFinite(Number(template?.due_offset_days)) ? Number(template.due_offset_days) : null;
+                const dueAt = dueOffset != null ? addDaysIso(dateKey, dueOffset) : dateKey;
+                const payload = {
+                    title: getSimpleStatusListTitle(listKey, listTitle || template?.title || 'Task'),
+                    taskType: 'sunday',
+                    priorityBase: Number.isFinite(Number(template?.priority_base)) ? Number(template.priority_base) : getDefaultPriorityBase('sunday'),
+                    dueAt,
+                    originType: 'sunday',
+                    originId: dateKey,
+                    originEvent: listKey || 'status',
+                    generationKey: `sunday:${dateKey}:${listKey || 'list'}:progressive`,
+                    listKey,
+                    listTitle: getSimpleStatusListTitle(listKey, listTitle || template?.title || 'Task'),
+                    listMode: 'sequential'
+                };
+                if (!syncSeededTaskInstance(payload)) {
+                    createTaskInstance(payload);
+                }
+                return;
+            }
             if (listMode === 'progressive') {
                 const steps = groupTemplates.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
                     .map((template) => ({
@@ -880,6 +1062,25 @@ const buildOperationsSeedPlan = ({ now = new Date(), rehydrate = false } = {}) =
             const listMode = String(groupTemplates[0]?.list_mode || 'sequential').toLowerCase();
             const originId = defaultOriginId;
 
+            if (isSimpleStatusListKey(listKey) && groupTemplates.length === 1) {
+                const template = groupTemplates[0];
+                const dueAt = template.due_offset_days != null
+                    ? addDaysIso(fallbackDueAt, Number(template.due_offset_days))
+                    : fallbackDueAt;
+                const title = getSimpleStatusListTitle(listKey, listTitle || template.title || 'Task');
+                pushPlanEntry({
+                    title,
+                    listKey,
+                    listTitle: title,
+                    listMode: 'sequential',
+                    originId,
+                    originEvent: listKey || periodType,
+                    dueAt,
+                    periodType
+                });
+                return;
+            }
+
             if (groupTemplates.length > 1 && listMode === 'progressive') {
                 const steps = groupTemplates.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
                     .map((template) => ({
@@ -993,6 +1194,22 @@ const buildOperationsSeedPlan = ({ now = new Date(), rehydrate = false } = {}) =
                 originEvent: listKey || 'progressive',
                 dueAt,
                 progressSteps: steps,
+                periodType: 'weekly'
+            });
+            return;
+        }
+
+        if (isSimpleStatusListKey(listKey) && groupTemplates.length === 1) {
+            const template = groupTemplates[0];
+            const title = getSimpleStatusListTitle(listKey, listTitle || template?.title || 'Task');
+            pushPlanEntry({
+                title,
+                listKey,
+                listTitle: title,
+                listMode: 'sequential',
+                originId: weeklyOriginId,
+                originEvent: listKey || 'weekly',
+                dueAt: fridayKey,
                 periodType: 'weekly'
             });
             return;
@@ -1233,6 +1450,31 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
         const listKey = groupTemplates[0]?.list_key || null;
         const listTitle = groupTemplates[0]?.list_title || null;
         const listMode = groupTemplates[0]?.list_mode || 'sequential';
+        if (isSimpleStatusListKey(listKey) && groupTemplates.length === 1) {
+            const template = groupTemplates[0];
+            const schedule = getEventTaskSchedule({
+                dateKey,
+                dueOffsets: [template?.due_offset_days]
+            });
+            const payload = {
+                title: getSimpleStatusListTitle(listKey, listTitle || template?.title || 'Task'),
+                taskType: 'event',
+                priorityBase: Number.isFinite(Number(template?.priority_base)) ? Number(template.priority_base) : getDefaultPriorityBase('event'),
+                dueAt: schedule.dueAt,
+                startAt: schedule.startAt,
+                originType: 'event',
+                originId: occurrenceId,
+                originEvent: listKey || 'status',
+                generationKey: `event:${occurrenceId}:${listKey || 'list'}:progressive`,
+                listKey,
+                listTitle: getSimpleStatusListTitle(listKey, listTitle || template?.title || 'Task'),
+                listMode: 'sequential'
+            };
+            if (!syncSeededTaskInstance(payload)) {
+                createTaskInstance(payload);
+            }
+            return;
+        }
         if (listMode === 'progressive') {
             const steps = groupTemplates.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
                 .map((template) => ({
@@ -1442,6 +1684,7 @@ export const seedTaskEngine = () => {
     normalizeOperationsOrigins();
     collapseOperationsRecurringTasks();
     ensureProgressiveTemplateModes();
+    normalizeSimpleStatusTemplates();
     cleanupSundaySpecialEventPlaceholders();
     ensureDefaultWorshipServiceTemplates();
     cleanupDuplicateEventServiceReadyTasks();
@@ -1450,6 +1693,7 @@ export const seedTaskEngine = () => {
     seedVestryTasksFromTemplates();
     const operationsSeed = seedOperationsTasksFromTemplates();
     seedEventTasksFromTemplates();
+    normalizeSimpleStatusTaskInstances();
     taskEngineRuntime = {
         ...taskEngineRuntime,
         lastSeedAt: new Date().toISOString(),

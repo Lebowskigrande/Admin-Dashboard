@@ -1,6 +1,11 @@
 import { format, startOfWeek } from 'date-fns';
 import { getTaskProgressMeta } from '../../utils/taskProgress';
 import { getListKey, normalizeOriginKey } from '../../../shared/taskRollups.js';
+import {
+    getTaskCycleLabel,
+    getTaskCycleState,
+    isSimpleStatusListKey
+} from '../../../shared/taskStatus.js';
 import { getSectionPresentation } from './sectionCatalog';
 export { getListKey, normalizeOriginKey } from '../../../shared/taskRollups.js';
 
@@ -15,6 +20,13 @@ export const PRIORITY_OPTIONS = [
 const stateOrder = {
     open: 0,
     in_progress: 1,
+    blocked: 2,
+    done: 3
+};
+
+const simpleStateOrder = {
+    in_progress: 0,
+    open: 1,
     blocked: 2,
     done: 3
 };
@@ -141,8 +153,42 @@ export const getListProgress = (tasks = []) => {
     return { total, completed, progress, warning };
 };
 
+const getSimpleStatusRepresentativeTask = (tasks = []) => (
+    [...tasks].sort((a, b) => {
+        const stateA = simpleStateOrder[getTaskCycleState(a)] ?? 99;
+        const stateB = simpleStateOrder[getTaskCycleState(b)] ?? 99;
+        if (stateA !== stateB) return stateA - stateB;
+        return compareTasksIgnoreState(a, b);
+    })[0] || null
+);
+
+const getAggregateSimpleStatusTask = (list) => {
+    const tasks = Array.isArray(list?.tasks) ? list.tasks.filter(Boolean) : [];
+    if (tasks.length <= 1) return null;
+    const latestCompletedTask = tasks
+        .filter((task) => task?.completed_at)
+        .sort((a, b) => String(b.completed_at || '').localeCompare(String(a.completed_at || '')))[0] || null;
+    const aggregateState = tasks.some((task) => getTaskCycleState(task) === 'done')
+        ? 'done'
+        : tasks.some((task) => getTaskCycleState(task) === 'in_progress')
+            ? 'in_progress'
+            : tasks.some((task) => getTaskCycleState(task) === 'blocked')
+                ? 'blocked'
+                : 'open';
+    const baseTask = getSimpleStatusRepresentativeTask(tasks) || tasks[0];
+    return {
+        ...baseTask,
+        state: aggregateState,
+        completed_at: aggregateState === 'done' ? (latestCompletedTask?.completed_at || baseTask?.completed_at || null) : null,
+        group_tasks: tasks
+    };
+};
+
 export const getListRepresentativeTask = (list) => {
     if (!list) return null;
+    if (isSimpleStatusListKey(list.key)) {
+        return getSimpleStatusRepresentativeTask(list.tasks || []);
+    }
     const listMode = String(list.mode || '').toLowerCase();
     if (listMode === 'progressive') {
         return list.tasks[0] || null;
@@ -155,6 +201,14 @@ export const getTopLevelTaskTitle = (list, task) => {
 };
 
 export const getListProgressDisplay = (list, task) => {
+    if (isSimpleStatusListKey(list?.key)) {
+        const state = getTaskCycleState(task);
+        return {
+            progress: state === 'done' ? 1 : state === 'in_progress' ? 0.5 : 0,
+            label: getTaskCycleLabel(state),
+            warning: ''
+        };
+    }
     const progressMeta = getTaskProgressMeta(task);
     if (progressMeta) {
         const total = progressMeta.steps.length;
@@ -189,6 +243,29 @@ export const getListChecklist = (list) => {
             progress: 0,
             currentItem: null,
             representativeTask: null,
+            canAdvance: false,
+            canRewind: false
+        };
+    }
+
+    if (isSimpleStatusListKey(list.key)) {
+        const representativeTask = getAggregateSimpleStatusTask(list) || getSimpleStatusRepresentativeTask(list.tasks || []);
+        const status = getTaskCycleState(representativeTask);
+        const label = representativeTask?.text || list.title || 'Task';
+        const item = representativeTask ? {
+            key: representativeTask.id,
+            label,
+            status,
+            task: representativeTask
+        } : null;
+        return {
+            mode: 'status',
+            items: item ? [item] : [],
+            totalCount: representativeTask ? 1 : 0,
+            completedCount: status === 'done' ? 1 : 0,
+            progress: status === 'done' ? 1 : status === 'in_progress' ? 0.5 : 0,
+            currentItem: status === 'done' ? null : item,
+            representativeTask,
             canAdvance: false,
             canRewind: false
         };
@@ -453,7 +530,7 @@ const getSectionAttention = (task, status) => {
     const dueInfo = getDueInfo(task);
     if (dueInfo?.rank === 0) return 'urgent';
     if (dueInfo?.rank === 1) return 'today';
-    if (status === 'current') return 'active';
+    if (status === 'current' || status === 'in_progress') return 'active';
     return 'idle';
 };
 
@@ -465,7 +542,7 @@ export const getWorkPackageSummary = (origin) => {
             const progressMeta = checklist.mode === 'progressive'
                 ? getTaskProgressMeta(checklist.representativeTask)
                 : null;
-            const currentTask = checklist.currentItem?.task || representativeTask || null;
+            const currentTask = checklist.currentItem?.task || checklist.representativeTask || representativeTask || null;
             const presentation = getSectionPresentation({
                 originType: origin?.origin_type,
                 listKey: list.key,
@@ -474,23 +551,28 @@ export const getWorkPackageSummary = (origin) => {
             });
             const effectiveTitle = presentation.title;
             const isDone = checklist.totalCount > 0 && checklist.completedCount >= checklist.totalCount;
-            const status = isDone
-                ? 'done'
-                : checklist.currentItem
-                    ? 'current'
-                    : (checklist.totalCount > 0 ? 'open' : 'done');
+            const status = checklist.mode === 'status'
+                ? getTaskCycleState(representativeTask)
+                : (isDone
+                    ? 'done'
+                    : checklist.currentItem
+                        ? 'current'
+                        : (checklist.totalCount > 0 ? 'open' : 'done'));
             const actionTask = checklist.mode === 'progressive'
                 ? checklist.representativeTask
-                : (checklist.currentItem?.task || representativeTask || null);
+                : (checklist.currentItem?.task || checklist.representativeTask || representativeTask || null);
+            const currentLabel = checklist.mode === 'status'
+                ? getTaskCycleLabel(representativeTask)
+                : (progressMeta?.currentLabel
+                    || checklist.currentItem?.label
+                    || (checklist.totalCount ? 'Checklist complete' : 'No checklist items'));
 
             return {
                 key: list.key,
                 title: effectiveTitle,
                 shortLabel: presentation.shortLabel,
                 iconKey: presentation.iconKey,
-                currentLabel: progressMeta?.currentLabel
-                    || checklist.currentItem?.label
-                    || (checklist.totalCount ? 'Checklist complete' : 'No checklist items'),
+                currentLabel,
                 completedCount: checklist.completedCount,
                 totalCount: checklist.totalCount,
                 progress: checklist.progress,
@@ -503,17 +585,39 @@ export const getWorkPackageSummary = (origin) => {
         })
         .sort((a, b) => compareTasksIgnoreState(a.currentTask || a.actionTask || {}, b.currentTask || b.actionTask || {}));
 
-    const totalCount = sections.reduce((sum, section) => sum + section.totalCount, 0);
-    const completedCount = sections.reduce((sum, section) => sum + section.completedCount, 0);
-    const primarySection = sections.find((section) => section.status !== 'done') || sections[0] || null;
+    const normalizedSections = [];
+    sections.forEach((section) => {
+        if (String(origin?.origin_type || '').toLowerCase() === 'sunday' && (section.key === 'bulletins' || section.key === 'bulletin')) {
+            normalizedSections.push(
+                {
+                    ...section,
+                    key: 'bulletin8',
+                    title: 'Rite I Bulletin',
+                    shortLabel: 'Rite I'
+                },
+                {
+                    ...section,
+                    key: 'bulletin10',
+                    title: 'Rite II Bulletin',
+                    shortLabel: 'Rite II'
+                }
+            );
+            return;
+        }
+        normalizedSections.push(section);
+    });
+
+    const totalCount = normalizedSections.reduce((sum, section) => sum + section.totalCount, 0);
+    const completedCount = normalizedSections.reduce((sum, section) => sum + section.completedCount, 0);
+    const primarySection = normalizedSections.find((section) => section.status !== 'done') || normalizedSections[0] || null;
 
     return {
-        sections,
+        sections: normalizedSections,
         totalCount,
         completedCount,
         progress: totalCount ? completedCount / totalCount : 0,
         primarySection,
-        openSectionCount: sections.filter((section) => section.status !== 'done').length,
-        doneSectionCount: sections.filter((section) => section.status === 'done').length
+        openSectionCount: normalizedSections.filter((section) => section.status !== 'done').length,
+        doneSectionCount: normalizedSections.filter((section) => section.status === 'done').length
     };
 };

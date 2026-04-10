@@ -1,7 +1,4 @@
-export const STATUS_PROGRESS_STEPS = [
-    { key: 'in-process', title: 'In Process', sort_order: 10 },
-    { key: 'done', title: 'Done', sort_order: 20 }
-];
+import { getSimpleStatusListTitle } from '../../shared/taskStatus.js';
 
 export const getStatusTemplateDefinitions = ({
     templateIdPrefix,
@@ -9,17 +6,17 @@ export const getStatusTemplateDefinitions = ({
     listTitle,
     dueOffsetDays,
     priorityBase
-}) => STATUS_PROGRESS_STEPS.map((step, index) => ({
-    id: `${templateIdPrefix}-${listKey}-${step.key}`,
+}) => [{
+    id: `${templateIdPrefix}-${listKey}`,
     listKey,
-    listTitle,
-    listMode: 'progressive',
-    stepKey: `${listKey}-${step.key}`,
-    title: step.title,
-    sortOrder: step.sort_order,
-    dueOffsetDays: index === 0 ? dueOffsetDays : -1,
+    listTitle: listTitle || getSimpleStatusListTitle(listKey, 'Task'),
+    listMode: 'sequential',
+    stepKey: listKey,
+    title: listTitle || getSimpleStatusListTitle(listKey, 'Task'),
+    sortOrder: 10,
+    dueOffsetDays,
     priorityBase
-}));
+}];
 
 export const WORSHIP_TEMPLATE_SCHEMAS = {
     'rite-i-service': [

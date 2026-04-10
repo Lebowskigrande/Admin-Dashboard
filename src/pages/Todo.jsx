@@ -1,16 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
 import Modal from '../components/Modal';
 import TodoAddForm from './todo/TodoAddForm';
-import TodoListCard from './todo/TodoListCard';
 import TodoDetailPanel from './todo/TodoDetailPanel';
+import TodoListCard from './todo/TodoListCard';
 import { useTodoData } from './todo/useTodoData';
 import { getDueInfo } from './todo/todoHelpers';
 import './Todo.css';
 
 const Todo = () => {
-    const navigate = useNavigate();
     const {
         PRIORITY_OPTIONS,
         tasksLoading,
@@ -214,7 +212,6 @@ const Todo = () => {
                         toggleTask={toggleTask}
                     />
                 </div>
-
                 <TodoDetailPanel
                     selectedOrigin={selectedOrigin}
                     selectedWorkPackage={selectedWorkPackage}
@@ -222,30 +219,12 @@ const Todo = () => {
                     selectedOriginTitle={selectedOriginTitle}
                     selectedOriginSubtitle={selectedOriginSubtitle}
                     selectedSectionKey={selectedSectionKey}
-                    selectedTaskKey={selectedTaskKey}
-                    selectedTask={focusTask || selectedTask}
-                    taskNotesDraft={taskNotesDraft}
-                    setTaskNotesDraft={setTaskNotesDraft}
-                    saveTaskNotes={saveTaskNotes}
-                    updateTaskProgress={updateTaskProgress}
-                    toggleTask={toggleTask}
-                    originLinks={originLinks}
-                    nestedExpanded={nestedExpanded}
-                    nestedTasks={nestedTasks}
-                    nestedLoading={nestedLoading}
-                    originGroupMap={originGroupMap}
-                    handleToggleNested={handleToggleNested}
-                    setSelectedOriginKey={setSelectedOriginKey}
+                    focusTask={focusTask}
                     setSelectedSectionKey={setSelectedSectionKey}
                     setSelectedTaskId={setSelectedTaskId}
-                    formatTaskTitle={formatTaskTitle}
-                    getDisplayClass={getDisplayClass}
-                    getDisplayLabel={getDisplayLabel}
-                    sortTasksForDetails={sortTasksForDetails}
-                    getTaskProgressMeta={getTaskProgressMeta}
+                    toggleTask={toggleTask}
                     getOriginColorClass={getOriginColorClass}
                     getOriginLink={getOriginLink}
-                    onOpenOrigin={(link) => navigate(link)}
                 />
             </div>
 
