@@ -42,45 +42,57 @@ const DEFAULT_EVENT_TYPES = [
     { name: 'Maintenance / Closure', slug: 'maintenance-closure', categorySlug: 'operational' }
 ];
 
+const DEFAULT_SETUP_FIELDS = [
+    { fieldKey: 'setup_required', label: 'Setup Needed', fieldType: 'checkbox', helpText: 'Turn this on only when the event needs setup beyond its normal baseline.', sortOrder: 80 },
+    { fieldKey: 'setup_description', label: 'Setup Plan', fieldType: 'textarea', placeholder: 'Describe the room, supplies, layout, or day-of setup required.', helpText: 'Required whenever setup is marked as needed.', sortOrder: 90 }
+];
+
+const withDefaultSetupFields = (fields = []) => [...fields, ...DEFAULT_SETUP_FIELDS];
+
 const DEFAULT_EVENT_TEMPLATE_FIELDS = {
-    'meeting': [
-        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10 },
+    'meeting': withDefaultSetupFields([
+        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10, required: 1 },
         { fieldKey: 'rental', label: 'Rental', fieldType: 'checkbox', sortOrder: 20 },
         { fieldKey: 'rental_rate', label: 'Rental Rate', fieldType: 'number', placeholder: '0', sortOrder: 30 }
-    ],
-    'rehearsal': [
-        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10 },
+    ]),
+    'rehearsal': withDefaultSetupFields([
+        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10, required: 1 },
         { fieldKey: 'rental', label: 'Rental', fieldType: 'checkbox', sortOrder: 20 },
         { fieldKey: 'rental_rate', label: 'Rental Rate', fieldType: 'number', placeholder: '0', sortOrder: 30 }
-    ],
-    'class-formation': [
-        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10 },
+    ]),
+    'class-formation': withDefaultSetupFields([
+        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10, required: 1 },
         { fieldKey: 'rental', label: 'Rental', fieldType: 'checkbox', sortOrder: 20 },
         { fieldKey: 'rental_rate', label: 'Rental Rate', fieldType: 'number', placeholder: '0', sortOrder: 30 }
-    ],
-    'volunteer': [
-        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10 },
+    ]),
+    'volunteer': withDefaultSetupFields([
+        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10, required: 1 },
         { fieldKey: 'rental', label: 'Rental', fieldType: 'checkbox', sortOrder: 20 },
         { fieldKey: 'rental_rate', label: 'Rental Rate', fieldType: 'number', placeholder: '0', sortOrder: 30 }
-    ],
-    'maintenance-closure': [
-        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10 }
-    ],
-    'wedding': [
-        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10 }
-    ],
-    'funeral': [
-        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10 }
-    ],
-    'concert': [
-        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10 },
+    ]),
+    'maintenance-closure': withDefaultSetupFields([
+        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10, required: 1 }
+    ]),
+    'wedding': withDefaultSetupFields([
+        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10, required: 1 }
+    ]),
+    'funeral': withDefaultSetupFields([
+        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10, required: 1 }
+    ]),
+    'concert': withDefaultSetupFields([
+        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10, required: 1 },
         { fieldKey: 'rental', label: 'Rental', fieldType: 'checkbox', sortOrder: 20 },
         { fieldKey: 'rental_rate', label: 'Rental Rate', fieldType: 'number', placeholder: '0', sortOrder: 30 }
-    ],
-    'private-rental': [
-        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10 },
+    ]),
+    'private-rental': withDefaultSetupFields([
+        { fieldKey: 'contact_person', label: 'Contact Person', fieldType: 'text', placeholder: 'Primary contact', sortOrder: 10, required: 1 },
         { fieldKey: 'rental_rate', label: 'Rental Rate', fieldType: 'number', placeholder: '0', sortOrder: 20 }
-    ]
+    ]),
+    'weekly-service': withDefaultSetupFields([]),
+    'rite-i-service': withDefaultSetupFields([]),
+    'rite-ii-service': withDefaultSetupFields([]),
+    'eucharist-service': withDefaultSetupFields([]),
+    'special-service': withDefaultSetupFields([])
 };
 
 const getCategoryIdMap = () => {

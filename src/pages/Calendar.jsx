@@ -78,6 +78,9 @@ const Calendar = () => {
         contract: false,
         attachment: false
     });
+    const [applyToSeries, setApplyToSeries] = useState(true);
+    const [detailSaving, setDetailSaving] = useState(false);
+    const [detailError, setDetailError] = useState('');
     const [planningDraft, setPlanningDraft] = useState(createEmptyPlanningDraft);
     const [guestMusicianInput, setGuestMusicianInput] = useState('');
     const [planningRoleKey, setPlanningRoleKey] = useState('');
@@ -111,6 +114,9 @@ const Calendar = () => {
         setDocPreview({ open: false, url: '', name: '' });
         setTaskInput('');
         setDocumentBusy({ bulletin: false, contract: false, attachment: false });
+        setApplyToSeries(true);
+        setDetailSaving(false);
+        setDetailError('');
         setPlanningDraft(createEmptyPlanningDraft());
         setGuestMusicianInput('');
         setPlanningRoleKey('');
@@ -259,19 +265,24 @@ const Calendar = () => {
 
     const handleEventClick = (eventItem) => {
         if (!eventItem?.occurrence_id) return;
+        setApplyToSeries(true);
+        setDetailError('');
         setSelectedEvent(eventItem);
         setShowModal(true);
         loadEventDetails(eventItem);
     };
 
-    const handleSaveNotes = async () => {
+    const handleSaveDetails = async () => {
         if (!selectedEvent?.occurrence_id) return;
+        setDetailSaving(true);
+        setDetailError('');
         try {
-            await fetch(`${API_URL}/event-occurrences/${selectedEvent.occurrence_id}`, {
+            const response = await fetch(`${API_URL}/event-occurrences/${selectedEvent.occurrence_id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     internal_notes: eventNotes || '',
+                    apply_to_series: applyToSeries,
                     template_data: {
                         ...(templateData || {}),
                         ...(isWorshipPlanning ? {
@@ -281,12 +292,24 @@ const Calendar = () => {
                     }
                 })
             });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                throw new Error(payload?.error || 'Failed to save event details');
+            }
+            if (selectedEvent) {
+                await loadEventDetails(selectedEvent);
+            }
+            await refreshEvents();
         } catch (error) {
-            console.error('Failed to save notes:', error);
+            console.error('Failed to save event details:', error);
+            setDetailError(error.message || 'Unable to save event details right now.');
+        } finally {
+            setDetailSaving(false);
         }
     };
 
     const handleTemplateChange = (key, value) => {
+        setDetailError('');
         setTemplateData((prev) => {
             const next = {
                 ...(prev || {}),
@@ -294,6 +317,9 @@ const Calendar = () => {
             };
             if (key === 'rental' && !value) {
                 delete next.rental_rate;
+            }
+            if (key === 'setup_required' && !value) {
+                delete next.setup_description;
             }
             return next;
         });
@@ -454,6 +480,7 @@ const Calendar = () => {
             await fetch(`${API_URL}/files/open`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({ path: doc.file_path })
             });
         } catch (error) {
@@ -471,6 +498,7 @@ const Calendar = () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     internal_notes: eventNotes || '',
+                    apply_to_series: applyToSeries,
                     template_data: templateData || {},
                     building_id: planningDraft.buildingId || '',
                     guest_musicians: planningDraft.guestMusicians,
@@ -479,7 +507,8 @@ const Calendar = () => {
                 })
             });
             if (!response.ok) {
-                throw new Error('Failed to save worship planning');
+                const payload = await response.json().catch(() => ({}));
+                throw new Error(payload?.error || 'Failed to save worship planning');
             }
             if (selectedEvent) {
                 await loadEventDetails(selectedEvent);
@@ -725,6 +754,7 @@ const Calendar = () => {
         }, {});
         return Object.entries(grouped).map(([title, items]) => ({
             title,
+            listKey: items[0]?.list_key || '',
             items: items.sort((a, b) => {
                 const orderA = a.step_order ?? Number.POSITIVE_INFINITY;
                 const orderB = b.step_order ?? Number.POSITIVE_INFINITY;
@@ -773,6 +803,30 @@ const Calendar = () => {
         Object.values(planningDraft.roster || {}).reduce((sum, ids) => sum + (Array.isArray(ids) ? ids.length : 0), 0)
     ), [planningDraft.roster]);
     const serviceLabel = eventDetails?.planning?.service_label || eventDetails?.event?.type_name || selectedEvent?.type_name || selectedEvent?.category_name || 'Event';
+    const getEventChipClass = (event) => {
+        const classes = [];
+        const source = String(event?.source || '').toLowerCase();
+        const role = String(event?.calendar_role || event?.metadata?.calendarRole || '').toLowerCase();
+        const kind = String(event?.entry_kind || event?.metadata?.entryKind || '').toLowerCase();
+        const taskPolicy = String(event?.task_policy || event?.metadata?.taskPolicy || '').toLowerCase();
+        if (source === 'google') classes.push('event-google');
+        if (role === 'personal' || kind === 'personal' || kind === 'appointment') classes.push('event-personal');
+        if (['schedule', 'out_of_office', 'resource_hold'].includes(kind)) classes.push('event-schedule');
+        if (['reminder', 'deadline'].includes(kind)) classes.push('event-reminder');
+        if (taskPolicy === 'never') classes.push('event-no-auto-task');
+        return classes.join(' ');
+    };
+    const getEventChipMeta = (event) => {
+        const group = event?.display_group || event?.metadata?.displayGroup || '';
+        const kind = String(event?.entry_kind || event?.metadata?.entryKind || '').replace(/_/g, ' ');
+        if (group && kind) return `${group} / ${kind}`;
+        return group || kind || '';
+    };
+    const getEventFlags = (event) => (
+        Array.isArray(event?.flags)
+            ? event.flags.filter((flag) => String(flag?.label || '').trim()).slice(0, 2)
+            : []
+    );
 
     const cells = () => {
         const monthStart = startOfMonth(currentDate);
@@ -799,11 +853,12 @@ const Calendar = () => {
                                     const contrastColor = getContrastColor(event.color);
                                     const isLight = contrastColor !== event.color;
                                     const tooltip = event.type_name ? `${event.type_name} - ${event.title}` : event.title;
+                                    const eventFlags = getEventFlags(event);
 
                                     return (
                                         <div
                                             key={event.id}
-                                            className={`event-chip ${event.occurrence_id ? 'event-chip--clickable' : 'event-chip--static'}`}
+                                            className={`event-chip ${getEventChipClass(event)} ${event.occurrence_id ? 'event-chip--clickable' : 'event-chip--static'}`}
                                             style={{
                                                 backgroundColor: isLight ? '#f3f4f6' : `${event.color}25`,
                                                 color: contrastColor,
@@ -816,8 +871,21 @@ const Calendar = () => {
                                             }}
                                         >
                                             <div className="event-chip-content">
-                                                {event.time && <span className="event-chip-time">{event.time}</span>}
+                                                {(event.time || getEventChipMeta(event)) && (
+                                                    <span className="event-chip-time">
+                                                        {[event.time, getEventChipMeta(event)].filter(Boolean).join(' / ')}
+                                                    </span>
+                                                )}
                                                 <span className="event-chip-title">{event.title}</span>
+                                                {eventFlags.length > 0 && (
+                                                    <div className="event-chip-flags">
+                                                        {eventFlags.map((flag) => (
+                                                            <span key={`${event.id}-${flag.key || flag.label}`} className={`event-chip-flag tone-${flag.tone || 'warning'}`} title={flag.detail || flag.label}>
+                                                                {flag.label}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
                                     );
@@ -890,8 +958,9 @@ const Calendar = () => {
                         getTeamMap,
                         getRoleDisplayLabel
                     }}
+                    seriesState={{ applyToSeries, setApplyToSeries, detailSaving, detailError }}
                     notesState={{ eventNotes }}
-                    notesActions={{ setEventNotes, handleSaveNotes }}
+                    notesActions={{ setEventNotes, handleSaveDetails }}
                     documentsState={{
                         bulletinDocs,
                         contractDocs,

@@ -7,6 +7,7 @@ import multer from 'multer';
 import { sqlite as db } from '../db.js';
 import {
     tableExists,
+    tableHasColumn,
     parseJsonField,
     parseNotes
 } from '../helpers/db-utils.js';
@@ -15,6 +16,7 @@ import {
     buildWorshipRoleDefinitions,
     getDefaultRosterAssignments,
     isRegularSundayServiceType,
+    isWorshipServiceTypeSlug,
     normalizeRosterForType,
     normalizeWorshipTypeSlug,
     sanitizeCustomRoles,
@@ -32,6 +34,19 @@ import {
     getSharedSundayScheduleContext
 } from '../services/eventPlanningService.js';
 import {
+    extractEventTags,
+    findEventTypeFromTags,
+    getLocationContext,
+    resolveLocation,
+    updateOccurrenceLinks
+} from '../eventEngine.js';
+import {
+    buildPackageSignatureMap,
+    getEventPackageDefinitions,
+    normalizePackageTaskDefinitions,
+    normalizeRecurringCompletionMap
+} from '../helpers/eventPackageUtils.js';
+import {
     isSundayDate,
     replaceAllAssignmentsForOccurrence,
     syncLinkedSundayAliasOccurrences
@@ -39,6 +54,230 @@ import {
 
 const router = express.Router();
 const eventDocUpload = multer({ dest: join(tmpdir(), 'event-doc-uploads') });
+
+const parseMetadata = (value) => {
+    if (!value) return {};
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+};
+
+const getEventTypeRows = () => (
+    tableExists('event_types')
+        ? db.prepare(`
+            SELECT
+                t.id,
+                t.name,
+                t.slug,
+                c.name AS category_name
+            FROM event_types t
+            LEFT JOIN event_categories c ON c.id = t.category_id
+            ORDER BY t.name ASC
+        `).all()
+        : []
+);
+
+const getEventTypeById = (eventTypeId) => {
+    if (!Number.isFinite(Number(eventTypeId)) || !tableExists('event_types')) return null;
+    return db.prepare(`
+        SELECT
+            t.id,
+            t.name,
+            t.slug,
+            c.name AS category_name
+        FROM event_types t
+        LEFT JOIN event_categories c ON c.id = t.category_id
+        WHERE t.id = ?
+        LIMIT 1
+    `).get(Number(eventTypeId)) || null;
+};
+
+const getBuildingLookupRows = () => (
+    tableExists('buildings')
+        ? db.prepare('SELECT id, name FROM buildings ORDER BY name ASC').all()
+        : []
+);
+
+const buildEventContact = (metadata = {}, template = {}) => ({
+    person: String(
+        metadata.contact_person
+        || metadata.contactName
+        || template.contact_person
+        || template.family_contact
+        || ''
+    ).trim(),
+    email: String(metadata.contact_email || metadata.contactEmail || '').trim(),
+    phone: String(metadata.contact_phone || metadata.contactPhone || '').trim(),
+    address: String(metadata.contact_address || metadata.contactAddress || '').trim()
+});
+
+const normalizeBoolean = (value) => {
+    if (value === true || value === 1) return true;
+    const normalized = String(value || '').trim().toLowerCase();
+    return ['1', 'true', 'yes', 'on'].includes(normalized);
+};
+
+const getTemplateFieldRowsByTypeIds = (eventTypeIds = []) => {
+    if (!tableExists('event_template_fields')) return new Map();
+    const uniqueIds = Array.from(new Set(
+        eventTypeIds
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value))
+    ));
+    if (!uniqueIds.length) return new Map();
+    const placeholders = uniqueIds.map(() => '?').join(', ');
+    const rows = db.prepare(`
+        SELECT event_type_id, field_key, label, field_type, required
+        FROM event_template_fields
+        WHERE event_type_id IN (${placeholders})
+        ORDER BY sort_order ASC, label ASC
+    `).all(...uniqueIds);
+    return rows.reduce((acc, row) => {
+        const key = Number(row.event_type_id);
+        if (!acc.has(key)) acc.set(key, []);
+        acc.get(key).push(row);
+        return acc;
+    }, new Map());
+};
+
+const isFieldValueMissing = (field, value) => {
+    const fieldType = String(field?.field_type || 'text').trim().toLowerCase();
+    if (fieldType === 'checkbox') return !normalizeBoolean(value);
+    if (value == null) return true;
+    if (typeof value === 'number') return !Number.isFinite(value);
+    if (typeof value === 'boolean') return value !== true;
+    return !String(value).trim();
+};
+
+const buildEventDataFlags = ({
+    eventTypeId,
+    typeSlug,
+    template,
+    templateFieldMap,
+    buildingId
+}) => {
+    const normalizedTemplate = template && typeof template === 'object' ? template : {};
+    const templateFields = templateFieldMap.get(Number(eventTypeId)) || [];
+    const setupRequired = normalizeBoolean(normalizedTemplate.setup_required);
+    const setupDescription = String(normalizedTemplate.setup_description || '').trim();
+    const rentalActive = typeSlug === 'private-rental' || normalizeBoolean(normalizedTemplate.rental);
+    const missingLabels = [];
+
+    templateFields.forEach((field) => {
+        const fieldKey = String(field?.field_key || '').trim();
+        if (!fieldKey || !field.required) return;
+        if (fieldKey === 'setup_description') return;
+        if (fieldKey === 'rental_rate' && !rentalActive) return;
+        if (isFieldValueMissing(field, normalizedTemplate[fieldKey])) {
+            missingLabels.push(String(field.label || fieldKey).trim());
+        }
+    });
+
+    if (setupRequired && !setupDescription) {
+        missingLabels.push('Setup plan');
+    }
+    if (setupRequired && !String(buildingId || '').trim()) {
+        missingLabels.push('Location');
+    }
+
+    const uniqueMissingLabels = Array.from(new Set(missingLabels));
+    const flags = [];
+    if (uniqueMissingLabels.length > 0) {
+        flags.push({
+            key: 'details-missing',
+            tone: 'warning',
+            label: `${uniqueMissingLabels.length} detail${uniqueMissingLabels.length === 1 ? '' : 's'} missing`,
+            detail: uniqueMissingLabels.join(', ')
+        });
+    }
+    if (setupRequired) {
+        flags.push({
+            key: 'setup-needed',
+            tone: setupDescription ? 'info' : 'warning',
+            label: setupDescription ? 'Setup needed' : 'Setup details needed',
+            detail: setupDescription || 'Describe the setup plan before the event.'
+        });
+    }
+
+    return {
+        flags,
+        missingFieldCount: uniqueMissingLabels.length
+    };
+};
+
+const listFutureOccurrencesForEvent = (eventId, fromDate) => {
+    if (!eventId || !fromDate || !tableExists('event_occurrences')) return [];
+    return db.prepare(`
+        SELECT id, date, start_time
+        FROM event_occurrences
+        WHERE event_id = ?
+          AND date >= ?
+        ORDER BY date ASC, COALESCE(start_time, '') ASC
+    `).all(eventId, fromDate);
+};
+
+const updateFuturePackageTaskStates = ({ eventId, fromDate, listKey, state, completedAt = null }) => {
+    if (!eventId || !fromDate || !listKey || !tableExists('task_instances') || !tableExists('task_origins')) return 0;
+    const rows = db.prepare(`
+        SELECT ti.id
+        FROM task_instances ti
+        JOIN task_origins src
+          ON src.scope = 'instance'
+         AND src.task_instance_id = ti.id
+        JOIN event_occurrences o
+          ON o.id = src.origin_id
+        WHERE src.origin_type = 'event'
+          AND o.event_id = ?
+          AND o.date >= ?
+          AND COALESCE(ti.list_key, '') = ?
+    `).all(eventId, fromDate, listKey);
+    const nextState = state === 'done' ? 'done' : 'open';
+    const appliedCompletedAt = nextState === 'done' ? (completedAt || new Date().toISOString()) : null;
+    const hasUpdatedAt = tableHasColumn('task_instances', 'updated_at');
+    const stmt = hasUpdatedAt
+        ? db.prepare(`
+            UPDATE task_instances
+            SET state = ?,
+                completed_at = ?,
+                archived_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+        `)
+        : db.prepare(`
+            UPDATE task_instances
+            SET state = ?,
+                completed_at = ?,
+                archived_at = NULL
+            WHERE id = ?
+        `);
+    const now = new Date().toISOString();
+    rows.forEach((row) => {
+        if (hasUpdatedAt) {
+            stmt.run(nextState, appliedCompletedAt, now, row.id);
+        } else {
+            stmt.run(nextState, appliedCompletedAt, row.id);
+        }
+    });
+    return rows.length;
+};
+
+const buildEventPackagePayload = ({ eventTypeId, metadata, eventId, occurrenceDate }) => {
+    const packageDefinition = getEventPackageDefinitions({ eventTypeId, metadata });
+    const recurringCompletion = normalizeRecurringCompletionMap(metadata?.recurring_package_completion);
+    const signatureMap = buildPackageSignatureMap(packageDefinition.tasks);
+    return {
+        source: packageDefinition.source,
+        tasks: packageDefinition.tasks.map((task) => ({
+            ...task,
+            signature: signatureMap[task.list_key] || ''
+        })),
+        recurringCompletion,
+        futureOccurrenceCount: listFutureOccurrencesForEvent(eventId, occurrenceDate).length
+    };
+};
 
 // --- Events Engine Core Endpoints ---
 
@@ -92,7 +331,7 @@ router.get('/events', async (req, res) => {
         // 2. Get scheduled/custom events
         const eventRows = db.prepare(`
             SELECT e.id, e.title, e.description, e.event_type_id, e.source, e.metadata,
-                   o.id AS occurrence_id, o.date, o.start_time, o.end_time, o.building_id,
+                   o.id AS occurrence_id, o.date, o.start_time, o.end_time, o.building_id, o.notes,
                    t.name as type_name, t.slug as type_slug, c.name as category_name,
                    COALESCE(t.color, c.color) as type_color
             FROM events e
@@ -101,23 +340,44 @@ router.get('/events', async (req, res) => {
             LEFT JOIN event_categories c ON t.category_id = c.id
             WHERE e.id <> 'sunday-service'
         `).all();
+        const templateFieldMap = getTemplateFieldRowsByTypeIds(eventRows.map((row) => row.event_type_id));
 
-        const scheduledEvents = eventRows.map(e => ({
-            id: e.occurrence_id,
-            occurrence_id: e.occurrence_id,
-            event_id: e.id,
-            title: e.title,
-            description: e.description,
-            date: e.date,
-            time: e.start_time,
-            location: e.building_id,
-            type_name: e.type_name,
-            type_slug: e.type_slug,
-            category_name: e.category_name,
-            color: e.type_color,
-            metadata: e.metadata ? JSON.parse(e.metadata) : {},
-            source: e.source || 'manual'
-        }));
+        const scheduledEvents = eventRows.map(e => {
+            const metadata = e.metadata ? parseNotes(e.metadata) : {};
+            const notes = parseNotes(e.notes);
+            const classification = notes?.classification || {};
+            const calendar = notes?.calendar || {};
+            const flagPayload = buildEventDataFlags({
+                eventTypeId: e.event_type_id,
+                typeSlug: e.type_slug,
+                template: notes?.template || {},
+                templateFieldMap,
+                buildingId: e.building_id
+            });
+            return {
+                id: e.occurrence_id,
+                occurrence_id: e.occurrence_id,
+                event_id: e.id,
+                title: e.title,
+                description: e.description,
+                date: e.date,
+                time: e.start_time,
+                location: e.building_id,
+                type_name: e.type_name,
+                type_slug: e.type_slug,
+                category_name: e.category_name,
+                color: e.type_color,
+                metadata,
+                entry_kind: metadata.entryKind || classification.entryKind || '',
+                task_policy: metadata.taskPolicy || classification.taskPolicy || '',
+                calendar_role: metadata.calendarRole || calendar.role || '',
+                display_group: metadata.displayGroup || calendar.displayGroup || '',
+                import_mode: metadata.importMode || calendar.importMode || '',
+                flags: flagPayload.flags,
+                missing_field_count: flagPayload.missingFieldCount,
+                source: e.source || 'manual'
+            };
+        });
 
         // 3. Merge and return
         const filteredScheduled = scheduledEvents.filter(
@@ -165,6 +425,7 @@ router.get('/event-occurrences/:id', (req, res) => {
     }
     const notes = parseNotes(row.notes);
     const metadata = row.metadata ? parseNotes(row.metadata) : {};
+    const templateFieldMap = getTemplateFieldRowsByTypeIds([row.event_type_id]);
     const sharedSundayContext = getSharedSundayScheduleContext(row);
     const planning = buildWorshipPlanning({
         typeSlug: row.type_slug,
@@ -172,9 +433,22 @@ router.get('/event-occurrences/:id', (req, res) => {
         occurrenceId: sharedSundayContext.assignmentOccurrenceId,
         dateKey: row.date
     });
+    const packagePayload = buildEventPackagePayload({
+        eventTypeId: row.event_type_id,
+        metadata,
+        eventId: row.event_id,
+        occurrenceDate: row.date
+    });
     if (planning && sharedSundayContext.linked) {
         planning.shared_source = 'liturgical-schedule';
     }
+    const flagPayload = buildEventDataFlags({
+        eventTypeId: row.event_type_id,
+        typeSlug: row.type_slug,
+        template: notes?.template || {},
+        templateFieldMap,
+        buildingId: sharedSundayContext.buildingId
+    });
     res.json({
         occurrence: {
             id: row.occurrence_id,
@@ -196,7 +470,15 @@ router.get('/event-occurrences/:id', (req, res) => {
         },
         notes,
         metadata,
-        planning
+        flags: flagPayload.flags,
+        missing_field_count: flagPayload.missingFieldCount,
+        planning,
+        contact: buildEventContact(metadata, notes?.template || {}),
+        package: packagePayload,
+        lookups: {
+            eventTypes: getEventTypeRows(),
+            buildings: getBuildingLookupRows()
+        }
     });
 });
 
@@ -210,10 +492,13 @@ router.put('/event-occurrences/:id', (req, res) => {
             o.id AS occurrence_id,
             o.date,
             o.start_time,
+            o.end_time,
             o.notes,
             o.building_id,
             e.id AS event_id,
             e.title,
+            e.description,
+            e.metadata,
             e.event_type_id,
             t.slug AS type_slug
         FROM event_occurrences o
@@ -225,15 +510,28 @@ router.put('/event-occurrences/:id', (req, res) => {
         return res.status(404).json({ error: 'Event occurrence not found' });
     }
     const {
+        title,
+        description,
+        event_type_id: eventTypeId,
         internal_notes: internalNotes,
         template_data: templateData,
         building_id: buildingId,
+        contact_person: contactPerson,
+        contact_email: contactEmail,
+        contact_phone: contactPhone,
+        contact_address: contactAddress,
+        package_tasks: packageTasks,
         guest_musicians: guestMusicians,
         custom_roles: customRoles,
-        roster
+        roster,
+        apply_to_series: applyToSeries = true,
+        apply_description_tags: applyDescriptionTags = true
     } = req.body || {};
     const notes = parseNotes(existing.notes);
-    notes.internal = String(internalNotes || '').trim();
+    const metadata = parseMetadata(existing.metadata);
+    notes.internal = internalNotes !== undefined
+        ? String(internalNotes || '').trim()
+        : String(notes.internal || '').trim();
     if (templateData && typeof templateData === 'object') {
         notes.template = templateData;
     }
@@ -243,8 +541,38 @@ router.put('/event-occurrences/:id', (req, res) => {
     if (!notes.template.default_overrides || typeof notes.template.default_overrides !== 'object') {
         notes.template.default_overrides = {};
     }
-    const normalizedTypeSlug = normalizeWorshipTypeSlug(existing.type_slug);
-    const customRolesEnabled = allowsCustomWorshipRoles(normalizedTypeSlug);
+
+    const explicitTitle = title !== undefined ? String(title || '').trim() : String(existing.title || '').trim();
+    const explicitDescription = description !== undefined ? String(description || '').trim() : String(existing.description || '').trim();
+    const eventTypes = getEventTypeRows();
+    const locationContext = getLocationContext();
+    const tags = applyDescriptionTags ? extractEventTags(`${explicitTitle}\n${explicitDescription}`) : { hashtags: [], locations: [] };
+    const taggedType = applyDescriptionTags ? findEventTypeFromTags(tags.hashtags, eventTypes) : null;
+    let resolvedEventTypeId = Number.isFinite(Number(eventTypeId))
+        ? Number(eventTypeId)
+        : (taggedType?.id || existing.event_type_id || null);
+    let resolvedTypeRow = getEventTypeById(resolvedEventTypeId) || taggedType || null;
+
+    let resolvedBuildingId = buildingId !== undefined
+        ? (String(buildingId || '').trim() || null)
+        : existing.building_id || null;
+
+    if (applyDescriptionTags && (!resolvedBuildingId || buildingId === undefined)) {
+        const taggedLocation = resolveLocation({
+            locationTags: tags.locations,
+            eventLocation: resolvedBuildingId || '',
+            locationContext,
+            textContent: `${explicitTitle}\n${explicitDescription}`,
+            typeSlug: resolvedTypeRow?.slug || existing.type_slug || ''
+        });
+        if (taggedLocation.buildingId) {
+            resolvedBuildingId = taggedLocation.buildingId;
+        }
+    }
+
+    const resolvedTypeSlug = resolvedTypeRow?.slug || existing.type_slug || '';
+    const normalizedTypeSlug = normalizeWorshipTypeSlug(resolvedTypeSlug);
+    const customRolesEnabled = allowsCustomWorshipRoles(resolvedTypeSlug);
     if (guestMusicians !== undefined) {
         notes.template.guest_musicians = sanitizeGuestMusicians(guestMusicians);
     }
@@ -253,14 +581,46 @@ router.put('/event-occurrences/:id', (req, res) => {
     } else if (!customRolesEnabled) {
         notes.template.custom_roles = [];
     }
+
+    if (contactPerson !== undefined) {
+        const normalized = String(contactPerson || '').trim();
+        metadata.contact_person = normalized;
+        metadata.contactName = normalized;
+        notes.template.contact_person = normalized;
+    }
+    if (contactEmail !== undefined) metadata.contact_email = String(contactEmail || '').trim();
+    if (contactPhone !== undefined) metadata.contact_phone = String(contactPhone || '').trim();
+    if (contactAddress !== undefined) metadata.contact_address = String(contactAddress || '').trim();
+    const setupRequired = normalizeBoolean(notes?.template?.setup_required);
+    const setupDescription = String(notes?.template?.setup_description || '').trim();
+    if (setupRequired && !setupDescription) {
+        return res.status(400).json({ error: 'Setup details are required when setup is marked as needed.' });
+    }
+
+    const normalizedPackageTasks = packageTasks !== undefined
+        ? normalizePackageTaskDefinitions(packageTasks)
+        : null;
+    const previousRecurringCompletion = normalizeRecurringCompletionMap(metadata.recurring_package_completion);
+    const packageEdited = packageTasks !== undefined;
+    const typeChanged = Number(resolvedEventTypeId || 0) !== Number(existing.event_type_id || 0);
+    if (normalizedPackageTasks) {
+        metadata.task_package = {
+            override: true,
+            tasks: normalizedPackageTasks
+        };
+    }
+    if (packageEdited || typeChanged) {
+        delete metadata.recurring_package_completion;
+    }
+
     const sharedSundayContext = getSharedSundayScheduleContext(existing);
-    const resolvedBuildingId = buildingId !== undefined
-        ? (String(buildingId || '').trim() || null)
-        : sharedSundayContext.buildingId || existing.building_id || null;
+    if (!resolvedBuildingId) {
+        resolvedBuildingId = sharedSundayContext.buildingId || null;
+    }
 
     let nextRosterMap = null;
     if (roster && typeof roster === 'object' && tableExists('assignments')) {
-        const nextRoles = isWorshipServiceTypeSlug(existing.type_slug)
+        const nextRoles = isWorshipServiceTypeSlug(resolvedTypeSlug)
             ? buildWorshipRoleDefinitions(normalizedTypeSlug, notes.template.custom_roles)
             : [];
         const validRoleKeys = new Set(nextRoles.map((role) => role.key));
@@ -287,22 +647,57 @@ router.put('/event-occurrences/:id', (req, res) => {
             if (Array.isArray(nextRosterMap[roleKey]) && nextRosterMap[roleKey].length > 0) return;
             nextRosterMap[roleKey] = personIds.slice();
         });
-        if (isRegularSundayServiceType(existing.type_slug) && Object.prototype.hasOwnProperty.call(nextRosterMap, 'organist')) {
+        if (isRegularSundayServiceType(resolvedTypeSlug) && Object.prototype.hasOwnProperty.call(nextRosterMap, 'organist')) {
             notes.template.default_overrides.organist_removed = nextRosterMap.organist.length === 0;
         }
     }
 
-    db.prepare('UPDATE event_occurrences SET notes = ?, building_id = ? WHERE id = ?').run(
-        JSON.stringify(notes),
-        resolvedBuildingId,
-        id
+    const now = new Date().toISOString();
+    db.prepare(`
+        UPDATE events
+        SET title = ?,
+            description = ?,
+            event_type_id = ?,
+            metadata = ?,
+            updated_at = ?
+        WHERE id = ?
+    `).run(
+        explicitTitle || existing.title,
+        explicitDescription || '',
+        resolvedEventTypeId,
+        JSON.stringify(metadata),
+        now,
+        existing.event_id
     );
+
+    const targetOccurrenceIds = applyToSeries !== false
+        ? listFutureOccurrencesForEvent(existing.event_id, existing.date).map((occurrence) => occurrence.id)
+        : [id];
+    targetOccurrenceIds.forEach((occurrenceId) => {
+        db.prepare('UPDATE event_occurrences SET notes = ?, building_id = ? WHERE id = ?').run(
+            JSON.stringify(notes),
+            resolvedBuildingId,
+            occurrenceId
+        );
+        updateOccurrenceLinks(occurrenceId, {
+            buildingId: resolvedBuildingId,
+            roomId: null,
+            source: applyDescriptionTags && tags.locations.length ? 'tag' : 'manual',
+            tag: tags.locations[0] || null
+        });
+    });
     if (sharedSundayContext.linked) {
         db.prepare('UPDATE event_occurrences SET notes = ?, building_id = ? WHERE id = ?').run(
             JSON.stringify(notes),
             resolvedBuildingId,
             sharedSundayContext.assignmentOccurrenceId
         );
+        updateOccurrenceLinks(sharedSundayContext.assignmentOccurrenceId, {
+            buildingId: resolvedBuildingId,
+            roomId: null,
+            source: applyDescriptionTags && tags.locations.length ? 'tag' : 'manual',
+            tag: tags.locations[0] || null
+        });
     }
 
     if (nextRosterMap && tableExists('assignments')) {
@@ -317,23 +712,36 @@ router.put('/event-occurrences/:id', (req, res) => {
         }
     }
 
-    if (existing.event_type_id) {
-        seedEventTasksForOccurrence({
-            occurrenceId: id,
-            eventTypeId: existing.event_type_id,
-            dateKey: existing.date
+    if (packageEdited || typeChanged) {
+        Object.keys(previousRecurringCompletion).forEach((listKey) => {
+            updateFuturePackageTaskStates({
+                eventId: existing.event_id,
+                fromDate: existing.date,
+                listKey,
+                state: 'open'
+            });
+        });
+    }
+
+    if (resolvedEventTypeId && (packageEdited || typeChanged)) {
+        listFutureOccurrencesForEvent(existing.event_id, existing.date).forEach((occurrence) => {
+            seedEventTasksForOccurrence({
+                occurrenceId: occurrence.id,
+                eventTypeId: resolvedEventTypeId,
+                dateKey: occurrence.date
+            });
         });
         if (sharedSundayContext.linked && sharedSundayContext.assignmentOccurrenceId !== id) {
             seedEventTasksForOccurrence({
                 occurrenceId: sharedSundayContext.assignmentOccurrenceId,
-                eventTypeId: existing.event_type_id,
+                eventTypeId: resolvedEventTypeId,
                 dateKey: existing.date
             });
         }
     }
 
     const responsePlanning = buildWorshipPlanning({
-        typeSlug: existing.type_slug,
+        typeSlug: resolvedTypeSlug,
         notes,
         occurrenceId: sharedSundayContext.assignmentOccurrenceId,
         dateKey: existing.date
@@ -341,10 +749,130 @@ router.put('/event-occurrences/:id', (req, res) => {
     if (responsePlanning && sharedSundayContext.linked) {
         responsePlanning.shared_source = 'liturgical-schedule';
     }
+    const responseTemplateFieldMap = getTemplateFieldRowsByTypeIds([resolvedEventTypeId]);
+    const responseFlags = buildEventDataFlags({
+        eventTypeId: resolvedEventTypeId,
+        typeSlug: resolvedTypeSlug,
+        template: notes?.template || {},
+        templateFieldMap: responseTemplateFieldMap,
+        buildingId: resolvedBuildingId
+    });
     res.json({
         success: true,
         notes,
-        planning: responsePlanning
+        metadata,
+        flags: responseFlags.flags,
+        missing_field_count: responseFlags.missingFieldCount,
+        planning: responsePlanning,
+        event: {
+            id: existing.event_id,
+            title: explicitTitle || existing.title,
+            description: explicitDescription || '',
+            event_type_id: resolvedEventTypeId,
+            type_slug: resolvedTypeSlug,
+            type_name: resolvedTypeRow?.name || '',
+            category_name: resolvedTypeRow?.category_name || ''
+        },
+        occurrence: {
+            id,
+            date: existing.date,
+            start_time: existing.start_time,
+            end_time: existing.end_time,
+            building_id: resolvedBuildingId
+        },
+        contact: buildEventContact(metadata, notes?.template || {}),
+        package: buildEventPackagePayload({
+            eventTypeId: resolvedEventTypeId,
+            metadata,
+            eventId: existing.event_id,
+            occurrenceDate: existing.date
+        }),
+        lookups: {
+            eventTypes,
+            buildings: getBuildingLookupRows()
+        }
+    });
+});
+
+router.post('/event-occurrences/:id/package-status', (req, res) => {
+    const { id } = req.params;
+    const {
+        list_key: listKey,
+        action = 'complete_future'
+    } = req.body || {};
+    const normalizedListKey = String(listKey || '').trim().toLowerCase();
+    if (!normalizedListKey) {
+        return res.status(400).json({ error: 'list_key is required' });
+    }
+    const existing = db.prepare(`
+        SELECT
+            o.id AS occurrence_id,
+            o.date,
+            e.id AS event_id,
+            e.event_type_id,
+            e.metadata
+        FROM event_occurrences o
+        JOIN events e ON e.id = o.event_id
+        WHERE o.id = ?
+        LIMIT 1
+    `).get(id);
+    if (!existing) {
+        return res.status(404).json({ error: 'Event occurrence not found' });
+    }
+
+    const metadata = parseMetadata(existing.metadata);
+    const packageDefinition = getEventPackageDefinitions({
+        eventTypeId: existing.event_type_id,
+        metadata
+    });
+    const signatureMap = buildPackageSignatureMap(packageDefinition.tasks);
+    const templateSignature = signatureMap[normalizedListKey] || '';
+    if (!templateSignature) {
+        return res.status(400).json({ error: 'Package task not found for this event' });
+    }
+
+    const completionMap = normalizeRecurringCompletionMap(metadata.recurring_package_completion);
+    if (action === 'reset_future') {
+        delete completionMap[normalizedListKey];
+        updateFuturePackageTaskStates({
+            eventId: existing.event_id,
+            fromDate: existing.date,
+            listKey: normalizedListKey,
+            state: 'open'
+        });
+    } else {
+        completionMap[normalizedListKey] = {
+            completedAt: new Date().toISOString(),
+            fromDate: existing.date,
+            templateSignature
+        };
+        updateFuturePackageTaskStates({
+            eventId: existing.event_id,
+            fromDate: existing.date,
+            listKey: normalizedListKey,
+            state: 'done',
+            completedAt: completionMap[normalizedListKey].completedAt
+        });
+    }
+
+    metadata.recurring_package_completion = completionMap;
+    db.prepare('UPDATE events SET metadata = ?, updated_at = ? WHERE id = ?').run(
+        JSON.stringify(metadata),
+        new Date().toISOString(),
+        existing.event_id
+    );
+
+    listFutureOccurrencesForEvent(existing.event_id, existing.date).forEach((occurrence) => {
+        seedEventTasksForOccurrence({
+            occurrenceId: occurrence.id,
+            eventTypeId: existing.event_type_id,
+            dateKey: occurrence.date
+        });
+    });
+
+    return res.json({
+        success: true,
+        recurringCompletion: completionMap
     });
 });
 
@@ -536,13 +1064,32 @@ router.post('/events', (req, res) => {
         }
 
         const parsedTypeId = type_id !== null && type_id !== '' ? Number(type_id) : null;
-        const normalizedTypeId = Number.isNaN(parsedTypeId) ? null : parsedTypeId;
+        let normalizedTypeId = Number.isNaN(parsedTypeId) ? null : parsedTypeId;
+        let normalizedLocation = location || '';
+        const tags = extractEventTags(`${title}\n${description}`);
+        if (!normalizedTypeId) {
+            const taggedType = findEventTypeFromTags(tags.hashtags, getEventTypeRows());
+            if (taggedType?.id) {
+                normalizedTypeId = taggedType.id;
+            }
+        }
+        if (!normalizedLocation) {
+            const resolvedTypeRow = getEventTypeById(normalizedTypeId);
+            const locationInfo = resolveLocation({
+                locationTags: tags.locations,
+                eventLocation: '',
+                locationContext: getLocationContext(),
+                textContent: `${title}\n${description}`,
+                typeSlug: resolvedTypeRow?.slug || ''
+            });
+            normalizedLocation = locationInfo.buildingId || '';
+        }
         const { eventId, occurrenceId } = createManualEvent({
             title,
             description,
             date,
             time,
-            location,
+            location: normalizedLocation,
             parsedTypeId: normalizedTypeId,
             metadata
         });
@@ -554,7 +1101,7 @@ router.post('/events', (req, res) => {
             description,
             date,
             time: time || '',
-            location: location || '',
+            location: normalizedLocation || '',
             type_id: normalizedTypeId,
             source: 'manual'
         });

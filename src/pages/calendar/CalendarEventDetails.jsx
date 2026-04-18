@@ -1,12 +1,61 @@
+import { createElement } from 'react';
 import { format } from 'date-fns';
-import { FaCheckCircle, FaEye, FaExternalLinkAlt, FaFileAlt, FaFolderOpen, FaPaperclip } from 'react-icons/fa';
+import { FaArrowRight, FaCheckCircle, FaExclamationTriangle, FaEye, FaExternalLinkAlt, FaFileAlt, FaFolderOpen, FaPaperclip } from 'react-icons/fa';
 
 import DataPill from '../../components/DataPill';
+import '../../components/tasks/taskDisplays.css';
+import { getTaskPriorityClass, getTaskPriorityLabel, isTaskBlocked } from '../../components/tasks/taskDisplayHelpers';
+import { getDueInfo } from '../todo/todoHelpers';
+import { getSectionPresentation } from '../todo/sectionCatalog';
+import { getSectionIconComponent } from '../todo/todoVisuals';
 import { getTaskActionLabel, getTaskProgressMeta } from '../../utils/taskProgress';
 
 const RENTAL_ONLY_FIELD_KEYS = new Set(['rental_rate']);
 const CONTRACT_REQUIRED_EVENT_TYPES = new Set(['wedding', 'concert', 'private-rental']);
 const DOCUMENT_ACCEPT = '.pdf,.doc,.docx,.png,.jpg,.jpeg';
+
+const compareDueInfo = (a, b) => {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    return (a.due?.getTime?.() ?? Number.POSITIVE_INFINITY) - (b.due?.getTime?.() ?? Number.POSITIVE_INFINITY);
+};
+
+const getEventTaskStateKey = (task, progressMeta) => {
+    if (task?.completed) return 'done';
+    if (isTaskBlocked(task)) return 'blocked';
+    if (progressMeta?.currentIndex >= 0) return 'in_progress';
+    return 'open';
+};
+
+const getEventTaskStateIcon = (stateKey) => {
+    if (stateKey === 'done') return <FaCheckCircle />;
+    if (stateKey === 'blocked') return <FaExclamationTriangle />;
+    if (stateKey === 'in_progress') return <FaArrowRight />;
+    return <FaFileAlt />;
+};
+
+const getEventModeMeta = ({ calendarRole, entryKind, taskPolicy, displayGroup }) => {
+    const role = String(calendarRole || '').trim().toLowerCase();
+    const kind = String(entryKind || '').trim().toLowerCase();
+    const policy = String(taskPolicy || '').trim().toLowerCase();
+    const group = String(displayGroup || '').trim();
+
+    if (role === 'personal' || kind === 'personal') {
+        return { tone: 'personal', label: group || 'Personal' };
+    }
+    if (kind === 'out of office' || kind === 'schedule') {
+        return { tone: 'schedule', label: kind === 'out of office' ? 'Out of Office' : 'Schedule' };
+    }
+    if (kind === 'reminder' || kind === 'deadline') {
+        return { tone: 'reminder', label: kind === 'deadline' ? 'Deadline' : 'Reminder' };
+    }
+    if (policy === 'never' || policy === 'manual only') {
+        return { tone: 'reference', label: group || 'Reference' };
+    }
+    return { tone: 'work', label: group || 'Work' };
+};
 
 const DocumentRows = ({
     docs,
@@ -53,6 +102,7 @@ const EventTemplateFieldsSection = ({
         const key = String(field.field_key || '').trim();
         if (!key) return false;
         if (key === 'rental' && rentalLocked) return false;
+        if (key === 'setup_description' && !templateData?.setup_required) return false;
         if (RENTAL_ONLY_FIELD_KEYS.has(key) && !rentalActive) return false;
         return true;
     });
@@ -72,13 +122,14 @@ const EventTemplateFieldsSection = ({
                     if (fieldType === 'textarea') {
                         return (
                             <label key={key} className="event-detail-template-field">
-                                <span>{field.label}</span>
+                                <span>{field.label}{field.required ? ' *' : ''}</span>
                                 <textarea
                                     value={value || ''}
                                     placeholder={field.placeholder || ''}
                                     onChange={(event) => onTemplateChange(key, event.target.value)}
                                     rows="3"
                                 />
+                                {field.help_text ? <small>{field.help_text}</small> : null}
                             </label>
                         );
                     }
@@ -87,7 +138,7 @@ const EventTemplateFieldsSection = ({
                         const options = Array.isArray(field.options) ? field.options : [];
                         return (
                             <label key={key} className="event-detail-template-field">
-                                <span>{field.label}</span>
+                                <span>{field.label}{field.required ? ' *' : ''}</span>
                                 <select
                                     value={value || ''}
                                     onChange={(event) => onTemplateChange(key, event.target.value)}
@@ -97,6 +148,7 @@ const EventTemplateFieldsSection = ({
                                         <option key={option} value={option}>{option}</option>
                                     ))}
                                 </select>
+                                {field.help_text ? <small>{field.help_text}</small> : null}
                             </label>
                         );
                     }
@@ -109,21 +161,112 @@ const EventTemplateFieldsSection = ({
                                     checked={!!value}
                                     onChange={(event) => onTemplateChange(key, event.target.checked)}
                                 />
-                                <span>{field.label}</span>
+                                <span>{field.label}{field.required ? ' *' : ''}</span>
                             </label>
                         );
                     }
 
                     return (
                         <label key={key} className="event-detail-template-field">
-                            <span>{field.label}</span>
+                            <span>{field.label}{field.required ? ' *' : ''}</span>
                             <input
                                 type={fieldType}
                                 value={value || ''}
                                 placeholder={field.placeholder || ''}
                                 onChange={(event) => onTemplateChange(key, event.target.value)}
                             />
+                            {field.help_text ? <small>{field.help_text}</small> : null}
                         </label>
+                    );
+                })}
+            </div>
+        </div>
+    );
+};
+
+const EventTaskGroupCard = ({ group, onTaskToggle }) => {
+    const presentation = getSectionPresentation({
+        originType: 'event',
+        listKey: group.listKey,
+        listTitle: group.title,
+        taskText: group.items[0]?.text || ''
+    });
+    const iconElement = createElement(getSectionIconComponent(presentation.iconKey));
+    const openItems = group.items.filter((task) => !task.completed);
+    const blockedCount = openItems.filter((task) => isTaskBlocked(task)).length;
+    const groupDue = openItems
+        .map((task) => getDueInfo(task))
+        .filter(Boolean)
+        .sort(compareDueInfo)[0] || null;
+    const dueIndicator = groupDue?.rank === 0 ? 'overdue' : (groupDue?.rank === 1 ? 'today' : '');
+    const groupStatus = openItems.length === 0
+        ? 'done'
+        : blockedCount === openItems.length && blockedCount > 0
+            ? 'blocked'
+            : openItems.some((task) => {
+                const meta = getTaskProgressMeta(task);
+                return meta?.currentIndex >= 0;
+            })
+                ? 'in_progress'
+                : 'open';
+    const totalCount = group.items.length;
+
+    return (
+        <div className="event-task-cluster">
+            <div className="event-task-cluster-head">
+                <div className="event-task-cluster-ident">
+                    <span className={`section-node-icon state-${groupStatus}`}>
+                        {iconElement}
+                        {dueIndicator ? <span className={`section-due-chip is-${dueIndicator}`}>{dueIndicator === 'overdue' ? '!' : ''}</span> : null}
+                        {openItems.length > 0 ? <span className={`section-state-chip status-${groupStatus}`}>{openItems.length}</span> : null}
+                    </span>
+                    <div className="event-task-cluster-copy">
+                        <div className="event-task-cluster-title-row">
+                            <strong className="event-detail-task-title">{presentation.title}</strong>
+                        </div>
+                        <div className="event-task-cluster-meta">
+                            <span>{totalCount} task{totalCount === 1 ? '' : 's'}</span>
+                            {blockedCount ? <span>{blockedCount} blocked</span> : null}
+                            {groupDue ? <span className={`priority-pill ${groupDue.className}`}>{groupDue.label}</span> : null}
+                        </div>
+                    </div>
+                </div>
+                {openItems.length > 0 ? <span className="event-detail-task-count">{openItems.length} open</span> : null}
+            </div>
+
+            <div className="event-task-cluster-list">
+                {group.items.map((task) => {
+                    const progressMeta = getTaskProgressMeta(task);
+                    const taskDue = getDueInfo(task);
+                    const stateKey = getEventTaskStateKey(task, progressMeta);
+                    const actionLabel = getTaskActionLabel(task, { progressiveFallback: 'Advance', completeLabel: 'Complete' });
+                    const priorityClass = getTaskPriorityClass(task);
+                    const showPriority = priorityClass !== 'priority-normal';
+                    return (
+                        <div key={task.id} className={`event-task-row ${task.completed ? 'completed' : ''} state-${stateKey}`}>
+                            <span className={`event-task-state state-${stateKey}`} aria-hidden="true">
+                                {getEventTaskStateIcon(stateKey)}
+                            </span>
+                            <div className="event-task-row-main">
+                                <div className="event-task-row-title">
+                                    <span className="event-task-row-text">{task.text}</span>
+                                    <div className="event-task-row-pills">
+                                        {showPriority ? <span className={`priority-pill ${priorityClass}`}>{getTaskPriorityLabel(task)}</span> : null}
+                                        {taskDue ? <span className={`priority-pill ${taskDue.className}`}>{taskDue.label}</span> : null}
+                                    </div>
+                                </div>
+                                <div className="event-task-row-meta">
+                                    <span>{progressMeta?.currentLabel || (task.completed ? 'Done' : 'Open')}</span>
+                                    {progressMeta?.nextLabel && !task.completed ? (
+                                        <span className="event-detail-task-next">{progressMeta.nextLabel}</span>
+                                    ) : null}
+                                    {isTaskBlocked(task) ? <span className="event-task-inline-flag">Blocked</span> : null}
+                                </div>
+                            </div>
+                            <button type="button" className="btn-secondary event-task-row-action" onClick={() => onTaskToggle(task)}>
+                                {actionLabel}
+                            </button>
+                        </div>
                     );
                 })}
             </div>
@@ -139,7 +282,6 @@ const CalendarEventDetails = ({
     locationId,
     locationName,
     openTaskCount,
-    assignedRosterCount,
     isWorshipPlanning,
     templateFields,
     templateData,
@@ -147,6 +289,7 @@ const CalendarEventDetails = ({
     planningState,
     planningActions,
     planningHelpers,
+    seriesState,
     notesState,
     notesActions,
     documentsState,
@@ -192,8 +335,9 @@ const CalendarEventDetails = ({
         getTeamMap,
         getRoleDisplayLabel
     } = planningHelpers;
+    const { applyToSeries, setApplyToSeries, detailSaving, detailError } = seriesState;
     const { eventNotes } = notesState;
-    const { setEventNotes, handleSaveNotes } = notesActions;
+    const { setEventNotes, handleSaveDetails } = notesActions;
     const {
         bulletinDocs,
         contractDocs,
@@ -226,10 +370,45 @@ const CalendarEventDetails = ({
     const primaryEmptyMessage = isWorshipPlanning
         ? (isRegularSundayService ? 'No bulletin found in the Sunday bulletin folder yet.' : 'No bulletin uploaded.')
         : 'No contract uploaded.';
+    const contactSummary = [
+        eventDetails?.metadata?.contact_person || eventDetails?.metadata?.contactName || templateData?.contact_person || '',
+        eventDetails?.metadata?.contact_email || '',
+        eventDetails?.metadata?.contact_phone || ''
+    ].filter(Boolean).join(' • ');
+    const entryKind = String(
+        selectedEvent?.entry_kind
+        || eventDetails?.metadata?.entryKind
+        || eventDetails?.notes?.classification?.entryKind
+        || ''
+    ).replace(/_/g, ' ');
+    const displayGroup = selectedEvent?.display_group
+        || eventDetails?.metadata?.displayGroup
+        || eventDetails?.notes?.calendar?.displayGroup
+        || '';
+    const taskPolicy = String(
+        selectedEvent?.task_policy
+        || eventDetails?.metadata?.taskPolicy
+        || eventDetails?.notes?.classification?.taskPolicy
+        || ''
+    ).replace(/_/g, ' ');
+    const calendarRole = String(
+        selectedEvent?.calendar_role
+        || eventDetails?.metadata?.calendarRole
+        || eventDetails?.notes?.calendar?.role
+        || ''
+    ).replace(/_/g, ' ');
+    const modeMeta = getEventModeMeta({ calendarRole, entryKind, taskPolicy, displayGroup });
+    const detailFlags = Array.isArray(eventDetails?.flags) ? eventDetails.flags : (Array.isArray(selectedEvent?.flags) ? selectedEvent.flags : []);
+    const futureOccurrenceCount = Number(eventDetails?.package?.futureOccurrenceCount || 0);
+    const summaryMeta = [
+        modeMeta.label,
+        entryKind && entryKind.toLowerCase() !== modeMeta.label.toLowerCase() ? entryKind : '',
+        taskPolicy && taskPolicy.toLowerCase() !== 'auto' ? `${taskPolicy} tasks` : ''
+    ].filter(Boolean);
 
     return (
         <div className="event-detail-modal">
-            <div className="event-detail-section event-detail-summary">
+            <div className={`event-detail-section event-detail-summary tone-${modeMeta.tone}`}>
                 <div className="event-detail-grid">
                     <div>
                         <span className="event-detail-label">Date</span>
@@ -263,17 +442,91 @@ const CalendarEventDetails = ({
                             ) : 'TBD'}
                         </span>
                     </div>
+                    {contactSummary ? (
+                        <div>
+                            <span className="event-detail-label">Contact</span>
+                            <span className="event-detail-value">{contactSummary}</span>
+                        </div>
+                    ) : null}
                 </div>
-                <div className="event-detail-summary-strip">
-                    <span className="event-summary-pill">{openTaskCount} open task{openTaskCount === 1 ? '' : 's'}</span>
-                    <span className="event-summary-pill">{totalDocumentCount} document{totalDocumentCount === 1 ? '' : 's'}</span>
-                    {isWorshipPlanning && (
-                        <span className="event-summary-pill">{assignedRosterCount} roster assignment{assignedRosterCount === 1 ? '' : 's'}</span>
-                    )}
-                </div>
+                {eventDetails?.event?.description ? (
+                    <div className="event-detail-description">{eventDetails.event.description}</div>
+                ) : null}
+                {summaryMeta.length > 0 ? (
+                    <div className="event-detail-summary-strip">
+                        {summaryMeta.map((value) => (
+                            <span key={value} className="event-summary-pill">{value}</span>
+                        ))}
+                    </div>
+                ) : null}
+                {(futureOccurrenceCount > 1 || detailFlags.length > 0 || detailError) ? (
+                    <div className="event-detail-summary-actions">
+                        {futureOccurrenceCount > 1 ? (
+                            <label className="event-series-toggle">
+                                <input
+                                    type="checkbox"
+                                    checked={applyToSeries}
+                                    onChange={(event) => setApplyToSeries(event.target.checked)}
+                                />
+                                <span>Edit all future occurrences in this series</span>
+                            </label>
+                        ) : <span />}
+                        <button className="btn-primary" type="button" onClick={handleSaveDetails} disabled={detailSaving}>
+                            {detailSaving ? 'Saving...' : 'Save Details'}
+                        </button>
+                    </div>
+                ) : (
+                    <div className="event-detail-summary-actions event-detail-summary-actions--compact">
+                        <button className="btn-primary" type="button" onClick={handleSaveDetails} disabled={detailSaving}>
+                            {detailSaving ? 'Saving...' : 'Save Details'}
+                        </button>
+                    </div>
+                )}
+                {detailFlags.length > 0 ? (
+                    <div className="event-detail-flag-row">
+                        {detailFlags.map((flag) => (
+                            <span key={flag.key || flag.label} className={`event-detail-flag tone-${flag.tone || 'warning'}`} title={flag.detail || flag.label}>
+                                {flag.label}
+                            </span>
+                        ))}
+                    </div>
+                ) : null}
+                {detailError ? <div className="event-detail-inline-error">{detailError}</div> : null}
             </div>
 
             <div className="event-detail-column event-detail-column-left">
+                <div className="event-detail-section event-detail-tasks-section">
+                    <div className="event-detail-task-toolbar">
+                        <div className="event-detail-task-heading">
+                            <span className="event-detail-label">Tasks & Checklists</span>
+                            <div className="event-task-toolbar-stats">
+                                <span className="event-detail-section-meta">{openTaskCount} open</span>
+                                <span className="event-detail-section-meta">{taskGroups.length} section{taskGroups.length === 1 ? '' : 's'}</span>
+                            </div>
+                        </div>
+                        <div className="event-detail-task-add event-detail-task-add--inline">
+                            <input
+                                type="text"
+                                placeholder="Add task..."
+                                value={taskInput}
+                                onChange={(event) => setTaskInput(event.target.value)}
+                            />
+                            <button className="btn-primary" type="button" onClick={handleAddTask}>
+                                Add Task
+                            </button>
+                        </div>
+                    </div>
+                    {taskGroups.length === 0 ? (
+                        <div className="event-detail-empty">No tasks for this occurrence yet.</div>
+                    ) : (
+                        <div className="event-task-cluster-grid">
+                            {taskGroups.map((group) => (
+                                <EventTaskGroupCard key={`${group.listKey || group.title}-${group.items.length}`} group={group} onTaskToggle={handleTaskToggle} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+
                 <EventTemplateFieldsSection
                     templateFields={templateFields}
                     templateData={templateData}
@@ -521,21 +774,6 @@ const CalendarEventDetails = ({
                     </div>
                 )}
 
-                <div className="event-detail-section event-detail-notes-section">
-                    <div className="event-detail-header-row">
-                        <span className="event-detail-label">Internal Notes</span>
-                        <button className="btn-secondary" type="button" onClick={handleSaveNotes}>
-                            Save Notes
-                        </button>
-                    </div>
-                    <textarea
-                        className="event-detail-notes"
-                        value={eventNotes}
-                        onChange={(event) => setEventNotes(event.target.value)}
-                        placeholder="Add internal notes for this occurrence..."
-                        rows="3"
-                    />
-                </div>
             </div>
 
             <div className="event-detail-column event-detail-column-right">
@@ -633,72 +871,19 @@ const CalendarEventDetails = ({
                     </div>
                 </div>
 
-                <div className="event-detail-section event-detail-tasks-section">
+                <div className="event-detail-section event-detail-notes-section">
                     <div className="event-detail-header-row">
-                        <span className="event-detail-label">Tasks & Checklists</span>
-                        <span className="event-detail-section-meta">{openTaskCount} open</span>
+                        <span className="event-detail-label">Internal Notes</span>
                     </div>
-                    {taskGroups.length === 0 ? (
-                        <div className="event-detail-empty">No tasks for this occurrence yet.</div>
-                    ) : (
-                        taskGroups.map((group) => (
-                            <div key={group.title} className="event-detail-task-group">
-                                <div className="event-detail-task-group-header">
-                                    <div className="event-detail-task-title">{group.title}</div>
-                                    <span className="event-detail-task-count">
-                                        {group.items.filter((task) => !task.completed).length} open
-                                    </span>
-                                </div>
-                                <div className="event-detail-task-list">
-                                    {group.items.map((task) => {
-                                        const progressMeta = getTaskProgressMeta(task);
-                                        const isProgressive = Boolean(progressMeta);
-                                        return (
-                                            <div key={task.id} className={`event-detail-task ${task.completed ? 'completed' : ''} ${isProgressive ? 'progressive' : ''}`}>
-                                                {isProgressive ? (
-                                                    <>
-                                                        <div className="event-detail-task-copy">
-                                                            <span>{task.text}</span>
-                                                            <div className="event-detail-task-progress-row">
-                                                                <small>{progressMeta.currentLabel || 'Not Started'}</small>
-                                                                {progressMeta.nextLabel && (
-                                                                    <span className="event-detail-task-next">{progressMeta.nextLabel}</span>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                        <button type="button" className="btn-secondary" onClick={() => handleTaskToggle(task)}>
-                                                            {getTaskActionLabel(task, { progressiveFallback: 'Advance', completeLabel: 'Complete' })}
-                                                        </button>
-                                                    </>
-                                                ) : (
-                                                    <label className={`event-detail-task-toggle ${task.completed ? 'completed' : ''}`}>
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={task.completed}
-                                                            onChange={() => handleTaskToggle(task)}
-                                                        />
-                                                        <span>{task.text}</span>
-                                                    </label>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        ))
-                    )}
-                    <div className="event-detail-task-add">
-                        <input
-                            type="text"
-                            placeholder="Add task..."
-                            value={taskInput}
-                            onChange={(event) => setTaskInput(event.target.value)}
-                        />
-                        <button className="btn-primary" type="button" onClick={handleAddTask}>
-                            Add Task
-                        </button>
-                    </div>
+                    <textarea
+                        className="event-detail-notes"
+                        value={eventNotes}
+                        onChange={(event) => setEventNotes(event.target.value)}
+                        placeholder="Add internal notes for this occurrence..."
+                        rows="3"
+                    />
                 </div>
+
             </div>
         </div>
     );

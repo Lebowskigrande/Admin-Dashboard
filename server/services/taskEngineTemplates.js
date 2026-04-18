@@ -107,17 +107,98 @@ export const WORSHIP_TEMPLATE_SCHEMAS = {
     'eucharist-service': []
 };
 
-export const syncDefaultWorshipServiceTemplates = ({
+export const EVENT_TEMPLATE_SCHEMAS = {
+    ...WORSHIP_TEMPLATE_SCHEMAS,
+    'funeral': [
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-funeral',
+            listKey: 'bulletin',
+            listTitle: 'Bulletin',
+            dueOffsetDays: -5,
+            priorityBase: 72
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-funeral',
+            listKey: 'clergy',
+            listTitle: 'Clergy',
+            dueOffsetDays: -7,
+            priorityBase: 70
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-funeral',
+            listKey: 'music',
+            listTitle: 'Music',
+            dueOffsetDays: -7,
+            priorityBase: 68
+        })
+    ],
+    'wedding': [
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-wedding',
+            listKey: 'documents',
+            listTitle: 'Documents',
+            dueOffsetDays: -10,
+            priorityBase: 72
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-wedding',
+            listKey: 'music',
+            listTitle: 'Music',
+            dueOffsetDays: -10,
+            priorityBase: 68
+        })
+    ],
+    'concert': [
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-concert',
+            listKey: 'music',
+            listTitle: 'Music',
+            dueOffsetDays: -10,
+            priorityBase: 70
+        }),
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-concert',
+            listKey: 'communications',
+            listTitle: 'Comms',
+            dueOffsetDays: -7,
+            priorityBase: 66
+        })
+    ],
+    'meeting': [],
+    'rehearsal': [],
+    'class-formation': [],
+    'volunteer': [],
+    'private-rental': [
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-rental',
+            listKey: 'contracts',
+            listTitle: 'Contracts',
+            dueOffsetDays: -10,
+            priorityBase: 68
+        })
+    ],
+    'maintenance-closure': [
+        ...getStatusTemplateDefinitions({
+            templateIdPrefix: 'tmpl-event-maintenance',
+            listKey: 'communications',
+            listTitle: 'Comms',
+            dueOffsetDays: -1,
+            priorityBase: 54
+        })
+    ]
+};
+
+export const syncDefaultEventTemplates = ({
     getEventTypeIdsBySlugs,
     clearTemplates,
     upsertTemplate
 }) => {
-    const worshipTypeIds = getEventTypeIdsBySlugs(Object.keys(WORSHIP_TEMPLATE_SCHEMAS));
-    if (!worshipTypeIds.length) return;
+    const eventTypeIds = getEventTypeIdsBySlugs(Object.keys(EVENT_TEMPLATE_SCHEMAS));
+    if (!eventTypeIds.length) return;
 
-    clearTemplates(worshipTypeIds.map((row) => String(row.id)));
-    worshipTypeIds.forEach(({ slug, id }) => {
-        const definitions = WORSHIP_TEMPLATE_SCHEMAS[slug] || [];
+    clearTemplates(eventTypeIds.map((row) => String(row.id)));
+    eventTypeIds.forEach(({ slug, id }) => {
+        const definitions = EVENT_TEMPLATE_SCHEMAS[slug] || [];
         definitions.forEach((definition) => upsertTemplate({
             ...definition,
             id: `${definition.id}-${slug}`,
@@ -126,3 +207,5 @@ export const syncDefaultWorshipServiceTemplates = ({
         }));
     });
 };
+
+export const syncDefaultWorshipServiceTemplates = (args) => syncDefaultEventTemplates(args);

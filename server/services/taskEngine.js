@@ -7,7 +7,13 @@ import {
     getDefaultPriorityBase
 } from '../helpers/task-utils.js';
 import { recordTaskProgressHistory } from '../helpers/task-progress-history.js';
-import { normalizeWorshipTypeSlug } from '../helpers/worship-service-utils.js';
+import {
+    buildPackageTaskSignature,
+    getEventPackageDefinitions,
+    normalizeRecurringCompletionMap
+} from '../helpers/eventPackageUtils.js';
+import { isWorshipServiceTypeSlug, normalizeWorshipTypeSlug } from '../helpers/worship-service-utils.js';
+import { isLinkedSundayScheduleService } from '../helpers/sunday-utils.js';
 import { getSimpleStatusListTitle, isSimpleStatusListKey } from '../../shared/taskStatus.js';
 import {
     addDaysIso,
@@ -21,7 +27,7 @@ import {
     toMonthKey,
     toYearKey
 } from './taskEngineScheduling.js';
-import { syncDefaultWorshipServiceTemplates, WORSHIP_TEMPLATE_SCHEMAS } from './taskEngineTemplates.js';
+import { syncDefaultEventTemplates } from './taskEngineTemplates.js';
 export { buildOriginRollups } from './taskEngineRollups.js';
 
 const ensureTaskInstanceNotes = () => {
@@ -56,13 +62,6 @@ const applyTaskArchiving = () => {
           AND (
             (completed_at IS NOT NULL AND completed_at < date('now', '-7 days'))
             ${updatedClause}
-            OR
-            (
-               due_at IS NOT NULL 
-               AND due_at < date('now', '-' || COALESCE(archive_after_due, 1) || ' days')
-               AND completed_at IS NULL
-               AND (priority_override IS NULL OR priority_override < 75)
-            )
           )
     `).all();
 
@@ -125,6 +124,46 @@ const cleanupSundaySpecialEventPlaceholders = () => {
           AND ti.list_key = 'special-events'
     `).all();
     rows.forEach((row) => deleteTaskInstance(row.id));
+};
+
+const getAllowedSundayTaskListKeys = () => {
+    if (!tableExists('recurring_task_templates')) return new Set();
+    const templates = listRecurringTemplates('sunday', null);
+    if (!templates.length) return new Set();
+    const grouped = templates.reduce((acc, template) => {
+        const listKey = normalizeListKey(template.list_key || 'list');
+        const listMode = String(template.list_mode || 'sequential').toLowerCase();
+        const groupKey = `${listKey}:${listMode}`;
+        if (!acc[groupKey]) acc[groupKey] = [];
+        acc[groupKey].push(template);
+        return acc;
+    }, {});
+    return new Set(
+        Object.values(grouped)
+            .map((groupTemplates) => normalizeListKey(groupTemplates[0]?.list_key))
+            .filter(Boolean)
+    );
+};
+
+const cleanupObsoleteSundaySeededTasks = () => {
+    if (!tableExists('task_instances') || !tableExists('task_origins')) return 0;
+    const allowedListKeys = getAllowedSundayTaskListKeys();
+    const rows = db.prepare(`
+        SELECT ti.id AS task_instance_id, COALESCE(ti.list_key, '') AS list_key
+        FROM task_instances ti
+        JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+        WHERE src.origin_type = 'sunday'
+          AND ti.generated_from = 'seed'
+          AND ti.archived_at IS NULL
+    `).all();
+    let deletedCount = 0;
+    rows.forEach((row) => {
+        if (allowedListKeys.has(normalizeListKey(row.list_key))) return;
+        if (deleteTaskInstance(row.task_instance_id)) {
+            deletedCount += 1;
+        }
+    });
+    return deletedCount;
 };
 
 const upsertRecurringTemplateDefinition = (definition) => {
@@ -198,7 +237,7 @@ const upsertRecurringTemplateDefinition = (definition) => {
 };
 
 const ensureDefaultWorshipServiceTemplates = () => {
-    syncDefaultWorshipServiceTemplates({
+    syncDefaultEventTemplates({
         getEventTypeIdsBySlugs,
         clearTemplates: (originIds) => {
             if (!originIds.length) return;
@@ -226,6 +265,9 @@ const ensureProgressiveTemplateModes = () => {
     }
     if (!tableHasColumn('recurring_task_templates', 'due_offset_days')) {
         db.exec("ALTER TABLE recurring_task_templates ADD COLUMN due_offset_days INTEGER DEFAULT NULL");
+    }
+    if (!tableHasColumn('recurring_task_templates', 'behavior_notes')) {
+        db.exec("ALTER TABLE recurring_task_templates ADD COLUMN behavior_notes TEXT DEFAULT NULL");
     }
     if (!tableHasColumn('recurring_task_templates', 'step_key')) {
         db.exec("ALTER TABLE recurring_task_templates ADD COLUMN step_key TEXT DEFAULT NULL");
@@ -482,6 +524,8 @@ const getEventSeedContext = (occurrenceId) => {
             o.notes,
             e.id AS event_id,
             e.title,
+            e.event_type_id,
+            e.metadata,
             t.slug AS type_slug
         FROM event_occurrences o
         JOIN events e ON e.id = o.event_id
@@ -506,6 +550,7 @@ const hasAnyAssignmentForRole = (occurrenceId, roleKey) => {
 const shouldSeedRegularServiceMusicTask = (occurrenceId) => !hasAnyAssignmentForRole(occurrenceId, 'organist');
 
 const getAllowedWorshipTaskListKeys = ({ occurrenceId, typeSlug }) => {
+    if (!isWorshipServiceTypeSlug(typeSlug)) return null;
     const normalizedType = normalizeWorshipTypeSlug(typeSlug);
     if (normalizedType === 'rite-i-service') {
         return shouldSeedRegularServiceMusicTask(occurrenceId)
@@ -526,8 +571,72 @@ const getAllowedWorshipTaskListKeys = ({ occurrenceId, typeSlug }) => {
     return null;
 };
 
+const shouldAutoSeedEventTasks = (context) => {
+    const metadata = parseJsonObject(context?.metadata);
+    const notes = parseJsonObject(context?.notes);
+    const taskPolicy = String(
+        metadata.taskPolicy
+        || notes?.classification?.taskPolicy
+        || notes?.calendar?.taskPolicy
+        || 'auto'
+    ).trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const importMode = String(
+        metadata.importMode
+        || notes?.calendar?.importMode
+        || 'classify'
+    ).trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const entryKind = String(
+        metadata.entryKind
+        || notes?.classification?.entryKind
+        || 'event'
+    ).trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const calendarRole = String(
+        metadata.calendarRole
+        || notes?.calendar?.role
+        || ''
+    ).trim().toLowerCase().replace(/[\s-]+/g, '_');
+    const linkedSundayService = isLinkedSundayScheduleService({
+        eventId: context?.event_id,
+        date: context?.date,
+        startTime: context?.start_time,
+        title: context?.title
+    });
+
+    if (importMode !== 'classify') return false;
+    if (linkedSundayService) return false;
+    if (calendarRole === 'personal') return false;
+    if (taskPolicy !== 'auto') return false;
+    if (['personal', 'schedule', 'out_of_office', 'resource_hold', 'reminder', 'deadline', 'appointment'].includes(entryKind)) {
+        return false;
+    }
+    return true;
+};
+
+const getAllowedEventTaskListKeys = (context, fallbackEventTypeId = null) => {
+    if (!context || !shouldAutoSeedEventTasks(context)) {
+        return new Set();
+    }
+    const allowedWorshipListKeys = context?.type_slug
+        ? getAllowedWorshipTaskListKeys({
+            occurrenceId: context.occurrence_id,
+            typeSlug: context.type_slug
+        })
+        : null;
+    const metadata = parseJsonObject(context?.metadata);
+    const packageDefinition = getEventPackageDefinitions({
+        eventTypeId: Number(context?.event_type_id || fallbackEventTypeId) || fallbackEventTypeId,
+        metadata
+    });
+    return new Set(
+        packageDefinition.tasks
+            .filter((template) => !allowedWorshipListKeys || allowedWorshipListKeys.has(normalizeListKey(template?.list_key)))
+            .map((template) => normalizeListKey(template?.list_key))
+            .filter(Boolean)
+    );
+};
+
 const pruneSeededEventTasksForOccurrence = ({ occurrenceId, allowedListKeys }) => {
-    if (!occurrenceId || !allowedListKeys || !tableExists('task_instances') || !tableExists('task_origins')) return;
+    if (!occurrenceId || !allowedListKeys || !tableExists('task_instances') || !tableExists('task_origins')) return 0;
     const rows = db.prepare(`
         SELECT ti.id AS task_instance_id, COALESCE(ti.list_key, '') AS list_key
         FROM task_instances ti
@@ -538,10 +647,36 @@ const pruneSeededEventTasksForOccurrence = ({ occurrenceId, allowedListKeys }) =
           AND ti.archived_at IS NULL
     `).all(occurrenceId);
 
+    let deletedCount = 0;
     rows.forEach((row) => {
         if (allowedListKeys.has(row.list_key)) return;
-        deleteTaskInstance(row.task_instance_id);
+        if (deleteTaskInstance(row.task_instance_id)) {
+            deletedCount += 1;
+        }
     });
+    return deletedCount;
+};
+
+const cleanupObsoleteEventSeededTasks = () => {
+    if (!tableExists('task_instances') || !tableExists('task_origins')) return 0;
+    const rows = db.prepare(`
+        SELECT DISTINCT src.origin_id AS occurrence_id
+        FROM task_instances ti
+        JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+        WHERE src.origin_type = 'event'
+          AND ti.generated_from = 'seed'
+          AND ti.archived_at IS NULL
+    `).all();
+    let deletedCount = 0;
+    rows.forEach((row) => {
+        const context = getEventSeedContext(row.occurrence_id);
+        const allowedListKeys = getAllowedEventTaskListKeys(context);
+        deletedCount += pruneSeededEventTasksForOccurrence({
+            occurrenceId: row.occurrence_id,
+            allowedListKeys
+        });
+    });
+    return deletedCount;
 };
 
 export const createTaskInstance = (payload) => {
@@ -560,10 +695,18 @@ export const createTaskInstance = (payload) => {
         listTitle = null,
         listMode = 'sequential',
         progressKey = null,
-        progressSteps = null
+        progressSteps = null,
+        archiveAfterDue = null,
+        keepUntil = null,
+        state = 'open',
+        completedAt = null
     } = payload || {};
 
     if (!title || !originType || !originId || !generationKey) return null;
+
+    if (isSeedGenerationSuppressed(generationKey)) {
+        return null;
+    }
 
     if (tableHasColumn('task_instances', 'generation_key')
         && db.prepare('SELECT 1 FROM task_instances WHERE generation_key = ?').get(generationKey)) {
@@ -600,7 +743,7 @@ export const createTaskInstance = (payload) => {
                 id, task_id, state, priority_override, rank, due_at,
                 started_at, completed_at, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(taskInstanceId, taskId, 'open', null, null, dueAt, null, null, now, now);
+        `).run(taskInstanceId, taskId, state || 'open', null, null, dueAt, null, completedAt, now, now);
 
         db.prepare(`
             INSERT INTO task_origins (
@@ -625,7 +768,7 @@ export const createTaskInstance = (payload) => {
             list_key, list_title, list_mode, progress_key, progress_steps
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-        taskInstanceId, taskId, 'open', dueAt, startAt, null, 'seed', generationKey,
+        taskInstanceId, taskId, state || 'open', dueAt, startAt, completedAt, 'seed', generationKey,
         null, null, slaTargetAt, 0, listKey, listTitle, listMode || 'sequential',
         progressKey, progressSteps ? JSON.stringify(progressSteps) : null
     );
@@ -635,6 +778,19 @@ export const createTaskInstance = (payload) => {
             id, scope, task_id, task_instance_id, origin_type, origin_id, origin_event, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(`origin-${taskInstanceId}`, 'instance', taskId, taskInstanceId, originType, originId, originEvent, now);
+
+    if (tableHasColumn('task_instances', 'archive_after_due') || tableHasColumn('task_instances', 'keep_until')) {
+        db.prepare(`
+            UPDATE task_instances
+            SET archive_after_due = COALESCE(?, archive_after_due),
+                keep_until = COALESCE(?, keep_until)
+            WHERE id = ?
+        `).run(
+            archiveAfterDue,
+            keepUntil,
+            taskInstanceId
+        );
+    }
 
     upsertEntityLink({
         fromType: 'task_instance',
@@ -650,9 +806,9 @@ export const createTaskInstance = (payload) => {
             id: taskInstanceId,
             task_id: taskId,
             title,
-            state: 'open',
+            state: state || 'open',
             blocked: 0,
-            completed_at: null,
+            completed_at: completedAt,
             progress_key: progressKey || '',
             progress_steps: Array.isArray(progressSteps) ? progressSteps : [],
             list_key: listKey,
@@ -680,7 +836,11 @@ const syncSeededTaskInstance = ({
     listKey = null,
     listTitle = null,
     listMode = 'sequential',
-    progressSteps = null
+    progressSteps = null,
+    archiveAfterDue = null,
+    keepUntil = null,
+    state = null,
+    completedAt = null
 } = {}) => {
     if (!generationKey || !tableHasColumn('task_instances', 'generation_key')) return null;
     const existing = db.prepare(`
@@ -707,6 +867,11 @@ const syncSeededTaskInstance = ({
         WHERE id = ?
     `).run(title, priorityBase, taskType, now, existing.task_id);
 
+    const nextState = state === 'done' ? 'done' : null;
+    const nextCompletedAt = nextState === 'done'
+        ? (completedAt || existing.completed_at || now)
+        : existing.completed_at;
+
     db.prepare(`
         UPDATE task_instances
         SET due_at = ?,
@@ -715,8 +880,12 @@ const syncSeededTaskInstance = ({
             list_key = ?,
             list_title = ?,
             list_mode = ?,
+            state = COALESCE(?, state),
+            completed_at = ?,
             progress_key = ?,
             progress_steps = ?,
+            archive_after_due = COALESCE(?, archive_after_due),
+            keep_until = COALESCE(?, keep_until),
             archived_at = CASE WHEN completed_at IS NULL THEN NULL ELSE archived_at END
         WHERE id = ?
     `).run(
@@ -726,12 +895,67 @@ const syncSeededTaskInstance = ({
         listKey,
         listTitle,
         listMode || 'sequential',
+        nextState,
+        nextCompletedAt,
         nextProgressKey,
         progressSteps ? JSON.stringify(progressSteps) : null,
+        archiveAfterDue,
+        keepUntil,
         existing.id
     );
 
     return existing.id;
+};
+
+const isSeedGenerationSuppressed = (generationKey) => {
+    if (!generationKey || !tableExists('task_seed_suppressions')) return false;
+    return !!db.prepare(`
+        SELECT 1 FROM task_seed_suppressions
+        WHERE generation_key = ?
+        LIMIT 1
+    `).get(generationKey);
+};
+
+const suppressSeedGenerationForTask = (taskInstanceId, suppressedBy = 'delete-task') => {
+    if (!taskInstanceId || !tableExists('task_seed_suppressions')) return;
+    const row = db.prepare(`
+        SELECT
+            ti.generation_key,
+            ti.generated_from,
+            t.title,
+            src.origin_type,
+            src.origin_id,
+            src.origin_event
+        FROM task_instances ti
+        LEFT JOIN tasks_new t ON t.id = ti.task_id
+        LEFT JOIN task_origins src ON src.scope = 'instance' AND src.task_instance_id = ti.id
+        WHERE ti.id = ?
+        LIMIT 1
+    `).get(taskInstanceId);
+    if (!row?.generation_key || row.generated_from !== 'seed') return;
+
+    db.prepare(`
+        INSERT INTO task_seed_suppressions (
+            id, generation_key, origin_type, origin_id, origin_event,
+            task_title, suppressed_at, suppressed_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(generation_key) DO UPDATE SET
+            origin_type = excluded.origin_type,
+            origin_id = excluded.origin_id,
+            origin_event = excluded.origin_event,
+            task_title = excluded.task_title,
+            suppressed_at = excluded.suppressed_at,
+            suppressed_by = excluded.suppressed_by
+    `).run(
+        `supp-${randomUUID()}`,
+        row.generation_key,
+        row.origin_type || null,
+        row.origin_id || null,
+        row.origin_event || null,
+        row.title || null,
+        new Date().toISOString(),
+        suppressedBy
+    );
 };
 
 export const seedSundayTasksFromTemplates = () => {
@@ -1358,7 +1582,6 @@ const applyOperationsSeedPlan = (plan = { items: [] }) => {
                     item.action === 'reactivate' ? 1 : 0,
                     item.action === 'reactivate' ? 1 : 0,
                     item.action === 'reactivate' ? 1 : 0,
-                    item.action === 'reactivate' ? 1 : 0,
                     item.existingId
                 );
                 db.prepare('UPDATE tasks_new SET title = ?, updated_at = ? WHERE id = ?').run(
@@ -1421,19 +1644,31 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
     if (!tableExists('recurring_task_templates')) return;
     if (!occurrenceId || !eventTypeId || !dateKey) return;
     const context = getEventSeedContext(occurrenceId);
+    const allowedListKeys = getAllowedEventTaskListKeys(context, eventTypeId);
+    if (!allowedListKeys.size) {
+        pruneSeededEventTasksForOccurrence({
+            occurrenceId,
+            allowedListKeys
+        });
+        return;
+    }
     const allowedWorshipListKeys = context?.type_slug
         ? getAllowedWorshipTaskListKeys({
             occurrenceId,
             typeSlug: context.type_slug
         })
         : null;
-    if (allowedWorshipListKeys) {
-        pruneSeededEventTasksForOccurrence({
-            occurrenceId,
-            allowedListKeys: allowedWorshipListKeys
-        });
-    }
-    const templates = listRecurringTemplates('event', String(eventTypeId));
+    pruneSeededEventTasksForOccurrence({
+        occurrenceId,
+        allowedListKeys
+    });
+    const metadata = parseJsonObject(context?.metadata);
+    const packageDefinition = getEventPackageDefinitions({
+        eventTypeId: Number(context?.event_type_id || eventTypeId) || eventTypeId,
+        metadata
+    });
+    const recurringCompletion = normalizeRecurringCompletionMap(metadata?.recurring_package_completion);
+    const templates = packageDefinition.tasks;
     const filteredTemplates = allowedWorshipListKeys
         ? templates.filter((template) => allowedWorshipListKeys.has(template.list_key || ''))
         : templates;
@@ -1450,6 +1685,11 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
         const listKey = groupTemplates[0]?.list_key || null;
         const listTitle = groupTemplates[0]?.list_title || null;
         const listMode = groupTemplates[0]?.list_mode || 'sequential';
+        const recurringEntry = recurringCompletion[String(listKey || '').toLowerCase()] || null;
+        const packageSignature = buildPackageTaskSignature(groupTemplates[0] || {});
+        const shouldAutoComplete = recurringEntry
+            && recurringEntry.fromDate <= dateKey
+            && recurringEntry.templateSignature === packageSignature;
         if (isSimpleStatusListKey(listKey) && groupTemplates.length === 1) {
             const template = groupTemplates[0];
             const schedule = getEventTaskSchedule({
@@ -1462,13 +1702,17 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
                 priorityBase: Number.isFinite(Number(template?.priority_base)) ? Number(template.priority_base) : getDefaultPriorityBase('event'),
                 dueAt: schedule.dueAt,
                 startAt: schedule.startAt,
+                archiveAfterDue: 7,
+                keepUntil: dateKey,
                 originType: 'event',
                 originId: occurrenceId,
                 originEvent: listKey || 'status',
                 generationKey: `event:${occurrenceId}:${listKey || 'list'}:progressive`,
                 listKey,
                 listTitle: getSimpleStatusListTitle(listKey, listTitle || template?.title || 'Task'),
-                listMode: 'sequential'
+                listMode: 'sequential',
+                state: shouldAutoComplete ? 'done' : 'open',
+                completedAt: shouldAutoComplete ? recurringEntry.completedAt : null
             };
             if (!syncSeededTaskInstance(payload)) {
                 createTaskInstance(payload);
@@ -1493,6 +1737,8 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
                 priorityBase: Number.isFinite(Number(groupTemplates[0]?.priority_base)) ? Number(groupTemplates[0].priority_base) : getDefaultPriorityBase('event'),
                 dueAt: schedule.dueAt,
                 startAt: schedule.startAt,
+                archiveAfterDue: 7,
+                keepUntil: dateKey,
                 originType: 'event',
                 originId: occurrenceId,
                 originEvent: listKey || 'progressive',
@@ -1500,7 +1746,9 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
                 listKey,
                 listTitle,
                 listMode: 'progressive',
-                progressSteps: steps
+                progressSteps: steps,
+                state: shouldAutoComplete ? 'done' : 'open',
+                completedAt: shouldAutoComplete ? recurringEntry.completedAt : null
             };
             if (!syncSeededTaskInstance(payload)) {
                 createTaskInstance(payload);
@@ -1518,13 +1766,17 @@ export const seedEventTasksForOccurrence = ({ occurrenceId, eventTypeId, dateKey
                 priorityBase: Number.isFinite(Number(template.priority_base)) ? Number(template.priority_base) : getDefaultPriorityBase('event'),
                 dueAt: schedule.dueAt,
                 startAt: schedule.startAt,
+                archiveAfterDue: 7,
+                keepUntil: dateKey,
                 originType: 'event',
                 originId: occurrenceId,
                 originEvent: template.step_key,
                 generationKey: `event:${occurrenceId}:${template.list_key || 'list'}:${template.step_key}`,
                 listKey: template.list_key || null,
                 listTitle: template.list_title || null,
-                listMode: template.list_mode || 'sequential'
+                listMode: template.list_mode || 'sequential',
+                state: shouldAutoComplete ? 'done' : 'open',
+                completedAt: shouldAutoComplete ? recurringEntry.completedAt : null
             };
             if (!syncSeededTaskInstance(payload)) {
                 createTaskInstance(payload);
@@ -1555,9 +1807,12 @@ export const seedEventTasksFromTemplates = (daysAhead = 400) => {
     });
 };
 
-export const deleteTaskInstance = (taskInstanceId) => {
+export const deleteTaskInstance = (taskInstanceId, { suppressSeed = false, suppressedBy = 'delete-task' } = {}) => {
     const row = db.prepare('SELECT task_id FROM task_instances WHERE id = ?').get(taskInstanceId);
     if (!row) return false;
+    if (suppressSeed) {
+        suppressSeedGenerationForTask(taskInstanceId, suppressedBy);
+    }
     db.prepare('DELETE FROM task_instances WHERE id = ?').run(taskInstanceId);
     db.prepare('DELETE FROM task_origins WHERE scope = ? AND task_instance_id = ?').run('instance', taskInstanceId);
     deleteEntityLinks({ fromType: 'task_instance', fromId: taskInstanceId });
@@ -1654,8 +1909,25 @@ export const listTaskInstances = (whereClause = '', params = []) => {
 
 export const runTaskMaintenance = () => {
     ensureTaskInstanceNotes();
+    cleanupObsoleteSundaySeededTasks();
+    seedSundayTasksFromTemplates();
+    seedVestryTasksFromTemplates();
+    const operationsSeed = seedOperationsTasksFromTemplates();
+    cleanupObsoleteEventSeededTasks();
+    seedEventTasksFromTemplates();
+    normalizeSimpleStatusTaskInstances();
+    taskEngineRuntime = {
+        ...taskEngineRuntime,
+        lastSeedAt: new Date().toISOString(),
+        lastSeedSummary: {
+            operations: operationsSeed?.summary || null
+        }
+    };
     const archivedCount = applyTaskArchiving() || 0;
     return {
+        seeded: {
+            operations: operationsSeed?.summary || null
+        },
         archivedCount,
         archivedAt: taskEngineRuntime.lastArchiveSweepAt
     };
@@ -1686,8 +1958,10 @@ export const seedTaskEngine = () => {
     ensureProgressiveTemplateModes();
     normalizeSimpleStatusTemplates();
     cleanupSundaySpecialEventPlaceholders();
+    cleanupObsoleteSundaySeededTasks();
     ensureDefaultWorshipServiceTemplates();
     cleanupDuplicateEventServiceReadyTasks();
+    cleanupObsoleteEventSeededTasks();
 
     seedSundayTasksFromTemplates();
     seedVestryTasksFromTemplates();

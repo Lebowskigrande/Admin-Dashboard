@@ -1,0 +1,287 @@
+.package-card.origin-color-sunday {
+    --package-accent: #235789;
+    --package-soft: #eaf2fb;
+}
+
+.package-card.origin-color-event {
+    --package-accent: #b85c38;
+    --package-soft: #fdf1e8;
+}
+
+.package-card.origin-color-operations {
+    --package-accent: #1f6f50;
+    --package-soft: #ecf7f1;
+}
+
+.package-card.origin-color-ticket {
+    --package-accent: #7c3f58;
+    --package-soft: #f9edf2;
+}
+
+.package-card {
+    --package-accent: #235789;
+    --package-soft: #eef2f7;
+    position: relative;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: 16px;
+    background: #fff;
+    padding: 0.78rem 0.88rem 0.82rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.58rem;
+    text-align: left;
+    cursor: pointer;
+    box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.package-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 20px rgba(15, 23, 42, 0.06);
+    border-color: rgba(15, 23, 42, 0.12);
+}
+
+.package-card.active {
+    border-color: color-mix(in srgb, var(--package-accent) 48%, white 52%);
+    box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+}
+
+.package-card-accent {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 3px;
+    border-radius: 16px 16px 0 0;
+    background: linear-gradient(90deg, var(--package-accent) 0%, color-mix(in srgb, var(--package-accent) 56%, white 44%) 100%);
+}
+
+.package-card-head,
+.package-card-footer {
+    position: relative;
+    z-index: 1;
+}
+
+.package-card-kicker {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    margin-top: 0.25rem;
+}
+
+.package-origin-label,
+.package-bucket-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 0.22rem 0.58rem;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.package-origin-label {
+    background: var(--package-soft);
+    color: var(--package-accent);
+}
+
+.package-bucket-pill {
+    background: rgba(15, 23, 42, 0.06);
+    color: #475569;
+}
+
+.package-card-title {
+    font-size: 0.96rem;
+    font-weight: 700;
+    color: #0f172a;
+    line-height: 1.25;
+    margin-top: 0.12rem;
+}
+
+.package-card-subtitle {
+    color: #64748b;
+    font-size: 0.76rem;
+    margin-top: 0.12rem;
+}
+
+.package-section-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.72rem 0.9rem;
+    min-height: 3rem;
+}
+
+.package-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.section-node {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    padding: 0;
+    transition: transform 0.16s ease;
+}
+
+.section-node:hover {
+    transform: translateY(-1px);
+}
+
+.section-node.is-focused .section-node-icon {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--package-accent) 28%, white 72%);
+    border-color: color-mix(in srgb, var(--package-accent) 28%, white 72%);
+}
+
+.section-node-button {
+    border: none;
+    background: transparent;
+    padding: 0;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.38rem;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+}
+
+.section-node-button.static {
+    cursor: default;
+}
+
+.section-node-icon {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.2rem;
+    height: 2.2rem;
+    border-radius: 999px;
+    background: rgba(248, 250, 252, 0.92);
+    color: #475569;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    font-size: 0.92rem;
+}
+
+.section-node-icon.state-done {
+    background: #e8f7ef;
+    color: #166534;
+    border-color: #bbf7d0;
+}
+
+.section-node-icon.state-in_progress {
+    background: #fff7ed;
+    color: #c2410c;
+    border-color: #fdba74;
+}
+
+.section-node-icon.state-current,
+.section-node-icon.state-open {
+    background: #eef5fb;
+    color: var(--package-accent);
+    border-color: color-mix(in srgb, var(--package-accent) 24%, white 76%);
+}
+
+.section-node-icon.state-blocked {
+    background: #fef2f2;
+    color: #b91c1c;
+    border-color: #fca5a5;
+}
+
+.section-node-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #475569;
+    line-height: 1;
+    text-align: center;
+}
+
+.section-state-chip {
+    position: absolute;
+    right: -0.24rem;
+    bottom: -0.24rem;
+    min-width: 1.1rem;
+    height: 1.1rem;
+    padding: 0 0.24rem;
+    border-radius: 999px;
+    background: #e2e8f0;
+    color: #334155;
+    font-size: 0.74rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.92);
+    font-weight: 700;
+    line-height: 1;
+    box-shadow: 0 3px 10px rgba(15, 23, 42, 0.14);
+}
+
+.section-due-chip {
+    position: absolute;
+    left: -0.18rem;
+    top: -0.18rem;
+    min-width: 0.95rem;
+    height: 0.95rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.92);
+    box-shadow: 0 3px 10px rgba(15, 23, 42, 0.14);
+    font-size: 0.72rem;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.section-due-chip.is-overdue {
+    background: #dc2626;
+    color: white;
+}
+
+.section-due-chip.is-today {
+    background: #f59e0b;
+    color: transparent;
+}
+
+.section-state-chip.status-done {
+    background: #166534;
+    color: white;
+    font-size: 0.82rem;
+    font-weight: 800;
+    font-family: "Segoe UI Symbol", "Arial Unicode MS", sans-serif;
+}
+
+.section-state-chip.status-in_progress {
+    background: #c2410c;
+    color: white;
+}
+
+.section-state-chip.status-blocked {
+    background: #b91c1c;
+    color: white;
+}
+
+.section-node.attention-urgent {
+    border-color: #ef4444;
+}
+
+.section-node.attention-urgent .section-node-icon {
+    border-color: #ef4444;
+    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.16);
+}
+
+.section-node.attention-today {
+    border-color: #f59e0b;
+}
+
+.section-node.attention-today .section-node-icon {
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.16);
+}

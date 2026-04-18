@@ -3,18 +3,20 @@ import { useNavigate } from 'react-router-dom';
 import { addDays, format, isSameDay, startOfDay } from 'date-fns';
 import { FaArrowRight, FaBuilding, FaCalendarAlt, FaChurch, FaCog, FaExclamationTriangle, FaFileInvoiceDollar, FaSyncAlt, FaTasks, FaUsers } from 'react-icons/fa';
 import Card from '../components/Card';
+import WorkPackageCard from '../components/tasks/WorkPackageCard';
+import { getTaskPriorityClass, getTaskPriorityLabel } from '../components/tasks/taskDisplayHelpers';
 import { useEvents } from '../context/EventsContext';
 import { API_URL } from '../services/apiConfig';
 import { APP_ROUTES, getOriginRoute } from '../config/appRoutes';
 import { buildOriginGroups } from '../../shared/taskRollups.js';
 import {
+    getDueInfo,
     getOriginColorClass,
     getWorkPackageSubtitle,
     getWorkPackageSummary,
     getWorkPackageTitle,
     sortTasksByPriority
 } from './todo/todoHelpers';
-import { getSectionIconComponent } from './todo/todoVisuals';
 import { isTicketClosedStatus, summarizeTickets } from '../../shared/tickets.js';
 import './Dashboard.css';
 
@@ -69,15 +71,6 @@ const originLabel = (type) => ({
     vestry: 'Vestry'
 }[String(type || '').trim().toLowerCase()] || 'Origin');
 
-const priorityClass = (task) => {
-    const tier = String(task?.priority_tier || '').toLowerCase();
-    if (tier === 'critical') return 'priority-critical';
-    if (tier === 'high') return 'priority-high';
-    if (tier === 'low') return 'priority-low';
-    if (tier === 'someday') return 'priority-someday';
-    return 'priority-normal';
-};
-
 const dueMeta = (task, today) => {
     const due = parseDateValue(task?.due_at);
     if (!due) return { label: 'No due date', className: 'due-pill-neutral', rank: 5 };
@@ -99,8 +92,6 @@ const compareTasks = (a, b, today) => {
     return (parseDateValue(a?.due_at)?.getTime() ?? Number.POSITIVE_INFINITY)
         - (parseDateValue(b?.due_at)?.getTime() ?? Number.POSITIVE_INFINITY);
 };
-
-const trimTaskText = (value) => String(value || '').trim().replace(/[\s.,;:!?]+$/, '');
 
 const formatStamp = (value) => {
     const parsed = value instanceof Date ? value : new Date(value);
@@ -325,6 +316,7 @@ const Dashboard = () => {
         overdue.length,
         routing.length,
         routingFailures.length,
+        snapshot.buildings.length,
         snapshot.engine?.runtime?.lastSeedAt,
         snapshot.people.length,
         snapshot.vendors.length,
@@ -335,7 +327,6 @@ const Dashboard = () => {
         ticketSummary.no_vendor,
         ticketSummary.overdue,
         ticketSummary.triage,
-        ticketSummary.urgent,
         todayEvents.length,
         visibleEvents.length,
         week
@@ -414,9 +405,6 @@ const Dashboard = () => {
         overdue.length,
         routingFailures.length,
         snapshot.warnings.length,
-        APP_ROUTES.finance,
-        APP_ROUTES.settings,
-        APP_ROUTES.todo,
         ticketSummary.overdue
     ]);
 
@@ -537,52 +525,28 @@ const Dashboard = () => {
                                     const workPackage = getWorkPackageSummary(origin);
                                     const primarySection = workPackage.primarySection;
                                     const primaryTask = primarySection?.actionTask || origin.nextTask || origin.sample;
-                                    const due = dueMeta(primaryTask, today);
+                                    const due = getDueInfo(primaryTask) || dueMeta(primaryTask, today);
                                     return (
-                                        <button
+                                        <WorkPackageCard
                                             key={origin.key}
-                                            type="button"
-                                            className={`dashboard-focus-card ${getOriginColorClass(origin.origin_type)}`}
+                                            colorClass={getOriginColorClass(origin.origin_type)}
+                                            originLabel={originLabel(origin.origin_type)}
+                                            bucketLabel={due.label}
+                                            title={getWorkPackageTitle(origin)}
+                                            subtitle={getWorkPackageSubtitle(origin)}
+                                            sections={workPackage.sections.slice(0, 5)}
                                             onClick={() => openOrigin(primaryTask)}
-                                        >
-                                            <div className="dashboard-focus-card-topline">
-                                                <span className="dashboard-focus-origin-label">{originLabel(origin.origin_type)}</span>
-                                                <span className={`priority-pill ${due.className}`}>{due.label}</span>
-                                            </div>
-                                            <div className="dashboard-focus-card-title">{getWorkPackageTitle(origin)}</div>
-                                            <div className="dashboard-focus-card-subtitle">{getWorkPackageSubtitle(origin)}</div>
-                                            <div className="dashboard-focus-card-current">
-                                                <span className="dashboard-focus-current-label">Current friction</span>
-                                                <strong>
-                                                    {primarySection
-                                                        ? `${primarySection.title}: ${primarySection.currentLabel}`
-                                                        : 'Checklist complete'}
-                                                </strong>
-                                            </div>
-                                            <div className="dashboard-focus-section-strip">
-                                                {workPackage.sections.slice(0, 5).map((section) => {
-                                                    const Icon = getSectionIconComponent(section.iconKey);
-                                                    return (
-                                                        <span
-                                                            key={section.key}
-                                                            className={`dashboard-focus-node attention-${section.attention}`}
-                                                        >
-                                                            <span className={`dashboard-focus-node-icon state-${section.status}`}>
-                                                                <Icon />
-                                                            </span>
-                                                            <span className="dashboard-focus-node-label">{section.shortLabel}</span>
-                                                            <span className="dashboard-focus-node-meta">{section.completedCount}/{section.totalCount}</span>
+                                            footer={(
+                                                <div className="dashboard-package-footer-meta">
+                                                    <span>{workPackage.doneSectionCount}/{workPackage.sections.length} closed</span>
+                                                    {String(primaryTask?.priority_tier || '').toLowerCase() !== 'normal' ? (
+                                                        <span className={`priority-pill ${getTaskPriorityClass(primaryTask)}`}>
+                                                            {getTaskPriorityLabel(primaryTask)}
                                                         </span>
-                                                    );
-                                                })}
-                                            </div>
-                                            <div className="dashboard-focus-card-footer">
-                                                <span>{workPackage.doneSectionCount}/{workPackage.sections.length} sections closed</span>
-                                                <span className={`priority-pill ${priorityClass(primaryTask)}`}>
-                                                    {String(primaryTask?.priority_tier || 'normal')}
-                                                </span>
-                                            </div>
-                                        </button>
+                                                    ) : null}
+                                                </div>
+                                            )}
+                                        />
                                     );
                                 })}
                             </div>
