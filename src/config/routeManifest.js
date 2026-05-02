@@ -10,6 +10,6 @@ export const ROUTE_MANIFEST = [
     { key: 'people', path: '/people', routePath: 'people', label: 'People', icon: 'users', showInNav: true },
     { key: 'todo', path: '/todo', routePath: 'todo', label: 'To-Do List', icon: 'list', showInNav: true },
     { key: 'taskOrigins', path: '/task-origins', routePath: 'task-origins', label: 'Task Origins', icon: 'project', showInNav: true },
-    { key: 'eventTemplates', path: '/event-templates', routePath: 'event-templates', label: 'Event Templates', icon: 'project', showInNav: true },
+    { key: 'eventTemplates', path: '/event-templates', routePath: 'event-templates', label: 'Task Packages', icon: 'project', showInNav: true },
     { key: 'settings', path: '/settings', routePath: 'settings', label: 'Settings', icon: 'cog', showInNav: true }
 ];

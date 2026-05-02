@@ -12,7 +12,6 @@ import {
 
 const ORDERS_AVAILABLE = () => tableExists('order_items');
 
-const trimText = (value) => String(value || '').trim();
 const trimDate = (value) => String(value || '').trim().slice(0, 10);
 
 const listOrderItems = () => {

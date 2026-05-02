@@ -4,6 +4,80 @@ import { FaGoogle, FaCheck, FaTimes, FaSync, FaEnvelope } from 'react-icons/fa';
 import { API_BASE, API_URL } from '../services/apiConfig';
 import './Settings.css';
 
+const CALENDAR_ROLE_OPTIONS = [
+    { value: 'work', label: 'Work' },
+    { value: 'personal', label: 'Personal' },
+    { value: 'staff_schedule', label: 'Staff schedule' },
+    { value: 'resource', label: 'Resource' },
+    { value: 'reference', label: 'Reference' }
+];
+
+const IMPORT_MODE_OPTIONS = [
+    { value: 'classify', label: 'Classify' },
+    { value: 'reference_only', label: 'Reference only' },
+    { value: 'ignore', label: 'Ignore' }
+];
+
+const TASK_POLICY_OPTIONS = [
+    { value: 'auto', label: 'Auto tasks' },
+    { value: 'manual_only', label: 'Manual only' },
+    { value: 'never', label: 'Never' }
+];
+
+const ENTRY_KIND_OPTIONS = [
+    { value: 'event', label: 'Event' },
+    { value: 'service', label: 'Service' },
+    { value: 'meeting', label: 'Meeting' },
+    { value: 'reminder', label: 'Reminder' },
+    { value: 'schedule', label: 'Schedule' },
+    { value: 'out_of_office', label: 'Out of office' },
+    { value: 'appointment', label: 'Appointment' },
+    { value: 'personal', label: 'Personal' },
+    { value: 'resource_hold', label: 'Resource hold' },
+    { value: 'deadline', label: 'Deadline' }
+];
+
+const getCalendarDefaultsForRole = (role) => {
+    if (role === 'personal') {
+        return {
+            importMode: 'reference_only',
+            taskPolicy: 'never',
+            displayGroup: 'Personal',
+            defaultEntryKind: 'personal'
+        };
+    }
+    if (role === 'staff_schedule') {
+        return {
+            importMode: 'classify',
+            taskPolicy: 'never',
+            displayGroup: 'Staff',
+            defaultEntryKind: 'schedule'
+        };
+    }
+    if (role === 'resource') {
+        return {
+            importMode: 'classify',
+            taskPolicy: 'never',
+            displayGroup: 'Resources',
+            defaultEntryKind: 'resource_hold'
+        };
+    }
+    if (role === 'reference') {
+        return {
+            importMode: 'reference_only',
+            taskPolicy: 'never',
+            displayGroup: 'Reference',
+            defaultEntryKind: 'event'
+        };
+    }
+    return {
+        importMode: 'classify',
+        taskPolicy: 'auto',
+        displayGroup: 'Work',
+        defaultEntryKind: 'event'
+    };
+};
+
 const Settings = () => {
     const [googleConnected, setGoogleConnected] = useState(false);
     const [loading, setLoading] = useState(true);
@@ -103,9 +177,17 @@ const Settings = () => {
         }
     };
 
-    const toggleCalendar = async (calendar) => {
+    const saveCalendarPolicy = async (calendar, overrides = {}) => {
+        const nextRole = overrides.calendarRole ?? calendar.calendarRole ?? 'work';
+        const roleDefaults = overrides.calendarRole ? getCalendarDefaultsForRole(nextRole) : {};
+        const nextCalendar = {
+            ...calendar,
+            ...roleDefaults,
+            ...overrides,
+            calendarRole: nextRole
+        };
         try {
-            await fetch(`${API_URL}/google/calendars/select`, {
+            const response = await fetch(`${API_URL}/google/calendars/select`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -113,16 +195,26 @@ const Settings = () => {
                     calendarId: calendar.id,
                     summary: calendar.summary,
                     backgroundColor: calendar.backgroundColor,
-                    selected: !calendar.selected
+                    selected: nextCalendar.selected,
+                    calendarRole: nextCalendar.calendarRole,
+                    importMode: nextCalendar.importMode,
+                    taskPolicy: nextCalendar.taskPolicy,
+                    displayGroup: nextCalendar.displayGroup,
+                    defaultEntryKind: nextCalendar.defaultEntryKind
                 })
             });
+            if (!response.ok) throw new Error('Failed to save calendar policy');
 
             setCalendars(calendars.map(cal =>
-                cal.id === calendar.id ? { ...cal, selected: !cal.selected } : cal
+                cal.id === calendar.id ? nextCalendar : cal
             ));
         } catch (error) {
-            console.error('Error toggling calendar:', error);
+            console.error('Error saving calendar policy:', error);
         }
+    };
+
+    const toggleCalendar = async (calendar) => {
+        await saveCalendarPolicy(calendar, { selected: !calendar.selected });
     };
 
     const connectGoogle = () => {
@@ -312,18 +404,79 @@ const Settings = () => {
                             ) : (
                                 <div className="calendar-list">
                                     {calendars.map(calendar => (
-                                        <label key={calendar.id} className="calendar-item">
-                                            <input
-                                                type="checkbox"
-                                                checked={calendar.selected}
-                                                onChange={() => toggleCalendar(calendar)}
-                                            />
-                                            <div
-                                                className="calendar-color"
-                                                style={{ backgroundColor: calendar.backgroundColor }}
-                                            ></div>
-                                            <span className="calendar-name">{calendar.summary}</span>
-                                        </label>
+                                        <div key={calendar.id} className="calendar-item calendar-policy-item">
+                                            <label className="calendar-policy-main">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={calendar.selected}
+                                                    onChange={() => toggleCalendar(calendar)}
+                                                />
+                                                <div
+                                                    className="calendar-color"
+                                                    style={{ backgroundColor: calendar.backgroundColor }}
+                                                ></div>
+                                                <span className="calendar-name">{calendar.summary}</span>
+                                            </label>
+                                            <div className="calendar-policy-controls">
+                                                <label>
+                                                    <span>Role</span>
+                                                    <select
+                                                        value={calendar.calendarRole || 'work'}
+                                                        onChange={(event) => saveCalendarPolicy(calendar, { calendarRole: event.target.value })}
+                                                    >
+                                                        {CALENDAR_ROLE_OPTIONS.map((option) => (
+                                                            <option key={option.value} value={option.value}>{option.label}</option>
+                                                        ))}
+                                                    </select>
+                                                </label>
+                                                <label>
+                                                    <span>Import</span>
+                                                    <select
+                                                        value={calendar.importMode || 'classify'}
+                                                        onChange={(event) => saveCalendarPolicy(calendar, { importMode: event.target.value })}
+                                                    >
+                                                        {IMPORT_MODE_OPTIONS.map((option) => (
+                                                            <option key={option.value} value={option.value}>{option.label}</option>
+                                                        ))}
+                                                    </select>
+                                                </label>
+                                                <label>
+                                                    <span>Tasks</span>
+                                                    <select
+                                                        value={calendar.taskPolicy || 'auto'}
+                                                        onChange={(event) => saveCalendarPolicy(calendar, { taskPolicy: event.target.value })}
+                                                    >
+                                                        {TASK_POLICY_OPTIONS.map((option) => (
+                                                            <option key={option.value} value={option.value}>{option.label}</option>
+                                                        ))}
+                                                    </select>
+                                                </label>
+                                                <label>
+                                                    <span>Default kind</span>
+                                                    <select
+                                                        value={calendar.defaultEntryKind || 'event'}
+                                                        onChange={(event) => saveCalendarPolicy(calendar, { defaultEntryKind: event.target.value })}
+                                                    >
+                                                        {ENTRY_KIND_OPTIONS.map((option) => (
+                                                            <option key={option.value} value={option.value}>{option.label}</option>
+                                                        ))}
+                                                    </select>
+                                                </label>
+                                                <label>
+                                                    <span>Group</span>
+                                                    <input
+                                                        value={calendar.displayGroup || ''}
+                                                        onChange={(event) => {
+                                                            const value = event.target.value;
+                                                            setCalendars(calendars.map(cal => (
+                                                                cal.id === calendar.id ? { ...cal, displayGroup: value } : cal
+                                                            )));
+                                                        }}
+                                                        onBlur={(event) => saveCalendarPolicy(calendar, { displayGroup: event.target.value })}
+                                                    />
+                                                </label>
+                                            </div>
+                                        </div>
                                     ))}
                                 </div>
                             )}

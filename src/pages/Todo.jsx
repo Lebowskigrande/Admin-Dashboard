@@ -5,10 +5,11 @@ import TodoAddForm from './todo/TodoAddForm';
 import TodoDetailPanel from './todo/TodoDetailPanel';
 import TodoListCard from './todo/TodoListCard';
 import { useTodoData } from './todo/useTodoData';
-import { getDueInfo } from './todo/todoHelpers';
+import { useEvents } from '../context/EventsContext';
 import './Todo.css';
 
 const Todo = () => {
+    const { refreshEvents } = useEvents();
     const {
         PRIORITY_OPTIONS,
         tasksLoading,
@@ -20,23 +21,14 @@ const Todo = () => {
         showCompleted,
         taskModalOpen,
         taskDraft,
-        taskNotesDraft,
         selectedOriginKey,
         selectedSectionKey,
-        selectedTaskId,
-        selectedTaskKey,
         selectedOrigin,
         selectedWorkPackage,
         selectedSection,
         selectedOriginTitle,
         selectedOriginSubtitle,
-        selectedTask,
         focusTask,
-        originLinks,
-        nestedExpanded,
-        nestedTasks,
-        nestedLoading,
-        originGroupMap,
         weekBuckets,
         setProjectName,
         setNewTask,
@@ -44,34 +36,22 @@ const Todo = () => {
         setShowCompleted,
         setTaskModalOpen,
         setTaskDraft,
-        setTaskNotesDraft,
         setSelectedOriginKey,
         setSelectedSectionKey,
         setSelectedTaskId,
+        reloadTasks,
         addTask,
         addTaskWithDetails,
         saveTaskDetails,
-        saveTaskNotes,
-        updateTaskProgress,
-        toggleTask,
-        getDisplayClass,
-        getDisplayLabel,
+        ensureTaskInProgress,
+        markTaskDone,
+        resetTaskState,
         getOriginLink,
         getOriginColorClass,
         formatOriginLabel,
-        formatOriginSubtitle,
-        getTopLevelTaskTitle,
-        getTaskNextStepLabel,
-        getTaskProgressMeta,
-        getListRepresentativeTask,
-        getListProgressDisplay,
-        getListChecklist,
         getWorkPackageTitle,
         getWorkPackageSubtitle,
         getWorkPackageSummary,
-        sortTasksForDetails,
-        formatTaskTitle,
-        handleToggleNested
     } = useTodoData();
     const [urgencyFilter, setUrgencyFilter] = useState('all');
 
@@ -90,6 +70,8 @@ const Todo = () => {
     const unifiedRows = useMemo(() => {
         const rowWithBucket = (row, bucket) => ({ ...row, bucket });
         return [
+            ...weekBuckets.overdue.map((row) => rowWithBucket(row, 'overdue')),
+            ...weekBuckets.today.map((row) => rowWithBucket(row, 'today')),
             ...weekBuckets.thisWeek.map((row) => rowWithBucket(row, 'this_week')),
             ...weekBuckets.nextWeek.map((row) => rowWithBucket(row, 'next_week')),
             ...weekBuckets.later.map((row) => rowWithBucket(row, 'later'))
@@ -98,21 +80,17 @@ const Todo = () => {
 
     const filteredRows = useMemo(() => {
         if (urgencyFilter === 'all') return unifiedRows;
+        if (urgencyFilter === 'overdue') return unifiedRows.filter((row) => row.bucket === 'overdue');
+        if (urgencyFilter === 'today') return unifiedRows.filter((row) => row.bucket === 'today');
         if (urgencyFilter === 'this_week') return unifiedRows.filter((row) => row.bucket === 'this_week');
         if (urgencyFilter === 'next_week') return unifiedRows.filter((row) => row.bucket === 'next_week');
         if (urgencyFilter === 'later') return unifiedRows.filter((row) => row.bucket === 'later');
-        if (urgencyFilter === 'overdue') {
-            return unifiedRows.filter((row) => getDueInfo(row.task)?.rank === 0);
-        }
-        if (urgencyFilter === 'today') {
-            return unifiedRows.filter((row) => getDueInfo(row.task)?.rank === 1);
-        }
         return unifiedRows;
     }, [unifiedRows, urgencyFilter]);
 
     const dashboardCounts = useMemo(() => {
-        const overdue = unifiedRows.filter((row) => getDueInfo(row.task)?.rank === 0).length;
-        const today = unifiedRows.filter((row) => getDueInfo(row.task)?.rank === 1).length;
+        const overdue = unifiedRows.filter((row) => row.bucket === 'overdue').length;
+        const today = unifiedRows.filter((row) => row.bucket === 'today').length;
         const open = unifiedRows.length;
         const doneThisWeek = taskList.filter((task) => {
             if (!task?.completed_at) return false;
@@ -207,9 +185,6 @@ const Todo = () => {
                         getWorkPackageSubtitle={getWorkPackageSubtitle}
                         getWorkPackageSummary={getWorkPackageSummary}
                         getOriginColorClass={getOriginColorClass}
-                        getDisplayClass={getDisplayClass}
-                        getDisplayLabel={getDisplayLabel}
-                        toggleTask={toggleTask}
                     />
                 </div>
                 <TodoDetailPanel
@@ -222,9 +197,13 @@ const Todo = () => {
                     focusTask={focusTask}
                     setSelectedSectionKey={setSelectedSectionKey}
                     setSelectedTaskId={setSelectedTaskId}
-                    toggleTask={toggleTask}
+                    ensureTaskInProgress={ensureTaskInProgress}
+                    markTaskDone={markTaskDone}
+                    resetTaskState={resetTaskState}
                     getOriginColorClass={getOriginColorClass}
                     getOriginLink={getOriginLink}
+                    refreshEvents={refreshEvents}
+                    reloadTasks={reloadTasks}
                 />
             </div>
 

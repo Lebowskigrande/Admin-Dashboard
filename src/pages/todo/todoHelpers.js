@@ -1,6 +1,5 @@
 import { format, startOfWeek } from 'date-fns';
 import { getTaskProgressMeta } from '../../utils/taskProgress';
-import { getListKey, normalizeOriginKey } from '../../../shared/taskRollups.js';
 import {
     getTaskCycleLabel,
     getTaskCycleState,
@@ -42,10 +41,23 @@ export const toDateKey = (date) => {
     return `${year}-${month}-${day}`;
 };
 
+const parseLocalDateValue = (value) => {
+    if (!value) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+        const [year, month, day] = text.split('-').map(Number);
+        const parsed = new Date(year, month - 1, day);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    const parsed = new Date(text);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 export const getDueInfo = (task) => {
     if (!task?.due_at) return null;
-    const due = new Date(task.due_at);
-    if (Number.isNaN(due.getTime())) return null;
+    const due = parseLocalDateValue(task.due_at);
+    if (!due) return null;
     const today = new Date();
     const todayKey = toDateKey(today);
     const dueKey = toDateKey(due);
@@ -69,6 +81,99 @@ export const getDueInfo = (task) => {
         due
     };
 };
+
+const compareDueInfo = (a, b) => {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    const timeA = a.due?.getTime?.() ?? Number.POSITIVE_INFINITY;
+    const timeB = b.due?.getTime?.() ?? Number.POSITIVE_INFINITY;
+    return timeA - timeB;
+};
+
+const getEventDateDueInfo = (sample) => {
+    if (String(sample?.origin_type || '').toLowerCase() !== 'event' || !sample?.event_date) return null;
+    const due = parseDueDate(sample.event_date);
+    if (!due) return null;
+    const today = new Date();
+    const todayKey = toDateKey(today);
+    const dueKey = toDateKey(due);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(today.getDate() + 1);
+    const tomorrowKey = toDateKey(tomorrow);
+    if (dueKey < todayKey) {
+        return { rank: 0, label: 'Overdue', className: 'due-pill-overdue', due };
+    }
+    if (dueKey === todayKey) {
+        return { rank: 1, label: 'Today', className: 'due-pill-today', due };
+    }
+    if (dueKey === tomorrowKey) {
+        return { rank: 2, label: 'Tomorrow', className: 'due-pill-tomorrow', due };
+    }
+    return {
+        rank: 3,
+        label: `${format(due, 'MMM d')}`,
+        className: 'due-pill-future',
+        due
+    };
+};
+
+const classifyWeekBucket = (due) => {
+    if (!due) return 'later';
+    const today = new Date();
+    const weekStart = startOfWeek(today, { weekStartsOn: 1 });
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    const nextWeekStart = new Date(weekStart);
+    nextWeekStart.setDate(weekStart.getDate() + 7);
+    const nextWeekEnd = new Date(nextWeekStart);
+    nextWeekEnd.setDate(nextWeekStart.getDate() + 6);
+    const dueKey = toDateKey(due);
+    const todayKey = toDateKey(today);
+    if (dueKey < todayKey) return 'overdue';
+    if (dueKey === todayKey) return 'today';
+    if (due >= weekStart && due <= weekEnd) return 'this_week';
+    if (due >= nextWeekStart && due <= nextWeekEnd) return 'next_week';
+    return 'later';
+};
+
+const getListDueInfo = (list) => {
+    const tasks = Array.isArray(list?.tasks) ? list.tasks.filter((task) => task && !task.completed) : [];
+    const best = tasks
+        .map((task) => getDueInfo(task))
+        .filter(Boolean)
+        .sort(compareDueInfo)[0] || null;
+    return best;
+};
+
+export const getPackageDueInfo = (origin) => {
+    const sample = getOriginSample(origin);
+    const openTasks = Array.isArray(origin?.tasks) ? origin.tasks.filter((task) => task && !task.completed) : [];
+    const taskDue = openTasks
+        .map((task) => getDueInfo(task))
+        .filter(Boolean)
+        .sort(compareDueInfo)[0] || null;
+    const eventDue = getEventDateDueInfo(sample);
+    const dueInfo = compareDueInfo(taskDue, eventDue) <= 0 ? (taskDue || eventDue) : (eventDue || taskDue);
+    if (dueInfo) {
+        return {
+            ...dueInfo,
+            bucket: classifyWeekBucket(dueInfo.due)
+        };
+    }
+    return {
+        rank: 5,
+        label: 'Later',
+        className: 'due-pill-future',
+        due: null,
+        bucket: 'later'
+    };
+};
+
+function getOriginSample(originOrTask) {
+    return originOrTask?.sample || originOrTask || null;
+}
 
 export const isCriticalNoDue = (task) => {
     if (task?.due_at) return false;
@@ -133,10 +238,7 @@ export const compareTasksIgnoreState = (a, b) => {
 export const sortTasksForDetails = (tasks) => [...tasks].sort(compareTasksIgnoreState);
 
 export const parseDueDate = (value) => {
-    if (!value) return null;
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return null;
-    return parsed;
+    return parseLocalDateValue(value);
 };
 
 export const getListProgress = (tasks = []) => {
@@ -146,7 +248,9 @@ export const getListProgress = (tasks = []) => {
     const todayKey = toDateKey(new Date());
     const missed = tasks.filter((task) => {
         if (task.completed || !task.due_at) return false;
-        const dueKey = toDateKey(new Date(task.due_at));
+        const due = parseDueDate(task.due_at);
+        if (!due) return false;
+        const dueKey = toDateKey(due);
         return dueKey < todayKey;
     }).length;
     const warning = missed >= 2 ? 'Late' : missed >= 1 ? 'Behind' : '';
@@ -165,17 +269,11 @@ const getSimpleStatusRepresentativeTask = (tasks = []) => (
 const getAggregateSimpleStatusTask = (list) => {
     const tasks = Array.isArray(list?.tasks) ? list.tasks.filter(Boolean) : [];
     if (tasks.length <= 1) return null;
+    const baseTask = getSimpleStatusRepresentativeTask(tasks) || tasks[0];
     const latestCompletedTask = tasks
         .filter((task) => task?.completed_at)
         .sort((a, b) => String(b.completed_at || '').localeCompare(String(a.completed_at || '')))[0] || null;
-    const aggregateState = tasks.some((task) => getTaskCycleState(task) === 'done')
-        ? 'done'
-        : tasks.some((task) => getTaskCycleState(task) === 'in_progress')
-            ? 'in_progress'
-            : tasks.some((task) => getTaskCycleState(task) === 'blocked')
-                ? 'blocked'
-                : 'open';
-    const baseTask = getSimpleStatusRepresentativeTask(tasks) || tasks[0];
+    const aggregateState = getTaskCycleState(baseTask);
     return {
         ...baseTask,
         state: aggregateState,
@@ -464,8 +562,6 @@ export const formatOriginSubtitle = (task) => {
     return task.origin_id;
 };
 
-const getOriginSample = (originOrTask) => originOrTask?.sample || originOrTask || null;
-
 export const getWorkPackageTitle = (originOrTask) => {
     const sample = getOriginSample(originOrTask);
     if (!sample) return 'Work Package';
@@ -549,12 +645,16 @@ export const getWorkPackageSummary = (origin) => {
                 listTitle: list.title || getTopLevelTaskTitle(list, currentTask),
                 taskText: (currentTask || representativeTask)?.text || ''
             });
+            const listDueInfo = getListDueInfo(list);
             const effectiveTitle = presentation.title;
             const isDone = checklist.totalCount > 0 && checklist.completedCount >= checklist.totalCount;
+            const taskCycleState = getTaskCycleState(checklist.representativeTask || representativeTask);
             const status = checklist.mode === 'status'
-                ? getTaskCycleState(representativeTask)
+                ? taskCycleState
                 : (isDone
                     ? 'done'
+                    : taskCycleState === 'in_progress'
+                        ? 'in_progress'
                     : checklist.currentItem
                         ? 'current'
                         : (checklist.totalCount > 0 ? 'open' : 'done'));
@@ -580,7 +680,17 @@ export const getWorkPackageSummary = (origin) => {
                 currentTask,
                 actionTask,
                 status,
-                attention: getSectionAttention(currentTask || actionTask, status)
+                attention: listDueInfo?.rank === 0
+                    ? 'urgent'
+                    : listDueInfo?.rank === 1
+                        ? 'today'
+                        : getSectionAttention(currentTask || actionTask, status),
+                dueInfo: listDueInfo,
+                dueIndicator: listDueInfo?.rank === 0
+                    ? 'overdue'
+                    : listDueInfo?.rank === 1
+                        ? 'today'
+                        : ''
             };
         })
         .sort((a, b) => compareTasksIgnoreState(a.currentTask || a.actionTask || {}, b.currentTask || b.actionTask || {}));
@@ -617,6 +727,7 @@ export const getWorkPackageSummary = (origin) => {
         completedCount,
         progress: totalCount ? completedCount / totalCount : 0,
         primarySection,
+        dueInfo: getPackageDueInfo(origin),
         openSectionCount: normalizedSections.filter((section) => section.status !== 'done').length,
         doneSectionCount: normalizedSections.filter((section) => section.status === 'done').length
     };

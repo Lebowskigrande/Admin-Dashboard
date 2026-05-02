@@ -129,7 +129,7 @@ const toDateKey = (value) => {
     return date.toISOString().slice(0, 10);
 };
 
-const parseDateKeyLocal = (dateKey) => {
+const _parseDateKeyLocal = (dateKey) => {
     const match = String(dateKey || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!match) return new Date(dateKey);
     return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0);
@@ -624,7 +624,7 @@ const summarizePackages = (events = []) => {
     }).sort((a, b) => new Date(b.latestAt || 0).getTime() - new Date(a.latestAt || 0).getTime());
 };
 
-const getExpectedPackages = async () => {
+const _getExpectedPackages = async () => {
     const gmailClient = getGmailClient();
     if (!gmailClient?.gmail) {
         return {

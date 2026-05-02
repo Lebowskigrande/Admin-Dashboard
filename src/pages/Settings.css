@@ -96,6 +96,48 @@
     transition: background 0.2s, border-color 0.2s;
 }
 
+.calendar-policy-item {
+    align-items: stretch;
+    flex-direction: column;
+    cursor: default;
+}
+
+.calendar-policy-main {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    cursor: pointer;
+}
+
+.calendar-policy-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+    gap: var(--space-sm);
+    padding-left: 46px;
+}
+
+.calendar-policy-controls label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--color-text-secondary);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.calendar-policy-controls select,
+.calendar-policy-controls input {
+    min-height: 34px;
+    border: 1px solid rgba(15, 23, 42, 0.14);
+    border-radius: var(--radius-sm);
+    background: #fff;
+    color: var(--color-text-main);
+    font-size: 0.85rem;
+    font-weight: 500;
+    text-transform: none;
+}
+
 .calendar-item:hover {
     background: var(--list-hover-bg);
     border-color: var(--list-hover-border);

@@ -170,8 +170,186 @@ const TAG_TYPE_ALIASES = new Map([
     ['hgk', 'volunteer'],
     ['holy-ghost-kitchen', 'volunteer']
 ]);
+const VALID_ENTRY_KINDS = new Set([
+    'event',
+    'service',
+    'meeting',
+    'reminder',
+    'schedule',
+    'out_of_office',
+    'appointment',
+    'personal',
+    'resource_hold',
+    'deadline'
+]);
+const VALID_TASK_POLICIES = new Set(['auto', 'manual_only', 'never']);
+const TASK_ENABLED_ENTRY_KINDS = new Set(['event', 'service', 'meeting']);
 
-const extractEventTags = (value) => {
+const normalizeDirectiveValue = (value) => String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+
+const normalizeTaskPolicy = (value, fallback = 'auto') => {
+    const normalized = normalizeDirectiveValue(value);
+    if (normalized === 'none' || normalized === 'no') return 'never';
+    if (normalized === 'manual') return 'manual_only';
+    return VALID_TASK_POLICIES.has(normalized) ? normalized : fallback;
+};
+
+const normalizeEntryKind = (value, fallback = 'event') => {
+    const normalized = normalizeDirectiveValue(value);
+    return VALID_ENTRY_KINDS.has(normalized) ? normalized : fallback;
+};
+
+const parseDashboardDirectives = (value) => {
+    const directives = {};
+    if (!value) return directives;
+    const content = String(value);
+    const hashDirectiveRe = /(^|\s)#(dashboard|task|kind|type):([a-z0-9_-]+)/gi;
+    let match;
+    while ((match = hashDirectiveRe.exec(content)) !== null) {
+        directives[normalizeDirectiveValue(match[2])] = normalizeDirectiveValue(match[3]);
+    }
+
+    const blockMatch = content.match(/(?:^|\n)\s*Dashboard\s*:\s*\n([\s\S]*?)(?=\n\s*\S[^:\n]*\s*:\s*\n|\n{2,}|$)/i);
+    if (blockMatch) {
+        blockMatch[1]
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .forEach((line) => {
+                const pair = line.match(/^([a-z0-9 _-]+)\s*:\s*(.+)$/i);
+                if (!pair) return;
+                directives[normalizeDirectiveValue(pair[1])] = normalizeDirectiveValue(pair[2]);
+            });
+    }
+
+    return directives;
+};
+
+const getCalendarPolicy = (row = {}) => ({
+    calendarRole: normalizeDirectiveValue(row.calendar_role || row.calendarRole || 'work') || 'work',
+    importMode: normalizeDirectiveValue(row.import_mode || row.importMode || 'classify') || 'classify',
+    taskPolicy: normalizeTaskPolicy(row.task_policy || row.taskPolicy || 'auto', 'auto'),
+    displayGroup: String(row.display_group || row.displayGroup || 'Work').trim() || 'Work',
+    defaultEntryKind: normalizeEntryKind(row.default_entry_kind || row.defaultEntryKind || 'event', 'event')
+});
+
+const addDaysKey = (dateKey, days) => {
+    const [year, month, day] = String(dateKey || '').split('-').map(Number);
+    if (!year || !month || !day) return '';
+    const date = new Date(Date.UTC(year, month - 1, day));
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+};
+
+const enumerateAllDayDates = (startDate, endDate) => {
+    if (!startDate) return [];
+    const dates = [];
+    const exclusiveEnd = endDate && endDate > startDate ? endDate : addDaysKey(startDate, 1);
+    let cursor = startDate;
+    let guard = 0;
+    while (cursor && cursor < exclusiveEnd && guard < 370) {
+        dates.push(cursor);
+        cursor = addDaysKey(cursor, 1);
+        guard += 1;
+    }
+    return dates.length ? dates : [startDate];
+};
+
+const classifyGoogleCalendarEntry = ({ googleEvent, calendarPolicy, directives, date, time, endDate, categorization }) => {
+    const title = String(googleEvent?.summary || '').trim();
+    const content = `${title}\n${googleEvent?.description || ''}`.toLowerCase();
+    const policy = getCalendarPolicy(calendarPolicy);
+    let entryKind = policy.defaultEntryKind;
+    const reasons = [];
+
+    if (policy.calendarRole === 'personal') {
+        entryKind = 'personal';
+        reasons.push('calendar-role-personal');
+    }
+    if (policy.calendarRole === 'resource') {
+        entryKind = 'resource_hold';
+        reasons.push('calendar-role-resource');
+    }
+    if (policy.calendarRole === 'staff_schedule') {
+        entryKind = 'schedule';
+        reasons.push('calendar-role-staff-schedule');
+    }
+
+    const isAllDay = !time;
+    const isMultiDay = Boolean(isAllDay && endDate && endDate > date && addDaysKey(date, 1) !== endDate);
+    if (/\b(out of office|ooo|pto|vacation|away)\b/i.test(content)) {
+        entryKind = 'out_of_office';
+        reasons.push('out-of-office-keyword');
+    } else if (isMultiDay && /\b(out|off|away|travel|conference|retreat)\b/i.test(content)) {
+        entryKind = 'schedule';
+        reasons.push('multi-day-schedule');
+    } else if (/\b(reminder|remember to)\b/i.test(content)) {
+        entryKind = 'reminder';
+        reasons.push('reminder-keyword');
+    } else if (/\b(deadline|due)\b/i.test(content)) {
+        entryKind = 'deadline';
+        reasons.push('deadline-keyword');
+    } else if (/\b(doctor|dr\.|dentist|appointment)\b/i.test(content)) {
+        entryKind = policy.calendarRole === 'personal' ? 'appointment' : entryKind;
+        reasons.push('appointment-keyword');
+    } else if (['weekly-service', 'rite-i-service', 'rite-ii-service', 'eucharist-service', 'special-service'].includes(categorization?.type_slug)) {
+        entryKind = 'service';
+        reasons.push('service-type');
+    } else if (categorization?.type_slug === 'meeting') {
+        entryKind = 'meeting';
+        reasons.push('meeting-type');
+    }
+
+    if (directives.kind) {
+        entryKind = normalizeEntryKind(directives.kind, entryKind);
+        reasons.push('directive-kind');
+    }
+    if (directives.dashboard) {
+        const dashboardValue = normalizeDirectiveValue(directives.dashboard);
+        if (dashboardValue === 'personal') entryKind = 'personal';
+        if (dashboardValue === 'schedule') entryKind = 'schedule';
+        if (dashboardValue === 'reminder') entryKind = 'reminder';
+        if (dashboardValue === 'ignore') reasons.push('directive-ignore');
+        reasons.push('directive-dashboard');
+    }
+
+    const directiveTaskPolicy = directives.task ? normalizeTaskPolicy(directives.task, '') : '';
+    let taskPolicy = policy.taskPolicy;
+    if (directiveTaskPolicy && policy.calendarRole !== 'personal') {
+        taskPolicy = directiveTaskPolicy;
+        reasons.push('directive-task');
+    }
+    if (policy.importMode === 'reference_only' || policy.calendarRole === 'personal') {
+        taskPolicy = 'never';
+        reasons.push(policy.importMode === 'reference_only' ? 'reference-only-calendar' : 'personal-calendar');
+    }
+    if (['personal', 'schedule', 'out_of_office', 'resource_hold'].includes(entryKind)) {
+        taskPolicy = 'never';
+        reasons.push(`${entryKind}-no-auto-task`);
+    }
+    if (entryKind === 'reminder' || entryKind === 'deadline') {
+        taskPolicy = taskPolicy === 'auto' ? 'manual_only' : taskPolicy;
+        reasons.push('lightweight-entry-manual-task');
+    }
+
+    return {
+        entryKind,
+        taskPolicy,
+        importMode: policy.importMode,
+        calendarRole: policy.calendarRole,
+        displayGroup: policy.displayGroup,
+        shouldImport: policy.importMode !== 'ignore' && normalizeDirectiveValue(directives.dashboard) !== 'ignore',
+        shouldAutoSeedTasks: policy.importMode === 'classify'
+            && taskPolicy === 'auto'
+            && TASK_ENABLED_ENTRY_KINDS.has(entryKind),
+        reasons
+    };
+};
+
+export const extractEventTags = (value) => {
     const tags = {
         hashtags: [],
         locations: []
@@ -196,7 +374,7 @@ const extractEventTags = (value) => {
     return tags;
 };
 
-const getLocationContext = () => {
+export const getLocationContext = () => {
     const buildings = sqlite.prepare('SELECT id, name FROM buildings').all();
     const rooms = sqlite.prepare('SELECT id, name, building_id FROM rooms').all();
     const buildingBySlug = new Map();
@@ -216,7 +394,7 @@ const getLocationContext = () => {
     return { buildings, rooms, buildingBySlug, roomBySlug };
 };
 
-const findEventTypeFromTags = (hashtags, eventTypes) => {
+export const findEventTypeFromTags = (hashtags, eventTypes) => {
     if (!hashtags?.length) return null;
     for (const tag of hashtags) {
         const match = eventTypes.find((type) => type.slug === tag || toSlug(type.name) === tag);
@@ -259,7 +437,7 @@ const BUILDING_ID_ALIASES = new Map([
     ['parking-south', 'parking-south']
 ]);
 
-const normalizeBuildingId = (value, locationContext = null) => {
+export const normalizeBuildingId = (value, locationContext = null) => {
     if (!value) return null;
     const slug = toSlug(value);
     if (!slug) return null;
@@ -287,7 +465,7 @@ const parseNotesWithText = (value) => {
 
 // tableExists, isSundayDate moved to helpers
 
-const resolveLocation = ({ locationTags, eventLocation, locationContext, textContent = '', typeSlug = '' }) => {
+export const resolveLocation = ({ locationTags, eventLocation, locationContext, textContent = '', typeSlug = '' }) => {
     if (locationTags?.length) {
         for (const tag of locationTags) {
             if (locationContext.roomBySlug.has(tag)) {
@@ -353,7 +531,7 @@ const resolveLocation = ({ locationTags, eventLocation, locationContext, textCon
     return { roomId: null, buildingId: null, source: null };
 };
 
-const updateOccurrenceLinks = (occurrenceId, { buildingId, roomId, source, tag }) => {
+export const updateOccurrenceLinks = (occurrenceId, { buildingId, roomId, source, tag }) => {
     if (!occurrenceId) return;
     if (!tableExists('entity_links')) return;
     sqlite.prepare(`
@@ -444,9 +622,14 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
 
     // Get selected calendars
     const selectedCalendars = sqlite.prepare(`
-        SELECT calendar_id FROM calendar_links
+        SELECT calendar_id, calendar_role, import_mode, task_policy, display_group, default_entry_kind
+        FROM calendar_links
         WHERE user_id = ? AND selected = 1
     `).all(userId);
+    const calendarPolicies = new Map(selectedCalendars.map((calendar) => [
+        calendar.calendar_id,
+        getCalendarPolicy(calendar)
+    ]));
     const calendarIds = selectedCalendars.length > 0
         ? selectedCalendars.map(c => c.calendar_id)
         : ['primary'];
@@ -457,7 +640,8 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
     for (const calId of calendarIds) {
         try {
             const events = await fetchFn(tokens, calId, { timeMin: windowStart, timeMax: windowEnd });
-            allEvents.push(...events.map((event) => ({ ...event, _calendarId: calId })));
+            const policy = calendarPolicies.get(calId) || getCalendarPolicy({});
+            allEvents.push(...events.map((event) => ({ ...event, _calendarId: calId, _calendarPolicy: policy })));
         } catch (error) {
             console.error(`Failed to fetch calendar ${calId}:`, error);
         }
@@ -472,44 +656,51 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
         if (event?.status === 'cancelled') {
             continue;
         }
-        let date, time, endTime;
+        let date, time, endTime, endDate;
+        const occurrenceDates = [];
         if (event.start?.dateTime) {
             const d = new Date(event.start.dateTime);
             date = dateFormatter.format(d);
             time = timeFormatter.format(d);
             if (event.end?.dateTime) {
-                const endDate = new Date(event.end.dateTime);
-                endTime = timeFormatter.format(endDate);
+                const endDateTime = new Date(event.end.dateTime);
+                endTime = timeFormatter.format(endDateTime);
             }
+            occurrenceDates.push(date);
         } else if (event.start?.date) {
             // All-day event: use the date string directly to avoid timezone/DST shifts
             date = event.start.date;
             time = '';
             endTime = null;
+            endDate = event.end?.date || addDaysKey(date, 1);
+            occurrenceDates.push(...enumerateAllDayDates(date, endDate));
         } else {
             continue;
         }
 
-        const canonicalKey = `${event.iCalUID || event.id || 'unknown'}|${date}|${time || 'all-day'}`;
-        const score = [
-            event.summary,
-            event.description,
-            event.location,
-            event.organizer?.email
-        ].filter(Boolean).length;
-        const existing = canonicalEvents.get(canonicalKey);
-        if (!existing || score > existing.score) {
-            canonicalEvents.set(canonicalKey, {
-                event,
-                date,
-                time,
-                endTime,
-                score
-            });
-        }
+        occurrenceDates.forEach((occurrenceDate) => {
+            const canonicalKey = `${event.iCalUID || event.id || 'unknown'}|${occurrenceDate}|${time || 'all-day'}`;
+            const score = [
+                event.summary,
+                event.description,
+                event.location,
+                event.organizer?.email
+            ].filter(Boolean).length;
+            const existing = canonicalEvents.get(canonicalKey);
+            if (!existing || score > existing.score) {
+                canonicalEvents.set(canonicalKey, {
+                    event,
+                    date: occurrenceDate,
+                    time,
+                    endTime,
+                    endDate,
+                    score
+                });
+            }
+        });
     }
 
-    for (const { event, date, time, endTime } of canonicalEvents.values()) {
+    for (const { event, date, time, endTime, endDate } of canonicalEvents.values()) {
         const calendarId = event._calendarId || event.organizer?.email || 'primary';
         const instanceId = event.id;
         if (!instanceId) continue;
@@ -517,7 +708,16 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
         const title = (event.summary || 'Untitled').replace(/\s+/g, ' ').trim();
         const description = event.description || '';
         const tagSource = `${title}\n${description}`;
+        const globalId = event.iCalUID || event.id;
+        const normalizedTime = time || '';
         const tags = extractEventTags(tagSource);
+        const directives = parseDashboardDirectives(tagSource);
+        if (directives.type) {
+            const typeTag = toSlug(directives.type);
+            if (typeTag && !tags.hashtags.includes(typeTag)) {
+                tags.hashtags.unshift(typeTag);
+            }
+        }
         if (!tags.hashtags.length && /\bvestry\b/i.test(title)) {
             tags.hashtags.push('vestry');
         }
@@ -528,12 +728,27 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
         const categorization = taggedType
             ? buildCategorization(taggedType, categories)
             : categorizeGoogleEvent(event, categories, eventTypes);
+        const calendarPolicy = getCalendarPolicy(event._calendarPolicy || {});
+        const entryClassification = classifyGoogleCalendarEntry({
+            googleEvent: event,
+            calendarPolicy,
+            directives,
+            date,
+            time: normalizedTime,
+            endDate,
+            categorization
+        });
+        if (!entryClassification.shouldImport) {
+            continue;
+        }
 
-        const globalId = event.iCalUID || event.id;
-        const normalizedTime = time || '';
         const isCanonicalSundayService = ['weekly-service', 'rite-i-service', 'rite-ii-service'].includes(categorization.type_slug);
 
-        if (isCanonicalSundayService && isSundayDate(date)) {
+        if (isCanonicalSundayService
+            && isSundayDate(date)
+            && entryClassification.entryKind === 'service'
+            && entryClassification.importMode === 'classify'
+            && entryClassification.calendarRole !== 'personal') {
             const timeValue = normalizedTime || null;
             const existing = timeValue
                 ? sqlite.prepare(`
@@ -602,7 +817,7 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
 
         const eventSeriesKey = `${calendarId}:${globalId}`;
         const eventId = `google-${hashId(eventSeriesKey)}`;
-        const occurrenceKey = `${calendarId}:${instanceId}`;
+        const occurrenceKey = `${calendarId}:${instanceId}:${date}:${normalizedTime || 'all-day'}`;
         const occurrenceId = `occ-${hashId(occurrenceKey)}`;
         const now = new Date().toISOString();
         const locationInfo = resolveLocation({
@@ -625,7 +840,19 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
                 iCalUid: event.iCalUID || null,
                 calendarId,
                 updated: event.updated || null,
-                status: event.status || null
+                status: event.status || null,
+                endDate: endDate || null
+            },
+            calendar: {
+                role: entryClassification.calendarRole,
+                displayGroup: entryClassification.displayGroup,
+                taskPolicy: entryClassification.taskPolicy,
+                importMode: entryClassification.importMode
+            },
+            classification: {
+                entryKind: entryClassification.entryKind,
+                taskPolicy: entryClassification.taskPolicy,
+                reasons: entryClassification.reasons
             },
             tags: {
                 ...(existingNotes.tags || {}),
@@ -651,7 +878,13 @@ export const syncGoogleEvents = async (fetchFn, { userId, tokens, onOccurrence, 
             JSON.stringify({
                 externalId: globalId,
                 calendarId,
-                iCalUid: event.iCalUID || null
+                iCalUid: event.iCalUID || null,
+                entryKind: entryClassification.entryKind,
+                taskPolicy: entryClassification.taskPolicy,
+                calendarRole: entryClassification.calendarRole,
+                displayGroup: entryClassification.displayGroup,
+                importMode: entryClassification.importMode,
+                classificationReasons: entryClassification.reasons
             }),
             now,
             now

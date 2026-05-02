@@ -44,7 +44,12 @@ export const calendarLinks = sqliteTable('calendar_links', {
     id: text('id').primaryKey(),
     userId: text('user_id').notNull(),
     calendarId: text('calendar_id').notNull(),
-    selected: integer('selected').notNull().default(0)
+    selected: integer('selected').notNull().default(0),
+    calendarRole: text('calendar_role').notNull().default('work'),
+    importMode: text('import_mode').notNull().default('classify'),
+    taskPolicy: text('task_policy').notNull().default('auto'),
+    displayGroup: text('display_group').notNull().default('Work'),
+    defaultEntryKind: text('default_entry_kind').notNull().default('event')
 });
 
 export const people = sqliteTable('people', {
@@ -257,6 +262,17 @@ export const taskProgressHistory = sqliteTable('task_progress_history', {
     createdAt: text('created_at').notNull()
 });
 
+export const taskSeedSuppressions = sqliteTable('task_seed_suppressions', {
+    id: text('id').primaryKey(),
+    generationKey: text('generation_key').notNull().unique(),
+    originType: text('origin_type'),
+    originId: text('origin_id'),
+    originEvent: text('origin_event'),
+    taskTitle: text('task_title'),
+    suppressedAt: text('suppressed_at').notNull(),
+    suppressedBy: text('suppressed_by')
+});
+
 export const entityLinks = sqliteTable('entity_links', {
     id: text('id').primaryKey(),
     fromType: text('from_type').notNull(),
@@ -289,6 +305,7 @@ export const recurringTaskTemplates = sqliteTable('recurring_task_templates', {
     title: text('title').notNull(),
     sortOrder: integer('sort_order').notNull().default(0),
     dueOffsetDays: integer('due_offset_days'),
+    behaviorNotes: text('behavior_notes'),
     anchorMonthdays: text('anchor_monthdays'),
     scheduleRule: text('schedule_rule'),
     priorityBase: integer('priority_base').notNull().default(50),

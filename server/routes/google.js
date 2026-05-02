@@ -23,6 +23,63 @@ import { seedEventTasksForOccurrence } from '../services/taskEngine.js';
 const router = express.Router();
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 
+const CALENDAR_ROLES = new Set(['work', 'personal', 'staff_schedule', 'resource', 'reference']);
+const IMPORT_MODES = new Set(['classify', 'reference_only', 'ignore']);
+const TASK_POLICIES = new Set(['auto', 'manual_only', 'never']);
+const ENTRY_KINDS = new Set([
+    'event',
+    'service',
+    'meeting',
+    'reminder',
+    'schedule',
+    'out_of_office',
+    'appointment',
+    'personal',
+    'resource_hold',
+    'deadline'
+]);
+
+const normalizeChoice = (value, allowed, fallback) => {
+    const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    return allowed.has(normalized) ? normalized : fallback;
+};
+
+const normalizeDisplayGroup = (value, fallback = 'Work') => {
+    const clean = String(value || '').replace(/\s+/g, ' ').trim();
+    return clean || fallback;
+};
+
+const inferCalendarDefaults = (calendar = {}) => {
+    const summary = String(calendar.summary || '').toLowerCase();
+    if (summary.includes('personal') || summary.includes('family') || summary.includes('appointments')) {
+        return {
+            calendarRole: 'personal',
+            importMode: 'reference_only',
+            taskPolicy: 'never',
+            displayGroup: 'Personal',
+            defaultEntryKind: 'personal'
+        };
+    }
+    return {
+        calendarRole: 'work',
+        importMode: 'classify',
+        taskPolicy: 'auto',
+        displayGroup: 'Work',
+        defaultEntryKind: 'event'
+    };
+};
+
+const buildCalendarPolicy = (input = {}, fallback = {}) => {
+    const fallbackGroup = fallback.displayGroup || (fallback.calendarRole === 'personal' ? 'Personal' : 'Work');
+    return {
+        calendarRole: normalizeChoice(input.calendarRole ?? input.calendar_role ?? fallback.calendarRole, CALENDAR_ROLES, fallback.calendarRole || 'work'),
+        importMode: normalizeChoice(input.importMode ?? input.import_mode ?? fallback.importMode, IMPORT_MODES, fallback.importMode || 'classify'),
+        taskPolicy: normalizeChoice(input.taskPolicy ?? input.task_policy ?? fallback.taskPolicy, TASK_POLICIES, fallback.taskPolicy || 'auto'),
+        displayGroup: normalizeDisplayGroup(input.displayGroup ?? input.display_group ?? fallback.displayGroup, fallbackGroup),
+        defaultEntryKind: normalizeChoice(input.defaultEntryKind ?? input.default_entry_kind ?? fallback.defaultEntryKind, ENTRY_KINDS, fallback.defaultEntryKind || 'event')
+    };
+};
+
 const fetchGoogleProfile = async (tokens) => {
     const oauth2 = google.oauth2('v2');
     const response = await oauth2.userinfo.get({ access_token: tokens.access_token });
@@ -126,9 +183,12 @@ router.get('/api/google/calendars', requireAuth, async (req, res) => {
             expiry_date: tokens.expiry_date
         });
 
-        const selectedIds = db.prepare(`
-            SELECT calendar_id FROM calendar_links WHERE user_id = ? AND selected = 1
-        `).all(req.user.id).map(c => c.calendar_id);
+        const linkRows = db.prepare(`
+            SELECT calendar_id, selected, calendar_role, import_mode, task_policy, display_group, default_entry_kind
+            FROM calendar_links
+            WHERE user_id = ?
+        `).all(req.user.id);
+        const linksById = new Map(linkRows.map((row) => [row.calendar_id, row]));
 
         const upsertCalendar = db.prepare(`
             INSERT INTO calendars (id, summary, background_color, time_zone)
@@ -148,12 +208,18 @@ router.get('/api/google/calendars', requireAuth, async (req, res) => {
             );
         });
 
-        const calendarsWithSelection = calendars.map(cal => ({
-            id: cal.id,
-            summary: cal.summary,
-            backgroundColor: cal.backgroundColor,
-            selected: selectedIds.includes(cal.id)
-        }));
+        const calendarsWithSelection = calendars.map(cal => {
+            const existing = linksById.get(cal.id);
+            const defaults = inferCalendarDefaults(cal);
+            const policy = buildCalendarPolicy(existing || {}, defaults);
+            return {
+                id: cal.id,
+                summary: cal.summary,
+                backgroundColor: cal.backgroundColor,
+                selected: !!existing?.selected,
+                ...policy
+            };
+        });
 
         res.json(calendarsWithSelection);
     } catch (error) {
@@ -169,14 +235,39 @@ router.post('/api/google/calendars/select', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'calendarId is required' });
         }
         const linkId = `link-${req.user.id}-${calendarId}`;
+        const existing = db.prepare(`
+            SELECT calendar_role, import_mode, task_policy, display_group, default_entry_kind
+            FROM calendar_links
+            WHERE id = ?
+            LIMIT 1
+        `).get(linkId);
+        const policy = buildCalendarPolicy(req.body || {}, existing || {});
 
         db.prepare(`
-            INSERT INTO calendar_links (id, user_id, calendar_id, selected)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET selected = excluded.selected
-        `).run(linkId, req.user.id, calendarId, selected ? 1 : 0);
+            INSERT INTO calendar_links (
+                id, user_id, calendar_id, selected,
+                calendar_role, import_mode, task_policy, display_group, default_entry_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                selected = excluded.selected,
+                calendar_role = excluded.calendar_role,
+                import_mode = excluded.import_mode,
+                task_policy = excluded.task_policy,
+                display_group = excluded.display_group,
+                default_entry_kind = excluded.default_entry_kind
+        `).run(
+            linkId,
+            req.user.id,
+            calendarId,
+            selected ? 1 : 0,
+            policy.calendarRole,
+            policy.importMode,
+            policy.taskPolicy,
+            policy.displayGroup,
+            policy.defaultEntryKind
+        );
 
-        res.json({ success: true });
+        res.json({ success: true, policy });
     } catch (error) {
         console.error('Error updating calendar selection:', error);
         res.status(500).json({ error: 'Failed to update selection' });

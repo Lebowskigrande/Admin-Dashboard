@@ -1,6 +1,19 @@
 import { sqlite as db } from '../db.js';
 import { tableExists, parseJsonField } from './db-utils.js';
 
+const parseDateValue = (value) => {
+    if (!value) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+        const [year, month, day] = text.split('-').map(Number);
+        const parsed = new Date(year, month - 1, day);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+    const parsed = new Date(text);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 export const clampPriority = (value) => {
     if (!Number.isFinite(value)) return 0;
     return Math.min(100, Math.max(0, Math.round(value)));
@@ -22,6 +35,7 @@ export const sortTasksByPriority = (tasks) => {
         blocked: 2,
         done: 3
     };
+    const parseSortDate = (value) => parseDateValue(value)?.getTime() ?? Number.POSITIVE_INFINITY;
     return [...tasks].sort((a, b) => {
         const stateA = stateOrder[a.state] ?? 99;
         const stateB = stateOrder[b.state] ?? 99;
@@ -32,8 +46,8 @@ export const sortTasksByPriority = (tasks) => {
         if (a.priority_effective !== b.priority_effective) {
             return b.priority_effective - a.priority_effective;
         }
-        const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-        const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+        const dueA = parseSortDate(a.due_at);
+        const dueB = parseSortDate(b.due_at);
         if (dueA !== dueB) return dueA - dueB;
         const createdA = a.created_at ? new Date(a.created_at).getTime() : 0;
         const createdB = b.created_at ? new Date(b.created_at).getTime() : 0;
@@ -43,10 +57,7 @@ export const sortTasksByPriority = (tasks) => {
 
 export const getDueDate = (dueAt, slaTargetAt) => {
     const raw = dueAt || slaTargetAt;
-    if (!raw) return null;
-    const date = new Date(raw);
-    if (Number.isNaN(date.getTime())) return null;
-    return date;
+    return parseDateValue(raw);
 };
 
 export const getUrgencyAdjustment = (dueAt, slaTargetAt, now = new Date()) => {

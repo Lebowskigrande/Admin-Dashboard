@@ -142,6 +142,17 @@ const ensureRuntimeTables = () => {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS task_seed_suppressions (
+            id TEXT PRIMARY KEY,
+            generation_key TEXT NOT NULL UNIQUE,
+            origin_type TEXT,
+            origin_id TEXT,
+            origin_event TEXT,
+            task_title TEXT,
+            suppressed_at TEXT NOT NULL,
+            suppressed_by TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_routing_attempts_created_at ON routing_attempts(created_at);
         CREATE INDEX IF NOT EXISTS idx_routing_attempts_job_id ON routing_attempts(job_id);
         CREATE INDEX IF NOT EXISTS idx_budget_scan_sources_enabled ON budget_scan_sources(enabled);
@@ -149,6 +160,8 @@ const ensureRuntimeTables = () => {
             ON task_progress_history(task_instance_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_task_progress_history_created_at
             ON task_progress_history(created_at);
+        CREATE INDEX IF NOT EXISTS idx_task_seed_suppressions_origin
+            ON task_seed_suppressions(origin_type, origin_id, origin_event);
 
         CREATE TABLE IF NOT EXISTS purchase_orders (
             id TEXT PRIMARY KEY,
@@ -238,9 +251,34 @@ const ensureRecurringTaskTemplateColumns = () => {
     if (!columnSet.has('anchor_monthdays')) {
         sqlite.exec('ALTER TABLE recurring_task_templates ADD COLUMN anchor_monthdays TEXT');
     }
+    if (!columnSet.has('behavior_notes')) {
+        sqlite.exec('ALTER TABLE recurring_task_templates ADD COLUMN behavior_notes TEXT');
+    }
     if (!columnSet.has('schedule_rule')) {
         sqlite.exec('ALTER TABLE recurring_task_templates ADD COLUMN schedule_rule TEXT');
     }
+};
+
+const ensureCalendarPolicyColumns = () => {
+    const table = sqlite.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calendar_links'
+    `).get();
+    if (!table) return;
+
+    const columns = sqlite.prepare('PRAGMA table_info(calendar_links)').all().map((col) => col.name);
+    const columnSet = new Set(columns);
+    const addColumn = (name, definition) => {
+        if (!columnSet.has(name)) {
+            sqlite.exec(`ALTER TABLE calendar_links ADD COLUMN ${name} ${definition}`);
+            columnSet.add(name);
+        }
+    };
+
+    addColumn('calendar_role', "TEXT NOT NULL DEFAULT 'work'");
+    addColumn('import_mode', "TEXT NOT NULL DEFAULT 'classify'");
+    addColumn('task_policy', "TEXT NOT NULL DEFAULT 'auto'");
+    addColumn('display_group', "TEXT NOT NULL DEFAULT 'Work'");
+    addColumn('default_entry_kind', "TEXT NOT NULL DEFAULT 'event'");
 };
 
 const seedVestryChecklist = () => {
@@ -413,6 +451,7 @@ export const initializeDatabaseRuntime = () => {
     ensureRuntimeTables();
     ensureSharefileJobEventsColumns();
     ensureRecurringTaskTemplateColumns();
+    ensureCalendarPolicyColumns();
     ensurePeopleColumns();
     ensureTicketColumns();
     ensureOrdersModule();

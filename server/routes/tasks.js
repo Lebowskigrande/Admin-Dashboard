@@ -631,7 +631,7 @@ router.delete('/tasks/:id', (req, res) => {
         }
         return res.json({ success: true });
     }
-    const ok = deleteTaskInstance(id);
+    const ok = deleteTaskInstance(id, { suppressSeed: true, suppressedBy: 'api-delete-task' });
     if (!ok) {
         return res.status(404).json({ error: 'Task not found' });
     }
@@ -788,7 +788,7 @@ router.delete('/task-origins', (req, res) => {
         [originType, originId]
     );
     tasks.forEach((task) => {
-        deleteTaskInstance(task.id);
+        deleteTaskInstance(task.id, { suppressSeed: true, suppressedBy: 'api-delete-origin' });
     });
     res.json({ success: true });
 });
@@ -953,6 +953,7 @@ router.post('/recurring-templates', (req, res) => {
         title,
         sort_order = 0,
         due_offset_days = null,
+        behavior_notes = null,
         priority_base = 50,
         active = 1
     } = req.body || {};
@@ -964,9 +965,9 @@ router.post('/recurring-templates', (req, res) => {
     db.prepare(`
         INSERT INTO recurring_task_templates (
             id, origin_type, origin_id, list_key, list_title, list_mode,
-            step_key, title, sort_order, due_offset_days,
+            step_key, title, sort_order, due_offset_days, behavior_notes,
             priority_base, active, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         id,
         origin_type,
@@ -978,6 +979,7 @@ router.post('/recurring-templates', (req, res) => {
         title,
         Number(sort_order) || 0,
         due_offset_days != null ? Number(due_offset_days) : null,
+        behavior_notes != null ? String(behavior_notes).trim() : null,
         Number(priority_base) || 50,
         active ? 1 : 0,
         now,
@@ -999,6 +1001,7 @@ router.put('/recurring-templates/:id', (req, res) => {
         title = existing.title,
         sort_order = existing.sort_order,
         due_offset_days = existing.due_offset_days,
+        behavior_notes = existing.behavior_notes,
         priority_base = existing.priority_base,
         active = existing.active,
         step_key = existing.step_key,
@@ -1015,6 +1018,7 @@ router.put('/recurring-templates/:id', (req, res) => {
             list_mode = ?,
             sort_order = ?,
             due_offset_days = ?,
+            behavior_notes = ?,
             priority_base = ?,
             active = ?,
             updated_at = ?
@@ -1027,6 +1031,7 @@ router.put('/recurring-templates/:id', (req, res) => {
         list_mode || 'sequential',
         Number(sort_order) || 0,
         due_offset_days != null ? Number(due_offset_days) : null,
+        behavior_notes != null ? String(behavior_notes).trim() : null,
         Number(priority_base) || 50,
         active ? 1 : 0,
         new Date().toISOString(),

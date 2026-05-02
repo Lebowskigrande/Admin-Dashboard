@@ -9,6 +9,17 @@ const derivePriorityTier = (score) => {
     return 'Someday';
 };
 
+const parseSortDate = (value) => {
+    if (!value) return Number.POSITIVE_INFINITY;
+    const text = String(value).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+        const [year, month, day] = text.split('-').map(Number);
+        return new Date(year, month - 1, day).getTime();
+    }
+    const parsed = new Date(text);
+    return Number.isNaN(parsed.getTime()) ? Number.POSITIVE_INFINITY : parsed.getTime();
+};
+
 const defaultSortTasks = (tasks = []) => [...tasks].sort((a, b) => {
     const rankA = a?.rank == null ? Number.POSITIVE_INFINITY : Number(a.rank);
     const rankB = b?.rank == null ? Number.POSITIVE_INFINITY : Number(b.rank);
@@ -16,8 +27,8 @@ const defaultSortTasks = (tasks = []) => [...tasks].sort((a, b) => {
     const priorityA = Number(a?.priority_effective || 0);
     const priorityB = Number(b?.priority_effective || 0);
     if (priorityA !== priorityB) return priorityB - priorityA;
-    const dueA = a?.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-    const dueB = b?.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+    const dueA = parseSortDate(a?.due_at);
+    const dueB = parseSortDate(b?.due_at);
     return dueA - dueB;
 });
 
@@ -30,8 +41,8 @@ const compareSequencedTasks = (a, b) => {
     const orderB = b?.step_order == null ? Number.POSITIVE_INFINITY : Number(b.step_order);
     if (orderA !== orderB) return orderA - orderB;
 
-    const dueA = a?.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY;
-    const dueB = b?.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY;
+    const dueA = parseSortDate(a?.due_at);
+    const dueB = parseSortDate(b?.due_at);
     if (dueA !== dueB) return dueA - dueB;
 
     return Number(b?.priority_effective || 0) - Number(a?.priority_effective || 0);

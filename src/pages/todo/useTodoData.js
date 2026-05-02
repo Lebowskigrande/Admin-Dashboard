@@ -27,6 +27,7 @@ import {
     getWorkPackageTitle,
     getWorkPackageSubtitle,
     getWorkPackageSummary,
+    getPackageDueInfo,
     getOriginColorClass,
     getDueInfo
 } from './todoHelpers';
@@ -256,16 +257,22 @@ export const useTodoData = () => {
 
         const normalizedMailMeta = Object.fromEntries(
             Object.entries(mailGroups).map(([originId, tasks]) => {
+                const representativeTask = [...tasks].sort((a, b) => {
+                    const order = {
+                        in_progress: 0,
+                        open: 1,
+                        blocked: 2,
+                        done: 3
+                    };
+                    const aState = order[getTaskCycleState(a)] ?? 99;
+                    const bState = order[getTaskCycleState(b)] ?? 99;
+                    if (aState !== bState) return aState - bState;
+                    return String(a?.due_at || '').localeCompare(String(b?.due_at || ''));
+                })[0] || null;
                 const latestCompleted = tasks
                     .filter((task) => task?.completed_at)
                     .sort((a, b) => String(b.completed_at || '').localeCompare(String(a.completed_at || '')))[0] || null;
-                const state = tasks.some((task) => getTaskCycleState(task) === 'done')
-                    ? 'done'
-                    : tasks.some((task) => getTaskCycleState(task) === 'in_progress')
-                        ? 'in_progress'
-                        : tasks.some((task) => getTaskCycleState(task) === 'blocked')
-                            ? 'blocked'
-                            : 'open';
+                const state = getTaskCycleState(representativeTask);
                 return [originId, {
                     state,
                     completedAt: state === 'done' ? (latestCompleted?.completed_at || null) : null
@@ -348,8 +355,20 @@ export const useTodoData = () => {
             originKey: group.key,
             origin: group,
             task: group.nextTask || group.sample || null,
+            packageDueInfo: getPackageDueInfo(group),
             isComplete: group.openCount === 0
-        }));
+        })).sort((a, b) => {
+            const rankA = a.packageDueInfo?.rank ?? Number.POSITIVE_INFINITY;
+            const rankB = b.packageDueInfo?.rank ?? Number.POSITIVE_INFINITY;
+            if (rankA !== rankB) return rankA - rankB;
+            const dueA = a.packageDueInfo?.due?.getTime?.() ?? Number.POSITIVE_INFINITY;
+            const dueB = b.packageDueInfo?.due?.getTime?.() ?? Number.POSITIVE_INFINITY;
+            if (dueA !== dueB) return dueA - dueB;
+            const priorityA = Number(a.task?.priority_effective || 0);
+            const priorityB = Number(b.task?.priority_effective || 0);
+            if (priorityA !== priorityB) return priorityB - priorityA;
+            return String(a.originKey || '').localeCompare(String(b.originKey || ''));
+        });
     }, [visibleOriginGroups]);
 
     const visibleTaskRows = useMemo(() => (
@@ -364,20 +383,22 @@ export const useTodoData = () => {
         const nextWeekEnd = endOfWeek(nextWeekStart, { weekStartsOn: 1 });
 
         const bucketed = {
+            overdue: [],
+            today: [],
             thisWeek: [],
             nextWeek: [],
             later: []
         };
 
         visibleTaskRows.forEach((row) => {
-            const due = row.task?.due_at ? parseDueDate(row.task.due_at) : null;
-            if (!due) {
-                bucketed.later.push(row);
-                return;
-            }
-            if (isWithinInterval(due, { start: weekStart, end: weekEnd })) {
+            const bucket = row.packageDueInfo?.bucket || 'later';
+            if (bucket === 'overdue') {
+                bucketed.overdue.push(row);
+            } else if (bucket === 'today') {
+                bucketed.today.push(row);
+            } else if (bucket === 'this_week') {
                 bucketed.thisWeek.push(row);
-            } else if (isWithinInterval(due, { start: nextWeekStart, end: nextWeekEnd })) {
+            } else if (bucket === 'next_week') {
                 bucketed.nextWeek.push(row);
             } else {
                 bucketed.later.push(row);
@@ -601,15 +622,24 @@ export const useTodoData = () => {
         }
     };
 
+    const ensureTaskInProgress = async (task) => {
+        if (!task) return;
+        if (getTaskCycleState(task) === 'done' || getTaskCycleState(task) === 'in_progress') return;
+        await updateTaskState(task, 'in_progress');
+    };
+
+    const markTaskDone = async (task) => {
+        if (!task) return;
+        await updateTaskState(task, 'done');
+    };
+
+    const resetTaskState = async (task) => {
+        if (!task) return;
+        await updateTaskState(task, 'open');
+    };
+
     const toggleTask = async (task) => {
         if (!task) return;
-        if (Array.isArray(task.group_tasks) && task.group_tasks.length > 0) {
-            const nextState = getNextTaskCycleState(task);
-            for (const groupTask of task.group_tasks) {
-                await updateTaskState(groupTask, nextState);
-            }
-            return;
-        }
         if (isSimpleStatusListKey(task.list_key)) {
             await updateTaskState(task, getNextTaskCycleState(task));
             return;
@@ -715,11 +745,16 @@ export const useTodoData = () => {
         setNestedExpanded,
         setNestedTasks,
         setNestedLoading,
+        reloadTasks: loadAllTasks,
         addTask,
         addTaskWithDetails,
         saveTaskDetails,
         saveTaskNotes,
         updateTaskProgress,
+        updateTaskState,
+        ensureTaskInProgress,
+        markTaskDone,
+        resetTaskState,
         toggleTask,
         openTaskModal,
         getDisplayClass,

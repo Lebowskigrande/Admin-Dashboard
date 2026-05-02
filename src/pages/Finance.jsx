@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FaEdit, FaTrash } from 'react-icons/fa';
 import Card from '../components/Card';
 import DataPill from '../components/DataPill';
@@ -8,49 +8,13 @@ import { API_URL } from '../services/apiConfig';
 import { formatCurrency } from '../utils/formatters';
 import './Finance.css';
 
-const MIN_DEPOSIT_ROWS = 18;
 const AP_ROUTE_KIND_OPTIONS = [
     { value: 'BILL', label: 'Invoice (BILL)' },
     { value: 'DB', label: 'Debit (DB)' },
     { value: 'EFT', label: 'Electronic Transfer (EFT)' },
     { value: 'CHECK', label: 'Check (Check)' }
 ];
-
-const createCheckRow = () => ({
-    id: globalThis.crypto?.randomUUID?.() || `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    checkNumber: '',
-    amount: '',
-    budget: ''
-});
-
-const createChecks = (count = MIN_DEPOSIT_ROWS) => Array.from({ length: count }, () => createCheckRow());
-
-const DEPOSIT_STORAGE_KEY = 'deposit-slip-checks';
 const ROUTING_LOG_REFRESH_MS = 30 * 1000;
-
-const normalizeStorageAmount = (value) => {
-    if (value == null) return '';
-    const trimmed = String(value).trim();
-    if (!trimmed) return '';
-    const numeric = Number(trimmed);
-    if (!Number.isFinite(numeric)) return '';
-    return numeric.toFixed(2);
-};
-
-
-
-const formatDateStamp = (date = new Date()) => {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}.${month}.${day}`;
-};
-
-const buildDepositFilename = (total) => {
-    const numeric = Number(total);
-    const amount = Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00';
-    return `${formatDateStamp()} Deposit $${amount}.pdf`;
-};
 
 const normalizeAmountInput = (value) => {
     const trimmed = String(value ?? '').trim();
@@ -58,12 +22,6 @@ const normalizeAmountInput = (value) => {
     const numeric = Number(trimmed);
     if (!Number.isFinite(numeric)) return '';
     return numeric.toFixed(2);
-};
-
-const buildPayloadAmount = (value) => {
-    const normalized = normalizeAmountInput(value);
-    if (!normalized) return '';
-    return `$${normalized}`;
 };
 
 const normalizeApRouteKind = (value) => {
@@ -77,39 +35,6 @@ const normalizeApRouteKind = (value) => {
 const getApRouteKindLabel = (value) => (
     AP_ROUTE_KIND_OPTIONS.find((option) => option.value === normalizeApRouteKind(value))?.label || 'Invoice (BILL)'
 );
-
-const loadSavedChecks = () => {
-    if (typeof window === 'undefined') return null;
-    const stored = window.localStorage.getItem(DEPOSIT_STORAGE_KEY);
-    if (!stored) return null;
-    try {
-        const parsed = JSON.parse(stored);
-        if (!Array.isArray(parsed)) return null;
-        return parsed;
-    } catch {
-        return null;
-    }
-};
-
-const normalizeSavedCheck = (savedEntry) => ({
-    ...createCheckRow(),
-    checkNumber: savedEntry?.checkNumber != null ? String(savedEntry.checkNumber) : '',
-    amount: normalizeStorageAmount(savedEntry?.amount) || '',
-    budget: savedEntry?.budget != null ? String(savedEntry.budget) : ''
-});
-
-const buildInitialChecks = () => {
-    const saved = loadSavedChecks();
-    if (!Array.isArray(saved) || saved.length === 0) {
-        return createChecks();
-    }
-    const normalized = saved.map((entry) => normalizeSavedCheck(entry));
-    const targetLength = Math.max(MIN_DEPOSIT_ROWS, normalized.length);
-    return [
-        ...normalized,
-        ...createChecks(Math.max(0, targetLength - normalized.length))
-    ];
-};
 
 const formatDateKey = (date = new Date()) => {
     const year = date.getFullYear();
@@ -152,23 +77,6 @@ const formatLogTime = (isoValue) => {
 };
 
 const Finance = () => {
-    const [checks, setChecks] = useState(() => buildInitialChecks());
-    const [slipBusy, setSlipBusy] = useState(false);
-    const [slipError, setSlipError] = useState('');
-    const [saveMessage, setSaveMessage] = useState('');
-    const [previewModal, setPreviewModal] = useState({
-        open: false,
-        url: '',
-        fileId: ''
-    });
-    const [previewNotice, setPreviewNotice] = useState('');
-    const [previewError, setPreviewError] = useState('');
-    const [previewActionBusy, setPreviewActionBusy] = useState({ save: false, print: false });
-    const [depositSlipFileId, setDepositSlipFileId] = useState('');
-    const saveMessageTimeoutRef = useRef(null);
-    const [checksPdfFile, setChecksPdfFile] = useState(null);
-    const [cashPdfFile, setCashPdfFile] = useState(null);
-    const [uploadResetKey, setUploadResetKey] = useState(0);
     const [apDate, setApDate] = useState(() => formatDateKey(new Date()));
     const [arDate, setArDate] = useState(() => formatDateKey(new Date()));
     const [apLog, setApLog] = useState({ loading: false, error: '', notice: '', entries: [], revealBusyKey: '', designationBusyKey: '', attachBusyKey: '' });
@@ -193,297 +101,6 @@ const Finance = () => {
 
     const getRoutingDateForType = (logType) => (logType === 'ap' ? apDateRef.current : arDateRef.current);
     const isCurrentRoutingDate = (logType, dateKey) => getRoutingDateForType(logType) === dateKey;
-
-    const updateCheck = (index, field, value) => {
-        setChecks((prev) => {
-            const next = [...prev];
-            next[index] = { ...next[index], [field]: value };
-            return next;
-        });
-        if (depositSlipFileId) {
-            setDepositSlipFileId('');
-        }
-    };
-
-    const addCheckRow = () => {
-        setChecks((prev) => [...prev, createCheckRow()]);
-        if (depositSlipFileId) {
-            setDepositSlipFileId('');
-        }
-    };
-
-    const removeCheckRow = (index) => {
-        setChecks((prev) => {
-            if (prev.length <= MIN_DEPOSIT_ROWS || index < MIN_DEPOSIT_ROWS) return prev;
-            return prev.filter((_, rowIndex) => rowIndex !== index);
-        });
-        if (depositSlipFileId) {
-            setDepositSlipFileId('');
-        }
-    };
-
-    const handleSaveDepositData = () => {
-        if (typeof window === 'undefined') {
-            setSaveMessage('Unable to save deposit data.');
-            return;
-        }
-        try {
-            window.localStorage.setItem(DEPOSIT_STORAGE_KEY, JSON.stringify(checks));
-            setSaveMessage('Deposit data saved locally.');
-        } catch (error) {
-            console.error('Failed to save deposit data:', error);
-            setSaveMessage('Unable to save deposit data.');
-        } finally {
-            if (saveMessageTimeoutRef.current) {
-                clearTimeout(saveMessageTimeoutRef.current);
-            }
-            saveMessageTimeoutRef.current = window.setTimeout(() => {
-                setSaveMessage('');
-                saveMessageTimeoutRef.current = null;
-            }, 4000);
-        }
-    };
-
-    const handleBuildDepositPacket = async () => {
-        if (!checksPdfFile) {
-            setSlipError('Upload the checks PDF.');
-            return;
-        }
-        setSlipError('');
-        setPreviewError('');
-        setPreviewNotice('');
-        setSlipBusy(true);
-        try {
-            let slipFileId = depositSlipFileId;
-            if (!slipFileId) {
-                slipFileId = await requestDepositSlipFile();
-                setDepositSlipFileId(slipFileId);
-            }
-            const formData = new FormData();
-            formData.append('checksPdf', checksPdfFile);
-            formData.append('cashPdf', cashPdfFile);
-            formData.append('slipFileId', slipFileId);
-            const payloadChecks = checks.map((entry) => ({
-                checkNumber: entry.checkNumber || '',
-                amount: buildPayloadAmount(entry.amount)
-            }));
-            formData.append('checks', JSON.stringify(payloadChecks));
-            formData.append('totals', JSON.stringify({
-                cash: cashTotal,
-                subtotal: overallTotal,
-                total: overallTotal
-            }));
-            formData.append('fundsReport', JSON.stringify({
-                entries: fundsReportEntries
-            }));
-            const response = await fetch(`${API_URL}/deposit-slip/pdf`, {
-                method: 'POST',
-                body: formData
-            });
-            if (!response.ok) throw new Error('Failed to build deposit packet');
-            const data = await response.json();
-            if (!data?.fileId) throw new Error('Missing PDF data');
-            setPreviewModal({
-                open: true,
-                url: buildPreviewUrl(data.fileId),
-                fileId: data.fileId
-            });
-        } catch (error) {
-            console.error('Deposit packet error:', error);
-            setSlipError('Unable to build the deposit packet with the uploaded PDFs.');
-        } finally {
-            setSlipBusy(false);
-        }
-    };
-
-    useEffect(() => () => {
-        if (saveMessageTimeoutRef.current) {
-            clearTimeout(saveMessageTimeoutRef.current);
-        }
-    }, []);
-
-    const budgetTotals = useMemo(() => {
-        return checks.reduce((acc, check) => {
-            const budget = String(check.budget || '').trim();
-            const amount = Number(check.amount);
-            if (!budget || Number.isNaN(amount)) return acc;
-            acc[budget] = (acc[budget] || 0) + amount;
-            return acc;
-        }, {});
-    }, [checks]);
-
-    const fundsReportEntries = useMemo(() => {
-        return Object.entries(budgetTotals)
-            .map(([code, total]) => ({ code, amount: total }))
-            .sort((a, b) => a.code.localeCompare(b.code));
-    }, [budgetTotals]);
-
-    const cashTotal = useMemo(() => {
-        return checks.reduce((sum, check) => {
-            const hasCheck = String(check.checkNumber || '').trim();
-            const amount = Number(check.amount);
-            if (Number.isNaN(amount) || amount <= 0) return sum;
-            if (hasCheck) return sum;
-            return sum + amount;
-        }, 0);
-    }, [checks]);
-
-    const overallTotal = useMemo(() => {
-        return checks.reduce((sum, check) => {
-            const amount = Number(check.amount);
-            if (Number.isNaN(amount)) return sum;
-            return sum + amount;
-        }, 0);
-    }, [checks]);
-
-    const buildPreviewUrl = (fileId) => `${API_URL}/deposit-slip/file/${fileId}`;
-
-    const requestDepositSlipFile = async () => {
-        const payloadChecks = checks.map((entry) => ({
-            checkNumber: entry.checkNumber || '',
-            amount: buildPayloadAmount(entry.amount)
-        }));
-        const response = await fetch(`${API_URL}/deposit-slip/manual`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                checks: payloadChecks,
-                totals: {
-                    cash: cashTotal,
-                    subtotal: overallTotal,
-                    total: overallTotal
-                },
-                fundsReport: {
-                    entries: fundsReportEntries
-                }
-            })
-        });
-        if (!response.ok) throw new Error('Failed to build deposit slip');
-        const data = await response.json();
-        if (!data?.fileId) throw new Error('Missing PDF file');
-        return data.fileId;
-    };
-
-    const handleGenerateDepositSlip = async () => {
-        setSlipError('');
-        setPreviewError('');
-        setPreviewNotice('');
-        setSlipBusy(true);
-        try {
-            const fileId = depositSlipFileId || await requestDepositSlipFile();
-            if (!depositSlipFileId) {
-                setDepositSlipFileId(fileId);
-            }
-            setPreviewModal({
-                open: true,
-                url: buildPreviewUrl(fileId),
-                fileId
-            });
-        } catch (error) {
-            console.error('Deposit slip error:', error);
-            setSlipError('Unable to generate deposit slip with the provided entries.');
-        } finally {
-            setSlipBusy(false);
-        }
-    };
-
-    const closePreviewModal = () => {
-        setPreviewModal({ open: false, url: '', fileId: '' });
-        setPreviewNotice('');
-        setPreviewError('');
-        setPreviewActionBusy({ save: false, print: false });
-    };
-
-    const handleSaveSlip = async () => {
-        if (!previewModal.fileId) return;
-        setPreviewError('');
-        setPreviewNotice('');
-        setPreviewActionBusy((prev) => ({ ...prev, save: true }));
-        const filename = buildDepositFilename(overallTotal);
-        try {
-            const response = await fetch(buildPreviewUrl(previewModal.fileId));
-            if (!response.ok) throw new Error('Unable to load deposit slip.');
-            const blob = await response.blob();
-            if (window?.showSaveFilePicker) {
-                const handle = await window.showSaveFilePicker({
-                    suggestedName: filename,
-                    types: [
-                        {
-                            description: 'PDF',
-                            accept: { 'application/pdf': ['.pdf'] }
-                        }
-                    ]
-                });
-                const writable = await handle.createWritable();
-                await writable.write(blob);
-                await writable.close();
-                setPreviewNotice('Deposit slip saved.');
-                return;
-            }
-            const url = URL.createObjectURL(blob);
-            const anchor = document.createElement('a');
-            anchor.href = url;
-            anchor.download = filename;
-            anchor.click();
-            URL.revokeObjectURL(url);
-            setPreviewNotice('Deposit slip saved.');
-        } catch (error) {
-            console.error('Deposit slip save error:', error);
-            setPreviewError('Unable to save the deposit slip.');
-        } finally {
-            setPreviewActionBusy((prev) => ({ ...prev, save: false }));
-        }
-    };
-
-    const handlePrintSlip = async () => {
-        if (!previewModal.fileId) return;
-        setPreviewError('');
-        setPreviewNotice('');
-        setPreviewActionBusy((prev) => ({ ...prev, print: true }));
-        try {
-            const response = await fetch(`${API_URL}/deposit-slip/print-file`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ fileId: previewModal.fileId })
-            });
-            if (!response.ok) {
-                throw new Error('Unable to print the deposit slip.');
-            }
-            setPreviewNotice('Sent to printer.');
-        } catch (error) {
-            console.error('Deposit slip print error:', error);
-            setPreviewError(error?.message || 'Unable to print the deposit slip.');
-        } finally {
-            setPreviewActionBusy((prev) => ({ ...prev, print: false }));
-        }
-    };
-
-    const handleClearDepositForm = async () => {
-        setChecks(createChecks());
-        setChecksPdfFile(null);
-        setCashPdfFile(null);
-        setUploadResetKey((value) => value + 1);
-        setSlipError('');
-        setPreviewError('');
-        setPreviewNotice('');
-        if (typeof window !== 'undefined') {
-            try {
-                window.localStorage.removeItem(DEPOSIT_STORAGE_KEY);
-            } catch {
-                // ignore
-            }
-        }
-        const idsToDelete = new Set([depositSlipFileId, previewModal.fileId].filter(Boolean));
-        if (idsToDelete.size > 0) {
-            await Promise.all(
-                Array.from(idsToDelete).map((fileId) => (
-                    fetch(`${API_URL}/deposit-slip/file/${fileId}`, { method: 'DELETE' }).catch(() => { })
-                ))
-            );
-        }
-        setDepositSlipFileId('');
-        setPreviewModal({ open: false, url: '', fileId: '' });
-    };
 
     const todayKey = formatDateKey(new Date());
 
@@ -1276,4 +893,3 @@ const Finance = () => {
 };
 
 export default Finance;
-

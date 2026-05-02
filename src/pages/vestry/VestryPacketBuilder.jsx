@@ -23,8 +23,7 @@ const VestryPacketBuilder = ({
     updatePacketItem,
     removeCustomDoc,
     handlePacketFileUpload,
-    reorderPacketItems,
-    hasPacketFile
+    reorderPacketItems
 }) => {
     const [draggedId, setDraggedId] = useState(null);
     const [dragOverId, setDragOverId] = useState(null);
