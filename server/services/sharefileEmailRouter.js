@@ -4,6 +4,7 @@ import { join, extname, dirname, resolve, basename } from 'path';
 import { mkdir, writeFile, rm, readFile, stat, copyFile, unlink, access, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { PDFDocument, StandardFonts, rgb, PDFName, PDFString, PDFArray } from 'pdf-lib';
+import pdf from 'pdf-parse';
 import { chromium } from 'playwright';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -575,6 +576,49 @@ const extractApAmountFromText = (text) => {
         .filter((amount) => amount != null && amount > 0 && amount < 100000);
     if (!generalMatches.length) return '';
     return Math.max(...generalMatches).toFixed(2);
+};
+
+const extractApAmountFromPdfBytes = async (pdfBytes) => {
+    const buffer = Buffer.isBuffer(pdfBytes) ? pdfBytes : Buffer.from(pdfBytes || '');
+    if (!buffer.length) return '';
+    try {
+        const parsed = await pdf(buffer);
+        const text = compactWhitespace(parsed?.text || '');
+        const amount = extractApAmountFromText(text);
+        if (amount) return normalizeCurrencyAmount(amount);
+    } catch {
+        // Fall back to raw bytes below when text extraction is unavailable.
+    }
+    const rawText = compactWhitespace(buffer.toString('latin1'));
+    return normalizeCurrencyAmount(extractApAmountFromText(rawText));
+};
+
+export const analyzeSharefilePdf = async ({
+    pdfBytes,
+    sourcePdfPath = '',
+    routeKind = 'BILL'
+} = {}) => {
+    const buffer = Buffer.isBuffer(pdfBytes) ? pdfBytes : Buffer.from(pdfBytes || '');
+    const normalizedRouteKind = normalizeRouteKind(routeKind);
+    if (!buffer.length || normalizedRouteKind === 'CONTRIBUTION') {
+        return {
+            routeKind: normalizedRouteKind,
+            vendor: '',
+            vendorFound: false,
+            vendorConfidence: 0,
+            amount: ''
+        };
+    }
+
+    const vendorMeta = await resolveApVendor(buffer, { sourcePdfPath });
+    const amount = await extractApAmountFromPdfBytes(buffer);
+    return {
+        routeKind: normalizedRouteKind,
+        vendor: sanitizeApVendorToken(vendorMeta?.vendor || ''),
+        vendorFound: Boolean(vendorMeta?.vendor),
+        vendorConfidence: Number(vendorMeta?.confidence || 0) || 0,
+        amount
+    };
 };
 
 const saveRoutedPdfOutput = async ({
@@ -2614,5 +2658,177 @@ export const routeSharefileMessage = async ({
         throw error;
     } finally {
         await rm(tempDir, { recursive: true, force: true });
+    }
+};
+
+export const routeSharefilePdf = async ({
+    pdfBytes,
+    sourcePdfPath = '',
+    originalFilename = '',
+    rootPath,
+    extraMeta = {}
+} = {}) => {
+    const normalizedCodeType = 'budget';
+    const normalizedCodeValue = String(extraMeta?.codeValue || '').trim();
+    if (!normalizedCodeValue) {
+        throw new Error('PDF routing requires a budget code');
+    }
+
+    const normalizedRouteKind = normalizeRouteKind(extraMeta?.routeKind || 'BILL');
+    if (normalizedRouteKind === 'CONTRIBUTION') {
+        throw new Error('Direct PDF routing currently supports AP invoices only');
+    }
+
+    const buffer = Buffer.isBuffer(pdfBytes) ? pdfBytes : Buffer.from(pdfBytes || '');
+    if (!buffer.length) {
+        throw new Error('Missing PDF bytes');
+    }
+
+    const analysis = await analyzeSharefilePdf({
+        pdfBytes: buffer,
+        sourcePdfPath,
+        routeKind: normalizedRouteKind
+    });
+    const apAmount = normalizeCurrencyAmount(extraMeta?.amount || analysis.amount || '');
+    const preferredVendor = sanitizeApVendorToken(extraMeta?.vendor || '') || analysis.vendor || '';
+    const noteText = buildNoteText({}, {
+        ...extraMeta,
+        codeType: normalizedCodeType,
+        codeValue: normalizedCodeValue,
+        routeKind: normalizedRouteKind,
+        vendor: preferredVendor,
+        amount: apAmount
+    });
+    const resolvedRoot = rootPath || buildTargetDir({
+        codeType: normalizedCodeType,
+        codeValue: normalizedCodeValue,
+        clientTs: extraMeta.clientTs
+    });
+    const messageId = `manual-pdf-${randomUUID()}`;
+    const threadId = null;
+
+    await mkdir(resolvedRoot, { recursive: true });
+    await syncLocalMirrorFromCanonical(normalizedCodeType).catch(() => ({ ok: false }));
+    const tempDir = join(tmpdir(), `sharefile-pdf-${randomUUID()}`);
+    await mkdir(tempDir, { recursive: true });
+
+    let attemptId = '';
+    try {
+        const attempt = startRoutingAttempt({
+            jobId: null,
+            messageId,
+            threadId,
+            codeType: normalizedCodeType,
+            codeValue: normalizedCodeValue,
+            source: 'manual-pdf'
+        });
+        attemptId = String(attempt?.id || '').trim();
+
+        const canonicalSync = { published: 0, failed: 0, lastError: '' };
+        const syncOutputToCanonical = async (localPath) => {
+            const result = await publishLocalFileToCanonical({
+                codeType: normalizedCodeType,
+                localPath
+            });
+            if (result?.ok) {
+                canonicalSync.published += 1;
+                return;
+            }
+            canonicalSync.failed += 1;
+            canonicalSync.lastError = String(result?.reason || '').trim();
+        };
+
+        const routed = await saveRoutedPdfOutput({
+            pdfBytes: buffer,
+            sourcePdfPath,
+            routeKind: normalizedRouteKind,
+            filenameTimestamp: extraMeta?.clientTs ? new Date(extraMeta.clientTs) : new Date(),
+            targetDir: resolvedRoot,
+            donor: '',
+            amount: apAmount,
+            sourceToken: '',
+            noteText,
+            tempDir,
+            contextVendorFallback: preferredVendor,
+            apVendor: preferredVendor,
+            syncOutputToCanonical
+        });
+
+        const effectiveVendor = routed.apVendor || preferredVendor;
+        const output = {
+            targetDir: resolvedRoot,
+            files: [routed.file],
+            routing: {
+                routeKind: normalizedRouteKind,
+                vendor: effectiveVendor,
+                amount: apAmount,
+                vendorFound: Boolean(effectiveVendor),
+                noteText,
+                source: 'manual-pdf',
+                sourceFileName: String(originalFilename || basename(sourcePdfPath || '') || '').trim(),
+                canonicalPublishedCount: canonicalSync.published,
+                canonicalFailedCount: canonicalSync.failed,
+                canonicalLastError: canonicalSync.lastError || ''
+            }
+        };
+        const job = saveOrUpdateSharefileJob({
+            existingJobId: '',
+            messageId,
+            threadId,
+            codeType: normalizedCodeType,
+            codeValue: normalizedCodeValue,
+            output
+        });
+
+        recordSharefileRoutingEvent({
+            attemptId,
+            jobId: job?.id || null,
+            messageId,
+            threadId,
+            codeType: normalizedCodeType,
+            codeValue: normalizedCodeValue,
+            status: 'success',
+            output
+        });
+        completeRoutingAttempt({
+            attemptId,
+            jobId: job?.id || null,
+            status: 'success',
+            output,
+            writtenFiles: (Array.isArray(output?.files) ? output.files : [])
+                .map((entry) => String(entry?.path || '').trim())
+                .filter(Boolean)
+        });
+        return {
+            ok: true,
+            jobId: job?.id || '',
+            output,
+            analysis: {
+                vendor: effectiveVendor,
+                amount: apAmount,
+                vendorFound: Boolean(effectiveVendor),
+                vendorConfidence: Number(analysis.vendorConfidence || 0) || 0
+            }
+        };
+    } catch (error) {
+        recordSharefileRoutingEvent({
+            attemptId,
+            jobId: null,
+            messageId,
+            threadId,
+            codeType: normalizedCodeType,
+            codeValue: normalizedCodeValue,
+            status: 'failure',
+            errorText: error?.message || 'Failed to route PDF'
+        });
+        completeRoutingAttempt({
+            attemptId,
+            jobId: null,
+            status: 'failure',
+            errorText: error?.message || 'Failed to route PDF'
+        });
+        throw error;
+    } finally {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => { });
     }
 };

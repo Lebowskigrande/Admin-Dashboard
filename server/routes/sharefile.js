@@ -1,7 +1,10 @@
 import express from 'express';
+import multer from 'multer';
 import { google } from 'googleapis';
 import xlsx from 'xlsx';
 import { resolve } from 'path';
+import { readFile, rm } from 'fs/promises';
+import { tmpdir } from 'os';
 import { sqlite as db } from '../db.js';
 import {
     requireAuth,
@@ -16,10 +19,20 @@ import {
     getDefaultSharefileRoutingAccountUserId
 } from '../helpers/auth.js';
 import { loadBudgetCodes } from '../helpers/budget-utils.js';
-import { routeShareFileEmails, routeSharefileMessage, resolveSharefileMessageId, recordSharefileRoutingEvent } from '../services/sharefileEmailRouter.js';
+import {
+    routeShareFileEmails,
+    routeSharefileMessage,
+    resolveSharefileMessageId,
+    recordSharefileRoutingEvent,
+    analyzeSharefilePdf,
+    routeSharefilePdf
+} from '../services/sharefileEmailRouter.js';
 import { getAuthUrlWithRedirect, getTokensFromCodeWithRedirect, GOOGLE_SCOPES } from '../googleAuth.js';
 
 const router = express.Router();
+const pdfUpload = multer({
+    dest: `${tmpdir()}\\sharefile-pdf-uploads`
+});
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const SHAREFILE_REDIRECT_URI = process.env.SHAREFILE_GOOGLE_REDIRECT_URI
     || (process.env.GOOGLE_REDIRECT_URI
@@ -386,6 +399,65 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
             errorText: error?.message || 'Failed to route email'
         });
         res.status(500).json({ error: error?.message || 'Failed to route email' });
+    }
+});
+
+router.post('/api/sharefile/analyze-pdf', requireAuth, pdfUpload.single('file'), async (req, res) => {
+    const uploadPath = String(req.file?.path || '').trim();
+    try {
+        if (!uploadPath) {
+            return res.status(400).json({ ok: false, error: 'PDF file is required' });
+        }
+        const pdfBytes = await readFile(uploadPath);
+        const analysis = await analyzeSharefilePdf({
+            pdfBytes,
+            sourcePdfPath: uploadPath,
+            routeKind: String(req.body?.routeKind || 'BILL').trim() || 'BILL'
+        });
+        return res.json({ ok: true, analysis });
+    } catch (error) {
+        console.error('ShareFile analyze PDF error:', error);
+        return res.status(500).json({ ok: false, error: error?.message || 'Failed to analyze PDF' });
+    } finally {
+        if (uploadPath) {
+            await rm(uploadPath, { force: true }).catch(() => { });
+        }
+    }
+});
+
+router.post('/api/sharefile/route-pdf', requireAuth, pdfUpload.single('file'), async (req, res) => {
+    const uploadPath = String(req.file?.path || '').trim();
+    try {
+        const codeValue = String(req.body?.codeValue || '').trim();
+        if (!uploadPath) {
+            return res.status(400).json({ ok: false, error: 'PDF file is required' });
+        }
+        if (!codeValue) {
+            return res.status(400).json({ ok: false, error: 'Budget code is required' });
+        }
+
+        const pdfBytes = await readFile(uploadPath);
+        const result = await routeSharefilePdf({
+            pdfBytes,
+            sourcePdfPath: uploadPath,
+            originalFilename: String(req.file?.originalname || '').trim(),
+            extraMeta: {
+                codeType: 'budget',
+                codeValue,
+                routeKind: String(req.body?.routeKind || 'BILL').trim() || 'BILL',
+                vendor: String(req.body?.vendor || '').trim(),
+                amount: String(req.body?.amount || '').trim(),
+                clientTs: new Date().toISOString()
+            }
+        });
+        return res.json(result);
+    } catch (error) {
+        console.error('ShareFile route PDF error:', error);
+        return res.status(500).json({ ok: false, error: error?.message || 'Failed to route PDF' });
+    } finally {
+        if (uploadPath) {
+            await rm(uploadPath, { force: true }).catch(() => { });
+        }
     }
 });
 

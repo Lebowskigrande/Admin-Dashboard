@@ -9,6 +9,208 @@
     margin-bottom: var(--space-lg);
 }
 
+.pdf-routing-card {
+    margin-bottom: var(--space-lg);
+}
+
+.pdf-routing-card .card-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+.pdf-routing-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-md);
+}
+
+.pdf-routing-header h2 {
+    margin: 0;
+    font-size: 1.12rem;
+}
+
+.pdf-routing-header p {
+    margin: 0.35rem 0 0;
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+}
+
+.pdf-routing-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
+    gap: var(--space-md);
+    min-height: 460px;
+}
+
+.pdf-routing-preview {
+    min-height: 460px;
+    border: 1px solid #dbe4ee;
+    border-radius: 18px;
+    background:
+        linear-gradient(145deg, rgba(240, 249, 255, 0.92), rgba(255, 255, 255, 0.96)),
+        radial-gradient(circle at top left, rgba(14, 165, 233, 0.12), transparent 45%);
+    overflow: hidden;
+    position: relative;
+}
+
+.pdf-routing-preview.is-drag-active {
+    border-color: #0f766e;
+    box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.16);
+}
+
+.pdf-routing-preview.has-file {
+    background: #f8fafc;
+}
+
+.pdf-routing-preview-frame {
+    width: 100%;
+    height: 100%;
+    min-height: 460px;
+    border: 0;
+    background: #fff;
+}
+
+.pdf-routing-dropzone {
+    width: 100%;
+    height: 100%;
+    min-height: 460px;
+    border: 0;
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    color: #0f172a;
+    cursor: pointer;
+    text-align: center;
+    padding: 2rem;
+}
+
+.pdf-routing-dropzone strong {
+    font-size: 1.1rem;
+}
+
+.pdf-routing-dropzone span {
+    color: var(--color-text-secondary);
+}
+
+.pdf-routing-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+}
+
+.pdf-routing-file-meta {
+    padding: 0.85rem 1rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    background: #fff;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.pdf-routing-file-meta strong {
+    color: #0f172a;
+}
+
+.pdf-routing-file-meta span {
+    color: var(--color-text-secondary);
+    font-size: 0.85rem;
+}
+
+.pdf-routing-analysis {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.65rem;
+}
+
+.pdf-routing-analysis > div {
+    padding: 0.75rem 0.85rem;
+    border-radius: 14px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+
+.pdf-routing-analysis strong {
+    color: #0f172a;
+    font-size: 0.94rem;
+}
+
+.pdf-routing-analysis-label {
+    color: var(--color-text-secondary);
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.pdf-routing-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.pdf-routing-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #475569;
+}
+
+.pdf-routing-form input,
+.pdf-routing-form select {
+    width: 100%;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    padding: 0.55rem 0.7rem;
+    font: inherit;
+    color: #0f172a;
+    background: #fff;
+}
+
+.pdf-routing-actions {
+    display: flex;
+    gap: 0.6rem;
+}
+
+.pdf-routing-choose-button,
+.pdf-routing-primary-button,
+.pdf-routing-secondary-button {
+    border-radius: 999px;
+    padding: 0.5rem 0.95rem;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.pdf-routing-choose-button,
+.pdf-routing-secondary-button {
+    border: 1px solid #cbd5e1;
+    background: #fff;
+    color: #334155;
+}
+
+.pdf-routing-primary-button {
+    border: 1px solid #0f766e;
+    background: #0f766e;
+    color: #fff;
+}
+
+.pdf-routing-choose-button:disabled,
+.pdf-routing-primary-button:disabled,
+.pdf-routing-secondary-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .routing-log-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -582,6 +784,29 @@
     font-size: 0.78rem;
     font-weight: 600;
     cursor: pointer;
+}
+
+@media (max-width: 1080px) {
+    .pdf-routing-layout,
+    .routing-log-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .pdf-routing-analysis,
+    .pdf-routing-form {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 720px) {
+    .pdf-routing-header,
+    .finance-header {
+        flex-direction: column;
+    }
+
+    .pdf-routing-actions {
+        flex-direction: column;
+    }
 }
 
 .amount-input {

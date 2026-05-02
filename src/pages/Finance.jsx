@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FaEdit, FaTrash } from 'react-icons/fa';
 import Card from '../components/Card';
 import DataPill from '../components/DataPill';
+import PdfRoutingPanel from '../components/finance/PdfRoutingPanel';
 import DepositWorkspace from '../components/tasks/DepositWorkspace';
 import { API_URL } from '../services/apiConfig';
 import { formatCurrency } from '../utils/formatters';
@@ -899,6 +900,8 @@ const Finance = () => {
                 </div>
             </header>
 
+            <PdfRoutingPanel onRouted={() => loadRoutingLog('ap', apDateRef.current, setApLog)} />
+
             <div className="routing-log-grid">
                 <Card className="routing-log-card">
                     <div className="routing-log-header">
@@ -1273,3 +1276,4 @@ const Finance = () => {
 };
 
 export default Finance;
+
