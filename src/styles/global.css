@@ -144,14 +144,14 @@ button:active {
 
 button:focus-visible,
 a:focus-visible,
-input:focus-visible,
+input:not([type='checkbox']):not([type='radio']):focus-visible,
 select:focus-visible,
 textarea:focus-visible {
     outline: 2px solid rgba(37, 99, 235, 0.35);
     outline-offset: 2px;
 }
 
-input,
+input:not([type='checkbox']):not([type='radio']),
 select,
 textarea {
     font: inherit;
@@ -169,7 +169,7 @@ textarea {
         background var(--transition-fast);
 }
 
-input:hover,
+input:not([type='checkbox']):not([type='radio']):hover,
 select:hover,
 textarea:hover {
     border-color: var(--color-border-strong);
@@ -179,7 +179,7 @@ textarea:hover {
         0 0 0 1px rgba(37, 99, 235, 0.08);
 }
 
-input:focus,
+input:not([type='checkbox']):not([type='radio']):focus,
 select:focus,
 textarea:focus {
     outline: none;
@@ -195,11 +195,35 @@ textarea::placeholder {
     color: #94a3b8;
 }
 
-input,
+input:not([type='checkbox']):not([type='radio']),
 select:not([multiple]):not([size]),
 textarea {
     min-height: 42px;
     padding: 0.68rem 0.85rem;
+}
+
+input[type='checkbox'],
+input[type='radio'] {
+    min-height: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    transform: none;
+    accent-color: var(--color-primary);
+}
+
+input[type='checkbox']:hover,
+input[type='checkbox']:focus,
+input[type='checkbox']:focus-visible,
+input[type='radio']:hover,
+input[type='radio']:focus,
+input[type='radio']:focus-visible {
+    background: transparent;
+    box-shadow: none;
+    transform: none;
+    outline: none;
 }
 
 textarea {

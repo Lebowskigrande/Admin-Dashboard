@@ -1,0 +1,435 @@
+@import '../styles/people-shared.css';
+
+.liturgical-test-page {
+    gap: 18px;
+}
+
+.liturgical-test-toolbar-card,
+.liturgical-test-table-card {
+    padding: 0;
+}
+
+.liturgical-test-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 16px;
+}
+
+.liturgical-test-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 220px;
+}
+
+.liturgical-test-field span,
+.liturgical-test-team-strip > span {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+}
+
+.liturgical-test-checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 42px;
+    color: var(--color-text-main);
+}
+
+.liturgical-test-month {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.liturgical-test-month-header h2 {
+    margin: 0;
+}
+
+.liturgical-test-month-header p {
+    margin: 4px 0 0;
+    color: var(--color-text-secondary);
+}
+
+.liturgical-test-table-wrap {
+    overflow-x: auto;
+    overflow-y: visible;
+}
+
+.liturgical-test-month-table {
+    width: 100%;
+    min-width: 1280px;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 0.78rem;
+}
+
+.liturgical-test-month-table th,
+.liturgical-test-month-table td {
+    border: 1px solid rgba(15, 23, 42, 0.18);
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.liturgical-test-month-table thead th {
+    padding: 8px 6px;
+    background: #dbdbdb;
+    color: #111827;
+    text-align: center;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.liturgical-test-month-table tbody tr.is-week-a.is-primary-row td {
+    background: #eceff3;
+}
+
+.liturgical-test-month-table tbody tr.is-week-a.is-secondary-row td {
+    background: #f7f9fb;
+}
+
+.liturgical-test-month-table tbody tr.is-week-b.is-primary-row td {
+    background: #e3edf9;
+}
+
+.liturgical-test-month-table tbody tr.is-week-b.is-secondary-row td {
+    background: #f2f7fd;
+}
+
+.liturgical-test-month-table tbody tr.is-week-start td {
+    border-top-color: rgba(37, 99, 235, 0.34);
+    border-top-width: 2px;
+}
+
+.liturgical-test-service-cell,
+.liturgical-test-role-cell,
+.liturgical-test-reading-cell {
+    padding: 6px;
+}
+
+.liturgical-test-role-cell {
+    padding: 0;
+    position: relative;
+    cursor: pointer;
+}
+
+.liturgical-test-role-cell:hover,
+.liturgical-test-role-cell:focus-within {
+    box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.55);
+    outline: none;
+}
+
+.liturgical-test-day-badge-row {
+    margin-bottom: 4px;
+}
+
+.liturgical-test-service-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    overflow-wrap: anywhere;
+}
+
+.liturgical-test-service-date {
+    font-weight: 700;
+    color: #111827;
+}
+
+.liturgical-test-service-time {
+    color: #374151;
+}
+
+.liturgical-test-service-feast {
+    color: #4b5563;
+    line-height: 1.3;
+}
+
+.liturgical-test-inline-action {
+    margin-top: 4px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-primary);
+    font-size: 0.74rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    transition: color 120ms ease, transform 120ms ease;
+}
+
+.liturgical-test-inline-action:hover,
+.liturgical-test-inline-action:focus-visible {
+    color: var(--color-primary-dark);
+    transform: translateX(1px);
+    outline: none;
+    text-decoration: underline;
+}
+
+.liturgical-test-inline-action:disabled {
+    color: var(--color-text-secondary);
+    cursor: default;
+    transform: none;
+    text-decoration: none;
+}
+
+.liturgical-test-role-content {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    width: 100%;
+    height: 100%;
+    min-height: 72px;
+    padding: 6px;
+    background: transparent;
+    text-align: left;
+    color: inherit;
+    overflow-wrap: anywhere;
+    box-sizing: border-box;
+}
+
+.liturgical-test-role-cell:focus-visible {
+    outline: none;
+}
+
+.liturgical-test-role-button.is-empty {
+    color: var(--color-text-secondary);
+}
+
+.liturgical-test-role-button.has-value {
+    color: #111827;
+}
+
+.liturgical-test-pill-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: flex-start;
+}
+
+.liturgical-test-pill-wrapper {
+    display: inline-flex;
+    cursor: inherit;
+}
+
+.liturgical-test-person-pill {
+    min-height: 24px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    box-shadow: none;
+    cursor: inherit;
+    transform: none;
+}
+
+.liturgical-test-person-pill::before {
+    display: none;
+}
+
+.liturgical-test-pill-wrapper:hover,
+.liturgical-test-pill-wrapper:focus-within,
+.liturgical-test-person-pill:hover,
+.liturgical-test-person-pill:focus-visible {
+    transform: none;
+    box-shadow: none;
+    filter: none;
+}
+
+.liturgical-test-cell-meta {
+    display: block;
+    margin-top: 3px;
+    color: var(--color-text-secondary);
+    font-size: 0.7rem;
+}
+
+.liturgical-test-reading-text {
+    min-height: 54px;
+    color: #111827;
+    line-height: 1.32;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.liturgical-test-empty {
+    color: var(--color-text-secondary);
+    font-size: 0.82rem;
+}
+
+.liturgical-test-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.liturgical-test-editor-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: start;
+}
+
+.liturgical-test-editor-header p {
+    margin: 4px 0 0;
+    color: var(--color-text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.liturgical-test-editor-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-end;
+    color: var(--color-text-secondary);
+    font-size: 0.85rem;
+}
+
+.liturgical-test-search {
+    min-width: 0;
+}
+
+.liturgical-test-team-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.liturgical-test-team-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.liturgical-test-editor-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 14px;
+}
+
+.liturgical-test-team-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--color-border);
+    border-radius: 14px;
+    background: #fbfdff;
+    overflow-wrap: anywhere;
+}
+
+.liturgical-test-team-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    gap: 12px;
+    overflow-wrap: anywhere;
+}
+
+.liturgical-test-team-button.is-selected {
+    background: #e8f1fb;
+    border-color: #9bb8dd;
+    color: var(--color-primary-dark);
+}
+
+.liturgical-test-other-people {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-top: 4px;
+}
+
+.liturgical-test-person-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.liturgical-test-select-pill {
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+}
+
+.liturgical-test-select-pill:focus-visible {
+    outline: none;
+}
+
+.liturgical-test-modal-pill {
+    max-width: 100%;
+    box-shadow: none;
+    transform: none;
+    cursor: inherit;
+    overflow-wrap: anywhere;
+}
+
+.liturgical-test-modal-pill:hover,
+.liturgical-test-modal-pill:focus-visible {
+    box-shadow: none;
+    transform: none;
+    filter: none;
+}
+
+.liturgical-test-floating-tooltip {
+    position: fixed;
+    min-width: 180px;
+    max-width: 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 8px 10px;
+    border: 1px solid rgba(15, 23, 42, 0.16);
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+    color: #111827;
+    font-size: 0.74rem;
+    line-height: 1.3;
+    pointer-events: none;
+    z-index: 9999;
+    overflow-wrap: anywhere;
+}
+
+.liturgical-test-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.liturgical-test-clear-button {
+    border-color: #f5c2c7;
+    color: #b42318;
+    background: #fef3f2;
+}
+
+.liturgical-test-clear-button:hover,
+.liturgical-test-clear-button:focus-visible {
+    border-color: #d92d20;
+    color: #912018;
+    background: #fee4e2;
+    outline: none;
+}
+
+@media (max-width: 960px) {
+    .liturgical-test-editor-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}
+
+@media (max-width: 640px) {
+    .liturgical-test-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .liturgical-test-field {
+        min-width: 0;
+    }
+
+    .liturgical-test-editor-actions {
+        flex-wrap: wrap;
+    }
+}
