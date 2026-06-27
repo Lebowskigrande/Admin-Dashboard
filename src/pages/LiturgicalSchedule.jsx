@@ -1,4 +1,4 @@
-import { LiturgicalScheduleWorkspace } from './LiturgicalScheduleTest.jsx';
+import LiturgicalScheduleWorkspace from './LiturgicalScheduleWorkspace.jsx';
 
 const LiturgicalSchedule = () => <LiturgicalScheduleWorkspace mode="live" />;
 
