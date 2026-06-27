@@ -8,7 +8,8 @@ export const DEFAULT_LOCATION_BY_TIME = {
     '10:00': 'sanctuary'
 };
 
-export const EIGHT_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist'];
+export const EIGHT_AM_LECTOR_ROLE_KEY = 'lector8';
+export const EIGHT_AM_ROLE_KEYS = ['celebrant', 'preacher', EIGHT_AM_LECTOR_ROLE_KEY, 'organist'];
 export const TEN_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist', 'lem', 'acolyte', 'usher', 'sound', 'coffeeHour', 'childcare'];
 
 export const ROLE_KEYS = [...new Set([...EIGHT_AM_ROLE_KEYS, ...TEN_AM_ROLE_KEYS])];
@@ -17,6 +18,7 @@ export const ROLE_FIELD_MAP = {
     celebrant: 'celebrant',
     preacher: 'preacher',
     organist: 'organist',
+    lector8: 'lector8',
     lector: 'lector',
     usher: 'usher',
     acolyte: 'acolyte',
@@ -45,6 +47,21 @@ export const normalizeServiceTime = (value) => {
     if (!match) return raw;
     const hours = match[1].padStart(2, '0');
     return `${hours}:${match[2]}`;
+};
+
+const isEightAmServiceTime = (value) => normalizeServiceTime(value).startsWith('08');
+
+const getCompatibleRoleKeys = (roleKey) => (
+    roleKey === EIGHT_AM_LECTOR_ROLE_KEY
+        ? [EIGHT_AM_LECTOR_ROLE_KEY, 'lector']
+        : [roleKey]
+);
+
+const normalizeStoredRoleKeyForService = (roleKey, serviceTime) => {
+    const key = String(roleKey || '').trim();
+    if (!key) return '';
+    if (isEightAmServiceTime(serviceTime) && key === 'lector') return EIGHT_AM_LECTOR_ROLE_KEY;
+    return key;
 };
 
 export const isLinkedSundayScheduleService = ({ eventId, date, startTime, title }) => {
@@ -78,8 +95,9 @@ export const getRotationAssignmentsForDate = (dateStr, roleKeys) => {
         const roles = coerceJsonArray(row.roles);
         const teams = coerceJsonObject(row.teams);
         roleKeys.forEach((roleKey) => {
-            if (!roles.includes(roleKey)) return;
-            const teamList = Array.isArray(teams?.[roleKey]) ? teams[roleKey] : [];
+            const matchingRoleKeys = getCompatibleRoleKeys(roleKey);
+            if (!matchingRoleKeys.some((key) => roles.includes(key))) return;
+            const teamList = matchingRoleKeys.flatMap((key) => (Array.isArray(teams?.[key]) ? teams[key] : []));
             if (teamList.map(Number).includes(teamNumber)) {
                 assignments[roleKey].push(row.id);
             }
@@ -154,6 +172,23 @@ export const replaceAssignmentsForRole = (occurrenceId, roleKey, personIds) => {
     });
 };
 
+export const replaceAssignmentsForServiceRole = (occurrenceId, serviceTime, roleKey, personIds) => {
+    const storedRoleKey = normalizeStoredRoleKeyForService(roleKey, serviceTime);
+    const keysToDelete = getCompatibleRoleKeys(storedRoleKey);
+    keysToDelete.forEach((key) => {
+        db.prepare('DELETE FROM assignments WHERE occurrence_id = ? AND role_key = ?')
+            .run(occurrenceId, key);
+    });
+
+    const uniquePeople = Array.from(new Set(personIds || []));
+    uniquePeople.forEach((personId) => {
+        db.prepare(`
+            INSERT INTO assignments (id, occurrence_id, role_key, person_id)
+            VALUES (?, ?, ?, ?)
+        `).run(`asgn-${randomUUID()}`, occurrenceId, storedRoleKey, personId);
+    });
+};
+
 export const replaceAllAssignmentsForOccurrence = (occurrenceId, roles = {}) => {
     db.prepare('DELETE FROM assignments WHERE occurrence_id = ?').run(occurrenceId);
     Object.entries(roles || {}).forEach(([roleKey, personIds]) => {
@@ -169,6 +204,21 @@ export const replaceAllAssignmentsForOccurrence = (occurrenceId, roles = {}) => 
     });
 };
 
+export const replaceAllAssignmentsForServiceOccurrence = (occurrenceId, serviceTime, roles = {}) => {
+    db.prepare('DELETE FROM assignments WHERE occurrence_id = ?').run(occurrenceId);
+    Object.entries(roles || {}).forEach(([roleKey, personIds]) => {
+        const storedRoleKey = normalizeStoredRoleKeyForService(roleKey, serviceTime);
+        if (!storedRoleKey) return;
+        const uniquePeople = Array.from(new Set((Array.isArray(personIds) ? personIds : [personIds]).filter(Boolean)));
+        uniquePeople.forEach((personId) => {
+            db.prepare(`
+                INSERT INTO assignments (id, occurrence_id, role_key, person_id)
+                VALUES (?, ?, ?, ?)
+            `).run(`asgn-${randomUUID()}`, occurrenceId, storedRoleKey, personId);
+        });
+    });
+};
+
 export const syncLinkedSundayAliasOccurrences = ({ date, startTime, buildingId, roles }) => {
     const aliases = listLinkedSundayAliasOccurrences(date, startTime);
     aliases.forEach((alias) => {
@@ -176,15 +226,40 @@ export const syncLinkedSundayAliasOccurrences = ({ date, startTime, buildingId, 
             db.prepare('UPDATE event_occurrences SET building_id = ? WHERE id = ?').run(buildingId || null, alias.id);
         }
         if (roles && typeof roles === 'object') {
-            replaceAllAssignmentsForOccurrence(alias.id, roles);
+            replaceAllAssignmentsForServiceOccurrence(alias.id, startTime, roles);
         }
     });
+};
+
+const getAssignmentsForServiceRoleAcrossLinkedOccurrences = (date, startTime, roleKey) => {
+    const canonicalId = ensureSundayOccurrence(date, startTime);
+    const aliases = listLinkedSundayAliasOccurrences(date, startTime);
+    const occurrenceIds = [canonicalId, ...aliases.map((alias) => alias.id)].filter(Boolean);
+    if (occurrenceIds.length === 0) return [];
+
+    const compatibleKeys = getCompatibleRoleKeys(normalizeStoredRoleKeyForService(roleKey, startTime));
+    const placeholders = occurrenceIds.map(() => '?').join(', ');
+    const keyPlaceholders = compatibleKeys.map(() => '?').join(', ');
+    const rows = db.prepare(`
+        SELECT person_id
+        FROM assignments
+        WHERE occurrence_id IN (${placeholders})
+          AND role_key IN (${keyPlaceholders})
+        ORDER BY rowid ASC
+    `).all(...occurrenceIds, ...compatibleKeys);
+
+    return Array.from(new Set(rows.map((row) => row.person_id).filter(Boolean)));
 };
 
 export const applyRotationForDate = (date) => {
     const rotationTen = getRotationAssignmentsForDate(date, TEN_AM_ROLE_KEYS);
     const rotationEight = getRotationAssignmentsForDate(date, EIGHT_AM_ROLE_KEYS);
     const skipRotation = rotationTen.__skipRotation || rotationEight.__skipRotation;
+    const preservedEightAmLectorIds = getAssignmentsForServiceRoleAcrossLinkedOccurrences(
+        date,
+        '08:00',
+        EIGHT_AM_LECTOR_ROLE_KEY
+    );
 
     const occurrenceTen = ensureSundayOccurrence(date, '10:00');
     if (!skipRotation) {
@@ -199,9 +274,19 @@ export const applyRotationForDate = (date) => {
     if (!skipRotation) {
         Object.entries(rotationEight).forEach(([roleKey, personIds]) => {
             if (roleKey === '__skipRotation') return;
+            if (roleKey === EIGHT_AM_LECTOR_ROLE_KEY) return;
             if (!personIds.length) return;
             replaceAssignmentsForRole(occurrenceEight, roleKey, personIds);
         });
+    }
+
+    if (preservedEightAmLectorIds.length > 0) {
+        replaceAssignmentsForServiceRole(
+            occurrenceEight,
+            '08:00',
+            EIGHT_AM_LECTOR_ROLE_KEY,
+            preservedEightAmLectorIds
+        );
     }
 };
 
@@ -301,8 +386,9 @@ export const loadSundayOccurrences = (start, end) => {
         const assignments = db.prepare('SELECT role_key, person_id FROM assignments WHERE occurrence_id = ?').all(row.id);
         const roles = {};
         assignments.forEach(asgn => {
-            if (!roles[asgn.role_key]) roles[asgn.role_key] = [];
-            roles[asgn.role_key].push(asgn.person_id);
+            const normalizedRoleKey = normalizeStoredRoleKeyForService(asgn.role_key, row.start_time);
+            if (!roles[normalizedRoleKey]) roles[normalizedRoleKey] = [];
+            roles[normalizedRoleKey].push(asgn.person_id);
         });
         occurrencesByDate[row.date].push({ ...row, roles });
     });
@@ -437,7 +523,7 @@ export const buildScheduleForMonths = (monthKeys = []) => {
                     time,
                     feast,
                     location: locationName,
-                    lector: getRoleNames('lector', { numbered: time.startsWith('10') }),
+                    lector: getRoleNames(time.startsWith('10') ? 'lector' : EIGHT_AM_LECTOR_ROLE_KEY, { numbered: time.startsWith('10') }),
                     lem: getRoleNames('lem'),
                     acolyte: getRoleNames('acolyte'),
                     usher: getRoleNames('usher'),

@@ -10,6 +10,7 @@ import { API_URL } from '../services/apiConfig';
 import './AtAGlance.css';
 
 const REGULAR_SUNDAY_SERVICE_SLUGS = new Set(['weekly-service', 'rite-i-service', 'rite-ii-service']);
+const EIGHT_AM_LECTOR_ROLE_KEY = 'lector8';
 
 const AtAGlance = () => {
     const navigate = useNavigate();
@@ -67,7 +68,7 @@ const AtAGlance = () => {
             const time = (service?.time || '').trim();
             const isEightAm = /^0?8:/.test(time);
             const requiredKeys = isEightAm
-                ? ['lector', 'preacher', 'celebrant', 'organist']
+                ? [EIGHT_AM_LECTOR_ROLE_KEY, 'preacher', 'celebrant', 'organist']
                 : ['lector', 'lem', 'acolyte', 'preacher', 'celebrant', 'usher', 'sound', 'organist'];
             requiredKeys.forEach((roleKey) => {
                 const roster = service?.roster?.[roleKey];

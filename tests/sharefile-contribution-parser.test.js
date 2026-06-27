@@ -136,3 +136,26 @@ test('extracts envelope number from JSON-array and CSV tags', async () => {
     assert.equal(__TEST__.extractEnvelopeFromTags('["env-374","Volunteer"]'), '374');
     assert.equal(__TEST__.extractEnvelopeFromTags('Volunteer, env-50, Vestry'), '50');
 });
+
+test('builds poller routing output without extra meta', async () => {
+    const output = __TEST__.buildSharefileRoutingOutput({
+        targetDir: 'C:\\Temp\\AR',
+        files: ['C:\\Temp\\AR\\2026.05.19 Zelle Example $100.pdf'],
+        routeKind: 'CONTRIBUTION',
+        envelopeNumber: '407',
+        designation: '2026 pledge',
+        noteText: 'Envelope: 407 | Designation: 2026 pledge'
+    });
+
+    assert.equal(output.targetDir, 'C:\\Temp\\AR');
+    assert.equal(output.files.length, 1);
+    assert.equal(output.routing.routeKind, 'CONTRIBUTION');
+    assert.equal(output.routing.envelopeNumber, '407');
+    assert.equal(output.routing.designation, '2026 pledge');
+    assert.equal(output.routing.noteText, 'Envelope: 407 | Designation: 2026 pledge');
+    assert.equal(output.routing.shared, false);
+    assert.equal(output.routing.churchAllocationPercent, 50);
+    assert.equal(output.routing.schoolAllocationPercent, 50);
+    assert.equal(typeof output.routing.approvedAt, 'string');
+    assert.ok(output.routing.approvedAt.length > 0);
+});

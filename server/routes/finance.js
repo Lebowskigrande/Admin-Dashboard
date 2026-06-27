@@ -22,7 +22,11 @@ import {
     parseCurrencyOverride
 } from '../helpers/finance-utils.js';
 import { isPledgerEnvelope, resolveContributionDesignation } from '../helpers/pledger-utils.js';
-import { syncSharefileLocalMirrors } from '../services/sharefileEmailRouter.js';
+import {
+    buildSharefileRoutingNoteText,
+    normalizeSharedAllocationMeta,
+    syncSharefileLocalMirrors
+} from '../services/sharefileEmailRouter.js';
 import { persistRoutingLogUpdate } from '../services/routingLogStore.js';
 
 import { buildDepositSlipPdf, extractChecksFromImages } from '../depositSlip.js';
@@ -272,6 +276,14 @@ const formatApAmountToken = (value) => {
     return Number.isInteger(parsed) ? `$${String(parsed)}` : `$${parsed.toFixed(2)}`;
 };
 const extractAmountFromOutput = (output) => normalizeApAmount(output?.routing?.amount || output?.amount || '');
+const extractSharedAllocationFromOutput = (output) => {
+    const sharedMeta = normalizeSharedAllocationMeta(output?.routing || output || {});
+    return {
+        shared: sharedMeta.shared,
+        churchAllocationPercent: sharedMeta.churchAllocationPercent,
+        schoolAllocationPercent: sharedMeta.schoolAllocationPercent
+    };
+};
 const extractPersonFromOutput = (output) => {
     const personId = compactWhitespace(output?.routing?.personId || output?.personId || '');
     const personName = compactWhitespace(output?.routing?.personName || output?.personName || '');
@@ -435,6 +447,7 @@ const buildRoutingLogEntryFromGroup = async ({
 
     const vendor = extractVendorFromOutput(output);
     const person = extractPersonFromOutput(output);
+    const sharedMeta = extractSharedAllocationFromOutput(output);
     const isAp = effectiveCodeType === 'budget';
     const envelopeNumber = resolveContributionEnvelopeNumber({ output, codeValue: effectiveCodeValue });
     const latestStatus = String(latestRow.status || 'success').trim().toLowerCase() === 'failure' ? 'failure' : 'success';
@@ -459,6 +472,9 @@ const buildRoutingLogEntryFromGroup = async ({
         vendor,
         routeKind: isAp ? normalizeApRouteKind(output?.routing?.routeKind || '') : 'CONTRIBUTION',
         amount: isAp ? extractAmountFromOutput(output) : '',
+        shared: isAp ? sharedMeta.shared : false,
+        churchAllocationPercent: isAp ? sharedMeta.churchAllocationPercent : 50,
+        schoolAllocationPercent: isAp ? sharedMeta.schoolAllocationPercent : 50,
         vendorMissing: isAp && !vendor,
         status,
         errorText,
@@ -1331,6 +1347,12 @@ router.post('/routing-log/ap-entry', async (req, res) => {
         const nextRouteKind = routeKindInput ? normalizeApRouteKind(routeKindInput) : '';
         const nextAmount = normalizeApAmount(amountInput);
         const output = safeParseJson(jobRow.output_json || '{}');
+        const currentSharedMeta = extractSharedAllocationFromOutput(output);
+        const nextSharedMeta = normalizeSharedAllocationMeta({
+            shared: Object.prototype.hasOwnProperty.call(req.body || {}, 'shared') ? req.body?.shared : currentSharedMeta.shared,
+            churchAllocationPercent: req.body?.churchAllocationPercent ?? currentSharedMeta.churchAllocationPercent,
+            schoolAllocationPercent: req.body?.schoolAllocationPercent ?? currentSharedMeta.schoolAllocationPercent
+        });
         const targetDir = String(output?.targetDir || '').trim();
         const routeKind = nextRouteKind || normalizeApRouteKind(output?.routing?.routeKind || '');
         const normalizedFiles = await normalizeJobFilesWithCurrentPaths(output, jobRow.created_at, new Map());
@@ -1444,6 +1466,26 @@ router.post('/routing-log/ap-entry', async (req, res) => {
             });
         }
 
+        const noteText = buildSharefileRoutingNoteText({}, {
+            codeType: 'budget',
+            codeValue: nextCodeValue,
+            routeKind,
+            vendor: nextVendor,
+            amount: nextAmount,
+            clientTs: String(output?.routing?.approvedAt || jobRow.created_at || new Date().toISOString()),
+            ...nextSharedMeta
+        });
+
+        for (const file of nextFiles) {
+            const path = normalizeWindowsPath(file?.path || '');
+            if (!path || !(await pathExists(path))) continue;
+            try {
+                await replaceRoutingNoteInPdf(path, noteText);
+            } catch (error) {
+                console.warn(`Failed to restamp routed PDF during AP entry save: ${path}`, error?.message || error);
+            }
+        }
+
         const nextOutput = {
             ...output,
             files: nextFiles,
@@ -1453,6 +1495,9 @@ router.post('/routing-log/ap-entry', async (req, res) => {
                 vendor: nextVendor,
                 amount: nextAmount,
                 vendorFound: Boolean(nextVendor),
+                noteText,
+                ...nextSharedMeta,
+                approvedAt: String(output?.routing?.approvedAt || jobRow.created_at || new Date().toISOString()),
                 vendorUpdatedAt: new Date().toISOString()
             }
         };
@@ -1467,6 +1512,9 @@ router.post('/routing-log/ap-entry', async (req, res) => {
                 vendor: nextVendor,
                 routeKind,
                 amount: nextAmount,
+                shared: nextSharedMeta.shared,
+                churchAllocationPercent: nextSharedMeta.churchAllocationPercent,
+                schoolAllocationPercent: nextSharedMeta.schoolAllocationPercent,
                 renamedFiles: renamedCount,
                 deletedFiles: deletedCount,
                 fileMutations: fileMutations.sort((a, b) => Number(a.fileIndex) - Number(b.fileIndex))
@@ -1481,6 +1529,9 @@ router.post('/routing-log/ap-entry', async (req, res) => {
             vendor: nextVendor,
             routeKind,
             amount: nextAmount,
+            shared: nextSharedMeta.shared,
+            churchAllocationPercent: nextSharedMeta.churchAllocationPercent,
+            schoolAllocationPercent: nextSharedMeta.schoolAllocationPercent,
             renamedFiles: renamedCount,
             deletedFiles: deletedCount,
             files

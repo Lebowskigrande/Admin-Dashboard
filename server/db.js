@@ -95,6 +95,28 @@ const ensureRuntimeTables = () => {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS sharefile_dashboard_handoffs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            message_id TEXT,
+            thread_id TEXT,
+            code_type TEXT,
+            code_value TEXT,
+            route_kind TEXT,
+            designation TEXT,
+            vendor TEXT,
+            amount TEXT,
+            shared INTEGER NOT NULL DEFAULT 0,
+            church_allocation_percent TEXT,
+            school_allocation_percent TEXT,
+            page_url TEXT,
+            source TEXT,
+            created_at TEXT NOT NULL,
+            claimed_at TEXT,
+            completed_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS routing_attempts (
             id TEXT PRIMARY KEY,
             job_id TEXT,
@@ -155,6 +177,8 @@ const ensureRuntimeTables = () => {
 
         CREATE INDEX IF NOT EXISTS idx_routing_attempts_created_at ON routing_attempts(created_at);
         CREATE INDEX IF NOT EXISTS idx_routing_attempts_job_id ON routing_attempts(job_id);
+        CREATE INDEX IF NOT EXISTS idx_sharefile_dashboard_handoffs_status_created
+            ON sharefile_dashboard_handoffs(status, created_at);
         CREATE INDEX IF NOT EXISTS idx_budget_scan_sources_enabled ON budget_scan_sources(enabled);
         CREATE INDEX IF NOT EXISTS idx_task_progress_history_task_instance
             ON task_progress_history(task_instance_id, created_at);

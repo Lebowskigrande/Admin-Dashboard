@@ -1,5 +1,6 @@
 import express from 'express';
 import multer from 'multer';
+import { randomUUID } from 'crypto';
 import { google } from 'googleapis';
 import xlsx from 'xlsx';
 import { resolve } from 'path';
@@ -25,7 +26,8 @@ import {
     resolveSharefileMessageId,
     recordSharefileRoutingEvent,
     analyzeSharefilePdf,
-    routeSharefilePdf
+    routeSharefilePdf,
+    previewSharefileMessage
 } from '../services/sharefileEmailRouter.js';
 import { getAuthUrlWithRedirect, getTokensFromCodeWithRedirect, GOOGLE_SCOPES } from '../googleAuth.js';
 
@@ -136,8 +138,15 @@ const parseThreadFromGmailHref = (href) => {
     if (!raw) return '';
 
     try {
+        const directQuery = raw.match(/[?&](?:th|thread_id|permthid)=([0-9a-f]{10,})(?:$|[&#])/i);
+        if (directQuery?.[1]) return String(directQuery[1]).trim();
+
         const hash = (raw.split('#')[1] || '').trim();
         if (!hash) return '';
+
+        const hashQuery = hash.match(/(?:^|[?&/])(?:th|thread_id|permthid)=([0-9a-f]{10,})(?:$|[&#/])/i);
+        if (hashQuery?.[1]) return String(hashQuery[1]).trim();
+
         const parts = hash.split('/').filter(Boolean);
         const maybeId = parts.at(-1) || '';
         return /^[0-9a-f]{10,}$/i.test(maybeId) ? maybeId : '';
@@ -150,6 +159,251 @@ const fetchGoogleProfile = async (tokens) => {
     const oauth2 = google.oauth2('v2');
     const response = await oauth2.userinfo.get({ access_token: tokens.access_token });
     return response.data;
+};
+
+const normalizeSharedRequestMeta = (payload = {}) => {
+    const shared = payload?.shared === true || String(payload?.shared || '').trim().toLowerCase() === 'true';
+    return {
+        shared,
+        churchAllocationPercent: shared ? String(payload?.churchAllocationPercent ?? '').trim() : '',
+        schoolAllocationPercent: shared ? String(payload?.schoolAllocationPercent ?? '').trim() : ''
+    };
+};
+
+const normalizeDashboardHandoffStatus = (value) => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'completed') return 'completed';
+    if (normalized === 'dismissed') return 'dismissed';
+    if (normalized === 'claimed') return 'claimed';
+    return 'pending';
+};
+
+const rowToDashboardHandoff = (row) => {
+    if (!row?.id) return null;
+    return {
+        id: String(row.id || '').trim(),
+        status: normalizeDashboardHandoffStatus(row.status),
+        gmail: {
+            messageId: String(row.message_id || '').trim(),
+            threadId: String(row.thread_id || '').trim()
+        },
+        codeType: String(row.code_type || '').trim(),
+        codeValue: String(row.code_value || '').trim(),
+        routeKind: String(row.route_kind || '').trim() || 'BILL',
+        designation: String(row.designation || '').trim(),
+        vendor: String(row.vendor || '').trim(),
+        amount: String(row.amount || '').trim(),
+        shared: Number(row.shared || 0) === 1,
+        churchAllocationPercent: String(row.church_allocation_percent || '').trim(),
+        schoolAllocationPercent: String(row.school_allocation_percent || '').trim(),
+        pageUrl: String(row.page_url || '').trim(),
+        source: String(row.source || '').trim(),
+        createdAt: String(row.created_at || '').trim(),
+        claimedAt: String(row.claimed_at || '').trim(),
+        completedAt: String(row.completed_at || '').trim()
+    };
+};
+
+const upsertDashboardHandoff = ({
+    messageId = '',
+    threadId = '',
+    codeType = '',
+    codeValue = '',
+    routeKind = 'BILL',
+    designation = '',
+    vendor = '',
+    amount = '',
+    shared = false,
+    churchAllocationPercent = '',
+    schoolAllocationPercent = '',
+    pageUrl = '',
+    source = 'extension'
+} = {}) => {
+    const now = new Date().toISOString();
+    const normalizedMessageId = String(messageId || '').trim();
+    const normalizedThreadId = String(threadId || '').trim();
+    const normalizedCodeType = String(codeType || '').trim();
+    const normalizedCodeValue = String(codeValue || '').trim();
+    const normalizedRouteKind = String(routeKind || '').trim().toUpperCase() || 'BILL';
+    const normalizedDesignation = String(designation || '').trim();
+    const normalizedVendor = String(vendor || '').trim();
+    const normalizedAmount = String(amount || '').trim();
+    const normalizedPageUrl = String(pageUrl || '').trim();
+    const normalizedSource = String(source || '').trim() || 'extension';
+    const normalizedChurchPercent = shared ? String(churchAllocationPercent || '').trim() : '';
+    const normalizedSchoolPercent = shared ? String(schoolAllocationPercent || '').trim() : '';
+
+    const existing = db.prepare(`
+        SELECT *
+        FROM sharefile_dashboard_handoffs
+        WHERE status = 'pending'
+          AND (
+            (? <> '' AND message_id = ?)
+            OR
+            (? = '' AND ? <> '' AND thread_id = ?)
+          )
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+    `).get(
+        normalizedMessageId,
+        normalizedMessageId,
+        normalizedMessageId,
+        normalizedThreadId,
+        normalizedThreadId
+    );
+
+    if (existing?.id) {
+        db.prepare(`
+            UPDATE sharefile_dashboard_handoffs
+            SET thread_id = ?,
+                code_type = ?,
+                code_value = ?,
+                route_kind = ?,
+                designation = ?,
+                vendor = ?,
+                amount = ?,
+                shared = ?,
+                church_allocation_percent = ?,
+                school_allocation_percent = ?,
+                page_url = ?,
+                source = ?,
+                updated_at = ?
+            WHERE id = ?
+        `).run(
+            normalizedThreadId || null,
+            normalizedCodeType,
+            normalizedCodeValue,
+            normalizedRouteKind,
+            normalizedDesignation,
+            normalizedVendor,
+            normalizedAmount,
+            shared ? 1 : 0,
+            normalizedChurchPercent,
+            normalizedSchoolPercent,
+            normalizedPageUrl,
+            normalizedSource,
+            now,
+            existing.id
+        );
+        return rowToDashboardHandoff({
+            ...existing,
+            thread_id: normalizedThreadId || existing.thread_id,
+            code_type: normalizedCodeType,
+            code_value: normalizedCodeValue,
+            route_kind: normalizedRouteKind,
+            designation: normalizedDesignation,
+            vendor: normalizedVendor,
+            amount: normalizedAmount,
+            shared: shared ? 1 : 0,
+            church_allocation_percent: normalizedChurchPercent,
+            school_allocation_percent: normalizedSchoolPercent,
+            page_url: normalizedPageUrl,
+            source: normalizedSource,
+            updated_at: now
+        });
+    }
+
+    const id = `dashboard-handoff-${randomUUID()}`;
+    db.prepare(`
+        INSERT INTO sharefile_dashboard_handoffs (
+            id, status, message_id, thread_id, code_type, code_value, route_kind,
+            designation, vendor, amount, shared, church_allocation_percent,
+            school_allocation_percent, page_url, source, created_at, claimed_at,
+            completed_at, updated_at
+        )
+        VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+    `).run(
+        id,
+        normalizedMessageId || null,
+        normalizedThreadId || null,
+        normalizedCodeType,
+        normalizedCodeValue,
+        normalizedRouteKind,
+        normalizedDesignation,
+        normalizedVendor,
+        normalizedAmount,
+        shared ? 1 : 0,
+        normalizedChurchPercent,
+        normalizedSchoolPercent,
+        normalizedPageUrl,
+        normalizedSource,
+        now,
+        now
+    );
+
+    return rowToDashboardHandoff({
+        id,
+        status: 'pending',
+        message_id: normalizedMessageId,
+        thread_id: normalizedThreadId,
+        code_type: normalizedCodeType,
+        code_value: normalizedCodeValue,
+        route_kind: normalizedRouteKind,
+        designation: normalizedDesignation,
+        vendor: normalizedVendor,
+        amount: normalizedAmount,
+        shared: shared ? 1 : 0,
+        church_allocation_percent: normalizedChurchPercent,
+        school_allocation_percent: normalizedSchoolPercent,
+        page_url: normalizedPageUrl,
+        source: normalizedSource,
+        created_at: now,
+        claimed_at: '',
+        completed_at: '',
+        updated_at: now
+    });
+};
+
+const claimNextDashboardHandoff = () => {
+    const now = new Date().toISOString();
+    const row = db.prepare(`
+        SELECT *
+        FROM sharefile_dashboard_handoffs
+        WHERE status = 'pending'
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+    `).get();
+    if (!row?.id) return null;
+
+    const result = db.prepare(`
+        UPDATE sharefile_dashboard_handoffs
+        SET status = 'claimed',
+            claimed_at = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'pending'
+    `).run(now, now, row.id);
+    if (!result?.changes) return null;
+
+    return rowToDashboardHandoff({
+        ...row,
+        status: 'claimed',
+        claimed_at: now,
+        updated_at: now
+    });
+};
+
+const updateDashboardHandoffStatus = (id, status) => {
+    const normalizedId = String(id || '').trim();
+    if (!normalizedId) return null;
+    const nextStatus = normalizeDashboardHandoffStatus(status);
+    const now = new Date().toISOString();
+    const result = db.prepare(`
+        UPDATE sharefile_dashboard_handoffs
+        SET status = ?,
+            completed_at = CASE WHEN ? IN ('completed', 'dismissed') THEN ? ELSE completed_at END,
+            updated_at = ?
+        WHERE id = ?
+    `).run(
+        nextStatus,
+        nextStatus,
+        now,
+        now,
+        normalizedId
+    );
+    if (!result?.changes) return null;
+    const updated = db.prepare('SELECT * FROM sharefile_dashboard_handoffs WHERE id = ? LIMIT 1').get(normalizedId);
+    return rowToDashboardHandoff(updated);
 };
 
 router.get('/api/sharefile/google/auth-url', requireAuth, (_req, res) => {
@@ -276,6 +530,7 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
         designation: payload.designation,
         vendor: payload.vendor,
         amount: payload.amount,
+        ...normalizeSharedRequestMeta(payload),
         clientTs: payload.client?.ts || ''
     };
     const normalizedRouteKind = String(extraMeta.routeKind || '').trim().toUpperCase();
@@ -402,6 +657,143 @@ router.post('/api/sharefile/route-email', requireSharefileAuth, async (req, res)
     }
 });
 
+router.post('/api/sharefile/dashboard-handoffs', requireSharefileAuth, async (req, res) => {
+    const payload = req.body || {};
+    const gmail = payload.gmail || {};
+    const href = gmail.href || payload?.page?.url || '';
+    const threadFromHref = parseThreadFromGmailHref(href);
+    const normalizedMessageId = normalizeMessageId(gmail);
+    const effectiveThreadId = String(gmail.threadId || threadFromHref || '').trim();
+    const sharedMeta = normalizeSharedRequestMeta(payload);
+    const routeKind = String(payload.routeKind || 'BILL').trim().toUpperCase() || 'BILL';
+    const codeType = String(payload.codeType || (routeKind === 'CONTRIBUTION' ? 'envelope' : 'budget')).trim();
+    const codeValue = String(payload.codeValue || '').trim();
+    const designation = String(payload.designation || '').trim();
+    const vendor = String(payload.vendor || '').trim();
+    const amount = String(payload.amount || '').trim();
+
+    try {
+        if (!normalizedMessageId && !effectiveThreadId) {
+            return res.status(400).json({ ok: false, error: 'Missing Gmail message context for dashboard handoff' });
+        }
+
+        const handoff = upsertDashboardHandoff({
+            messageId: normalizedMessageId,
+            threadId: effectiveThreadId,
+            codeType,
+            codeValue,
+            routeKind,
+            designation,
+            vendor,
+            amount,
+            shared: sharedMeta.shared,
+            churchAllocationPercent: sharedMeta.churchAllocationPercent,
+            schoolAllocationPercent: sharedMeta.schoolAllocationPercent,
+            pageUrl: String(payload?.page?.url || href || '').trim(),
+            source: String(payload.action || 'extension').trim() || 'extension'
+        });
+
+        return res.json({ ok: true, handoff });
+    } catch (error) {
+        console.error('ShareFile dashboard handoff enqueue error:', error);
+        return res.status(500).json({ ok: false, error: error?.message || 'Failed to queue dashboard handoff' });
+    }
+});
+
+router.post('/api/sharefile/dashboard-handoffs/claim', requireAuth, async (_req, res) => {
+    try {
+        const handoff = claimNextDashboardHandoff();
+        return res.json({ ok: true, handoff });
+    } catch (error) {
+        console.error('ShareFile dashboard handoff claim error:', error);
+        return res.status(500).json({ ok: false, error: error?.message || 'Failed to claim dashboard handoff' });
+    }
+});
+
+router.post('/api/sharefile/dashboard-handoffs/:id/status', requireAuth, async (req, res) => {
+    try {
+        const handoff = updateDashboardHandoffStatus(req.params.id, req.body?.status || '');
+        if (!handoff) {
+            return res.status(404).json({ ok: false, error: 'Dashboard handoff not found' });
+        }
+        return res.json({ ok: true, handoff });
+    } catch (error) {
+        console.error('ShareFile dashboard handoff status error:', error);
+        return res.status(500).json({ ok: false, error: error?.message || 'Failed to update dashboard handoff' });
+    }
+});
+
+router.post('/api/sharefile/email-routing-preview', requireAuth, async (req, res) => {
+    const payload = req.body || {};
+    const gmail = payload.gmail || {};
+    const href = gmail.href || payload?.page?.url || '';
+    const threadFromHref = parseThreadFromGmailHref(href);
+    const providedMessageId = normalizeMessageId(gmail);
+    const effectiveThreadId = gmail.threadId || threadFromHref || null;
+    const extraMeta = {
+        codeType: 'budget',
+        codeValue: payload.codeValue,
+        routeKind: payload.routeKind,
+        vendor: payload.vendor,
+        amount: payload.amount,
+        ...normalizeSharedRequestMeta(payload),
+        clientTs: payload.client?.ts || new Date().toISOString()
+    };
+
+    try {
+        if (!providedMessageId && !effectiveThreadId) {
+            return res.status(400).json({ ok: false, error: 'Missing Gmail message context for preview' });
+        }
+        const tokenCandidates = getExtensionGmailTokenCandidates();
+        if (!tokenCandidates.length) {
+            return res.status(400).json({ ok: false, error: 'No Gmail tokens configured for ShareFile extension' });
+        }
+
+        let lastError = null;
+        for (const candidate of tokenCandidates) {
+            try {
+                let resolvedMessageId = providedMessageId;
+                if (!resolvedMessageId && effectiveThreadId) {
+                    resolvedMessageId = await resolveSharefileMessageId(effectiveThreadId, candidate.tokens).catch(() => null);
+                }
+                if (!resolvedMessageId) continue;
+                const result = await previewSharefileMessage({
+                    messageId: resolvedMessageId,
+                    threadId: effectiveThreadId,
+                    extraMeta,
+                    messageOnly: true,
+                    tokensOverride: candidate.tokens
+                });
+                return res.json({
+                    ...result,
+                    resolved: {
+                        messageId: result?.preview?.messageId || resolvedMessageId,
+                        threadId: result?.preview?.threadId || effectiveThreadId || null
+                    },
+                    previewedBy: {
+                        userId: candidate.userId,
+                        email: candidate.email || null
+                    }
+                });
+            } catch (error) {
+                lastError = error;
+                const text = String(error?.message || '');
+                const accountNotMatch = text.includes('Requested entity was not found.') || text.includes('Invalid id value');
+                if (accountNotMatch) continue;
+                throw error;
+            }
+        }
+
+        return res.status(404).json({
+            ok: false,
+            error: lastError?.message || 'No matching Gmail account found for this message'
+        });
+    } catch (error) {
+        console.error('ShareFile email preview error:', error);
+        return res.status(500).json({ ok: false, error: error?.message || 'Failed to build email preview' });
+    }
+});
+
 router.post('/api/sharefile/analyze-pdf', requireAuth, pdfUpload.single('file'), async (req, res) => {
     const uploadPath = String(req.file?.path || '').trim();
     try {
@@ -447,6 +839,7 @@ router.post('/api/sharefile/route-pdf', requireAuth, pdfUpload.single('file'), a
                 routeKind: String(req.body?.routeKind || 'BILL').trim() || 'BILL',
                 vendor: String(req.body?.vendor || '').trim(),
                 amount: String(req.body?.amount || '').trim(),
+                ...normalizeSharedRequestMeta(req.body || {}),
                 clientTs: new Date().toISOString()
             }
         });

@@ -1,7 +1,7 @@
 ﻿/****************************
  * Parish Codes Extension
  * - Three menu trees: Invoice, Direct Debit, Contribution
- * - Opens a confirmation modal after menu selection
+ * - Sends AP invoice routing into the finance dashboard
  * - Posts job to dashboard server with Bearer token
  ****************************/
 
@@ -12,6 +12,7 @@ const ENVELOPE_NUMBERS_URL = "http://localhost:3001/api/sharefile/envelope-numbe
 // Server endpoints
 const ROUTE_EMAIL_URL = "http://localhost:3001/api/sharefile/route-email";
 const RESOLVE_MESSAGE_URL = "http://localhost:3001/api/sharefile/resolve-message-id";
+const DASHBOARD_HANDOFF_URL = "http://localhost:3001/api/sharefile/dashboard-handoffs";
 
 // Context menu visibility
 const MENU_CONTEXTS = ["editable", "selection", "page"];
@@ -35,7 +36,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     await showToastInTab(tabId, "Open a Gmail message, then click the extension icon.", false);
     return;
   }
-  await openRoutingModalForTab(tabId);
+  await openDashboardFinanceRouterForTab(tabId);
 });
 chrome.commands?.onCommand?.addListener(async (command) => {
   if (command !== "open-routing-modal") return;
@@ -47,7 +48,7 @@ chrome.commands?.onCommand?.addListener(async (command) => {
     await showToastInTab(tabId, "Open a Gmail message, then run the routing shortcut.", false);
     return;
   }
-  await openRoutingModalForTab(tabId);
+  await openDashboardFinanceRouterForTab(tabId);
 });
 
 /************* MENUS *************/
@@ -294,7 +295,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
   const selection = parseClickedCode(menuItemId);
   if (!selection) return;
-  await openRoutingModalForTab(tab.id, selection);
+  if (selection.routeKind === "CONTRIBUTION") {
+    await openRoutingModalForTab(tab.id, selection);
+    return;
+  }
+  await openDashboardFinanceRouterForTab(tab.id, selection);
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -315,7 +320,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
 
-      const gmailContext = await getGmailContext(tabId, sender?.frameId);
+      const gmailContext = await resolveGmailContextForTab(tabId, sender?.frameId);
       const payload = {
         action: "modal_submit",
         codeType: modalPayload.codeType,
@@ -331,7 +336,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       let result = await postRouteEmail(payload);
       if (!result?.ok && /Missing messageId|Unable to resolve a specific Gmail messageId/i.test(String(result?.error || ""))) {
-        const refreshedContext = await getGmailContext(tabId, sender?.frameId);
+        const refreshedContext = await resolveGmailContextForTab(tabId, sender?.frameId);
         if (refreshedContext?.messageId || refreshedContext?.threadId) {
           result = await postRouteEmail({
             ...payload,
@@ -369,6 +374,137 @@ async function getGmailContext(tabId, frameId) {
 
 function isGmailUrl(value) {
   return /^https:\/\/mail\.google\.com\//i.test(String(value || ""));
+}
+
+function parseIdsFromGmailUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return { threadId: "", messageId: "" };
+
+  const readQueryValue = (pattern) => {
+    const match = raw.match(pattern);
+    return match?.[1] ? decodeURIComponentSafe(match[1]) : "";
+  };
+
+  const messageId = readQueryValue(/[?&](?:permmsgid|message_id)=([^&#]+)/i);
+  const threadIdFromQuery = readQueryValue(/[?&](?:th|thread_id|permthid)=([0-9a-f]{10,})(?:$|[&#])/i);
+  const hash = (raw.split("#")[1] || "").trim();
+  if (!hash) {
+    return {
+      threadId: /^[0-9a-f]{10,}$/i.test(threadIdFromQuery) ? threadIdFromQuery : "",
+      messageId
+    };
+  }
+
+  const hashThread = hash.match(/(?:^|[?&/])(?:th|thread_id|permthid)=([0-9a-f]{10,})(?:$|[&#/])/i)?.[1] || "";
+  const parts = hash.split("/").filter(Boolean);
+  const trailing = parts.at(-1) || "";
+  const threadId = /^[0-9a-f]{10,}$/i.test(threadIdFromQuery)
+    ? threadIdFromQuery
+    : (/^[0-9a-f]{10,}$/i.test(hashThread) ? hashThread : (/^[0-9a-f]{10,}$/i.test(trailing) ? trailing : ""));
+
+  return {
+    threadId,
+    messageId
+  };
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
+  }
+}
+
+async function resolveGmailContextForTab(tabId, frameId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const fromMessage = await getGmailContext(tabId, frameId);
+  const fromUrl = parseIdsFromGmailUrl(tab?.url || "");
+  return {
+    ...(fromMessage || {}),
+    ok: Boolean(fromMessage?.messageId || fromMessage?.threadId || fromUrl.messageId || fromUrl.threadId),
+    href: String(fromMessage?.href || tab?.url || "").trim(),
+    threadId: String(fromMessage?.threadId || fromUrl.threadId || "").trim(),
+    messageId: String(fromMessage?.messageId || fromUrl.messageId || "").trim(),
+    ts: fromMessage?.ts || new Date().toISOString()
+  };
+}
+
+async function openDashboardFinanceRouterForTab(tabId, initialSelection = null) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const gmailContext = await resolveGmailContextForTab(tabId);
+  if (!gmailContext?.messageId && !gmailContext?.threadId) {
+    await showToastInTab(tabId, "Open a Gmail message before routing it into Finance.", false);
+    return;
+  }
+
+  const result = await queueDashboardFinanceHandoff({
+    action: "dashboard_handoff",
+    codeType: initialSelection?.routeKind === "CONTRIBUTION" ? "envelope" : "budget",
+    codeValue: String(initialSelection?.codeValue || "").trim(),
+    routeKind: String(initialSelection?.routeKind || "BILL").trim().toUpperCase() || "BILL",
+    designation: String(initialSelection?.designation || "").trim(),
+    vendor: String(initialSelection?.vendor || "").trim(),
+    amount: normalizeAmount(initialSelection?.amount || ""),
+    gmail: gmailContext,
+    page: { url: tab?.url || "" },
+    client: { ts: new Date().toISOString() }
+  });
+
+  const toastText = result?.ok
+    ? "Queued for the Finance dashboard. The open dashboard can pick it up automatically."
+    : formatDashboardHandoffFailureMessage(result);
+  await showToastInTab(tabId, toastText, Boolean(result?.ok));
+}
+
+async function queueDashboardFinanceHandoff(payload) {
+  const token = await getToken();
+  if (!token) {
+    return { ok: false, error: "missing_token" };
+  }
+
+  try {
+    const res = await fetch(DASHBOARD_HANDOFF_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const text = await safeText(res);
+      return { ok: false, status: res.status, error: text };
+    }
+    const data = await res.json().catch(() => ({}));
+    return { ok: true, status: res.status, data };
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+function formatDashboardHandoffFailureMessage(result) {
+  const status = Number(result?.status || 0) || 0;
+  const error = String(result?.error || "");
+  if (error === "missing_token") {
+    return "Dashboard handoff failed: extension token is missing.";
+  }
+  if (status === 401 || /Invalid or missing token/i.test(error)) {
+    return "Dashboard handoff failed: invalid Bearer token (401).";
+  }
+  if (/Missing Gmail message context/i.test(error)) {
+    return "Dashboard handoff failed: could not read the Gmail message context.";
+  }
+  if (status >= 500) {
+    return "Dashboard handoff failed: server error. Check API logs.";
+  }
+  if (status >= 400) {
+    return `Dashboard handoff failed (${status}).`;
+  }
+  if (error) {
+    return `Dashboard handoff failed: ${error}`;
+  }
+  return "Dashboard handoff failed.";
 }
 
 async function openRoutingModalForTab(tabId, initialSelection = null) {

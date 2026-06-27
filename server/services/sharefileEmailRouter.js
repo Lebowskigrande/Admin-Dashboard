@@ -145,6 +145,113 @@ const normalizeCurrencyAmount = (value) => {
     return parsed.toFixed(2);
 };
 
+const normalizeAllocationPercent = (value) => {
+    const raw = String(value ?? '').replace(/%/g, '').trim();
+    if (!raw) return null;
+    const parsed = Number.parseFloat(raw);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return null;
+    return Math.round(parsed * 100) / 100;
+};
+
+const formatAllocationPercent = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '0';
+    return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(2).replace(/\.?0+$/, '');
+};
+
+export const normalizeSharedAllocationMeta = (extra = {}) => {
+    const shared = extra?.shared === true || String(extra?.shared || '').trim().toLowerCase() === 'true';
+    if (!shared) {
+        return {
+            shared: false,
+            churchAllocationPercent: 50,
+            schoolAllocationPercent: 50
+        };
+    }
+
+    let churchAllocationPercent = normalizeAllocationPercent(extra?.churchAllocationPercent);
+    let schoolAllocationPercent = normalizeAllocationPercent(extra?.schoolAllocationPercent);
+
+    if (churchAllocationPercent == null && schoolAllocationPercent == null) {
+        churchAllocationPercent = 50;
+        schoolAllocationPercent = 50;
+    } else if (churchAllocationPercent == null && schoolAllocationPercent != null) {
+        churchAllocationPercent = Math.round((100 - schoolAllocationPercent) * 100) / 100;
+    } else if (schoolAllocationPercent == null && churchAllocationPercent != null) {
+        schoolAllocationPercent = Math.round((100 - churchAllocationPercent) * 100) / 100;
+    }
+
+    const total = Number(churchAllocationPercent || 0) + Number(schoolAllocationPercent || 0);
+    if (!Number.isFinite(total) || Math.abs(total - 100) > 0.01) {
+        churchAllocationPercent = 50;
+        schoolAllocationPercent = 50;
+    }
+
+    return {
+        shared: true,
+        churchAllocationPercent,
+        schoolAllocationPercent
+    };
+};
+
+const buildSharefileRoutingOutput = ({
+    targetDir = '',
+    files = [],
+    routeKind = 'BILL',
+    envelopeNumber = '',
+    designation = '',
+    noteText = '',
+    personId = '',
+    personName = '',
+    personMatchConfidence = 0,
+    vendor = '',
+    amount = '',
+    approvedAt = '',
+    extraMeta = {},
+    canonicalSync = {},
+    source = '',
+    sourceFileName = ''
+} = {}) => {
+    const sharedMeta = normalizeSharedAllocationMeta(extraMeta);
+    const routing = {
+        routeKind,
+        envelopeNumber,
+        designation,
+        noteText,
+        personId,
+        personName,
+        personMatchConfidence: Number(personMatchConfidence || 0),
+        vendor,
+        amount,
+        vendorFound: Boolean(vendor),
+        approvedAt: approvedAt || new Date().toISOString(),
+        ...sharedMeta,
+        canonicalPublishedCount: Number(canonicalSync?.published || 0),
+        canonicalFailedCount: Number(canonicalSync?.failed || 0),
+        canonicalLastError: String(canonicalSync?.lastError || '').trim()
+    };
+
+    if (source) routing.source = source;
+    if (sourceFileName) routing.sourceFileName = sourceFileName;
+
+    return {
+        targetDir,
+        files,
+        routing
+    };
+};
+
+const buildSharedApNoteText = (extra = {}) => {
+    const sharedMeta = normalizeSharedAllocationMeta(extra);
+    if (!sharedMeta.shared) return '';
+    const churchShare = Number(sharedMeta.churchAllocationPercent || 0);
+    const schoolShare = Number(sharedMeta.schoolAllocationPercent || 0);
+    if (Math.abs(churchShare - 50) <= 0.01 && Math.abs(schoolShare - 50) <= 0.01) {
+        return 'SHARED';
+    }
+    return `SHARED - ${formatAllocationPercent(churchShare)}% Church, ${formatAllocationPercent(schoolShare)}% School`;
+};
+
 const MONTH_INDEX = {
     jan: 0,
     january: 0,
@@ -470,8 +577,13 @@ const buildNoteText = (_metadata, extra = {}) => {
     const timestamp = extra?.clientTs ? new Date(extra.clientTs) : new Date();
     const date = timestamp.toLocaleDateString();
     const time = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return `Budget code: ${code}. Approved by James Clark on ${date} at ${time}.`;
+    const sharedNote = buildSharedApNoteText(extra);
+    return sharedNote
+        ? `Budget code: ${code}. Approved by James Clark on ${date} at ${time}. ${sharedNote}.`
+        : `Budget code: ${code}. Approved by James Clark on ${date} at ${time}.`;
 };
+
+export const buildSharefileRoutingNoteText = buildNoteText;
 
 const normalizeRouteKind = (value) => {
     const upper = String(value || '').trim().toUpperCase();
@@ -1149,6 +1261,7 @@ const parseContributionFields = ({ bodyText, envelopeFallback, designationFallba
 export const __TEST__ = {
     parseContributionFields,
     buildNoteText,
+    buildSharefileRoutingOutput,
     formatContributionFilenameBase,
     isContributionEmail,
     getContributionSourceToken,
@@ -2120,27 +2233,22 @@ export const routeShareFileEmails = async ({
                 }
             }
 
-            const output = {
+            const output = buildSharefileRoutingOutput({
                 targetDir: resolvedRoot,
                 files: outputs,
-                routing: {
-                    routeKind,
-                    envelopeNumber: contributionMeta?.envelopeNumber || codeValue || '',
-                    designation: contributionMeta?.designation || '',
-                    noteText: routeKind === 'CONTRIBUTION' ? noteText : '',
-                    personId: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personId || '').trim() : '',
-                    personName: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personName || '').trim() : '',
-                    personMatchConfidence: routeKind === 'CONTRIBUTION'
-                        ? Number(contributionMeta?.personMatchConfidence || 0)
-                        : 0,
-                    vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
-                    amount: routeKind === 'CONTRIBUTION' ? '' : apAmount,
-                    vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor || contextVendorFallback),
-                    canonicalPublishedCount: canonicalSync.published,
-                    canonicalFailedCount: canonicalSync.failed,
-                    canonicalLastError: canonicalSync.lastError || ''
-                }
-            };
+                routeKind,
+                envelopeNumber: contributionMeta?.envelopeNumber || codeValue || '',
+                designation: contributionMeta?.designation || '',
+                noteText,
+                personId: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personId || '').trim() : '',
+                personName: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personName || '').trim() : '',
+                personMatchConfidence: routeKind === 'CONTRIBUTION'
+                    ? Number(contributionMeta?.personMatchConfidence || 0)
+                    : 0,
+                vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
+                amount: routeKind === 'CONTRIBUTION' ? '' : apAmount,
+                canonicalSync
+            });
             const job = saveOrUpdateSharefileJob({
                 existingJobId: existingJob?.id || '',
                 messageId: effectiveMessageId,
@@ -2589,27 +2697,24 @@ export const routeSharefileMessage = async ({
                 }
             });
         }
-        const output = {
+        const output = buildSharefileRoutingOutput({
             targetDir: resolvedRoot,
             files: outputFiles,
-            routing: {
-                routeKind,
-                envelopeNumber: contributionMeta?.envelopeNumber || extraMeta.codeValue || '',
-                designation: contributionMeta?.designation || '',
-                noteText: routeKind === 'CONTRIBUTION' ? noteText : '',
-                personId: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personId || '').trim() : '',
-                personName: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personName || '').trim() : '',
-                personMatchConfidence: routeKind === 'CONTRIBUTION'
-                    ? Number(contributionMeta?.personMatchConfidence || 0)
-                    : 0,
-                vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
-                amount: routeKind === 'CONTRIBUTION' ? '' : apAmount,
-                vendorFound: routeKind === 'CONTRIBUTION' ? false : Boolean(apVendor || contextVendorFallback),
-                canonicalPublishedCount: canonicalSync.published,
-                canonicalFailedCount: canonicalSync.failed,
-                canonicalLastError: canonicalSync.lastError || ''
-            }
-        };
+            routeKind,
+            envelopeNumber: contributionMeta?.envelopeNumber || extraMeta.codeValue || '',
+            designation: contributionMeta?.designation || '',
+            noteText,
+            personId: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personId || '').trim() : '',
+            personName: routeKind === 'CONTRIBUTION' ? String(contributionMeta?.personName || '').trim() : '',
+            personMatchConfidence: routeKind === 'CONTRIBUTION'
+                ? Number(contributionMeta?.personMatchConfidence || 0)
+                : 0,
+            vendor: routeKind === 'CONTRIBUTION' ? '' : (apVendor || contextVendorFallback),
+            amount: routeKind === 'CONTRIBUTION' ? '' : apAmount,
+            approvedAt: extraMeta?.clientTs || '',
+            extraMeta,
+            canonicalSync
+        });
         const job = saveOrUpdateSharefileJob({
             existingJobId: existing?.id || '',
             messageId,
@@ -2658,6 +2763,174 @@ export const routeSharefileMessage = async ({
         throw error;
     } finally {
         await rm(tempDir, { recursive: true, force: true });
+    }
+};
+
+export const previewSharefileMessage = async ({
+    messageId,
+    threadId,
+    extraMeta = {},
+    tokensOverride = null,
+    messageOnly = true
+} = {}) => {
+    const tokens = tokensOverride || getSharefileGmailTokens();
+    if (!tokens) {
+        throw new Error('No ShareFile Gmail tokens configured');
+    }
+    if (!messageId) {
+        throw new Error('Missing messageId');
+    }
+
+    const gmail = getGmailClient(tokens);
+    const messageResponse = await gmail.users.messages.get({
+        userId: 'me',
+        id: messageId,
+        format: 'full'
+    });
+    const message = messageResponse.data;
+    const effectiveThreadId = String(threadId || message?.threadId || '').trim();
+    let threadMessages = [message];
+    if (effectiveThreadId) {
+        try {
+            const threadResponse = await gmail.users.threads.get({
+                userId: 'me',
+                id: effectiveThreadId,
+                format: 'full'
+            });
+            const threadList = Array.isArray(threadResponse.data?.messages) ? threadResponse.data.messages : [];
+            if (threadList.length > 0) {
+                threadMessages = threadList;
+            }
+        } catch {
+            // Keep single-message fallback if thread lookup is unavailable.
+        }
+    }
+
+    const metadata = parseEmailMetadata(message);
+    const bodyText = extractGmailMessageText(message) || message.snippet || '';
+    const contributionContext = resolveContributionContext(metadata, bodyText);
+    const inferredRouteKind = isContributionEmail(
+        contributionContext.metadata,
+        contributionContext.bodyText
+    ) ? 'CONTRIBUTION' : 'BILL';
+    const routeKind = normalizeRouteKind(extraMeta.routeKind || inferredRouteKind);
+    if (routeKind === 'CONTRIBUTION') {
+        throw new Error('Contribution preview is not available in the invoice router');
+    }
+
+    const attachments = collectAttachments(message.payload);
+    const threadPdfAttachments = collectThreadPdfAttachments(threadMessages);
+    const useThreadPdfAttachments = attachments.length === 0 && threadPdfAttachments.length > 0;
+    const allowThreadContext = !messageOnly || useThreadPdfAttachments;
+    const conversationText = allowThreadContext && !useThreadPdfAttachments
+        ? buildConversationText(threadMessages)
+        : '';
+    const contextVendorMeta = resolveApVendorFromContext(metadata, bodyText, conversationText);
+
+    const tempDir = join(tmpdir(), `sharefile-preview-${randomUUID()}`);
+    await mkdir(tempDir, { recursive: true });
+
+    try {
+        let previewBytes = null;
+        let sourcePdfPath = '';
+        let sourceFileName = '';
+        let source = 'rendered-email';
+
+        if (useThreadPdfAttachments) {
+            const attachmentSource = threadPdfAttachments[0];
+            const attachmentResponse = await gmail.users.messages.attachments.get({
+                userId: 'me',
+                messageId: attachmentSource.messageId,
+                id: attachmentSource.attachmentId
+            });
+            const data = attachmentResponse.data?.data;
+            if (!data) {
+                throw new Error('Could not load the selected Gmail attachment');
+            }
+            const rawBytes = decodeAttachmentData(data);
+            const attachmentPath = join(tempDir, attachmentSource.filename || 'thread-attachment.pdf');
+            await writeFile(attachmentPath, rawBytes);
+            sourcePdfPath = await convertToPdfIfNeeded(attachmentPath, tempDir);
+            previewBytes = await readFile(sourcePdfPath);
+            sourceFileName = basename(sourcePdfPath);
+            source = 'thread-attachment';
+        } else if (attachments.length > 0) {
+            const attachment = attachments.find(isPdfAttachment) || attachments[0];
+            const attachmentResponse = await gmail.users.messages.attachments.get({
+                userId: 'me',
+                messageId,
+                id: attachment.attachmentId
+            });
+            const data = attachmentResponse.data?.data;
+            if (!data) {
+                throw new Error('Could not load the selected Gmail attachment');
+            }
+            const rawBytes = decodeAttachmentData(data);
+            const attachmentPath = join(tempDir, attachment.filename || 'attachment-preview');
+            await writeFile(attachmentPath, rawBytes);
+            sourcePdfPath = await convertToPdfIfNeeded(attachmentPath, tempDir);
+            previewBytes = await readFile(sourcePdfPath);
+            sourceFileName = basename(sourcePdfPath);
+            source = 'message-attachment';
+        } else {
+            try {
+                const html = await buildConversationHtml(gmail, threadMessages);
+                previewBytes = Buffer.from(await renderEmailHtmlToPdf(html));
+            } catch (error) {
+                console.warn('Conversation HTML render failed during email preview, falling back to text PDF:', error);
+                previewBytes = Buffer.from(await renderEmailToPdf({ subject: 'Email conversation' }, conversationText || bodyText));
+            }
+            sourceFileName = sanitizeFileSegment(metadata?.subject || 'email-preview') || 'email-preview';
+            if (!sourceFileName.toLowerCase().endsWith('.pdf')) {
+                sourceFileName = `${sourceFileName}.pdf`;
+            }
+            source = 'rendered-email';
+        }
+
+        if (!previewBytes?.length) {
+            throw new Error('Unable to build a preview for this email');
+        }
+
+        const analysis = await analyzeSharefilePdf({
+            pdfBytes: previewBytes,
+            sourcePdfPath,
+            routeKind
+        });
+        const preferredVendor = sanitizeApVendorToken(extraMeta?.vendor || '');
+        const vendor = preferredVendor || analysis.vendor || contextVendorMeta.vendor || '';
+        const amount = normalizeCurrencyAmount(extraMeta?.amount || analysis.amount || extractApAmountFromText(`${bodyText}\n${conversationText}`));
+        const sharedMeta = normalizeSharedAllocationMeta(extraMeta);
+
+        return {
+            ok: true,
+            preview: {
+                fileName: sourceFileName || 'email-preview.pdf',
+                source,
+                pdfBase64: Buffer.from(previewBytes).toString('base64'),
+                messageId: String(message?.id || messageId || '').trim(),
+                threadId: effectiveThreadId || String(message?.threadId || '').trim(),
+                attachmentCount: useThreadPdfAttachments
+                    ? threadPdfAttachments.length
+                    : attachments.length
+            },
+            analysis: {
+                routeKind,
+                vendor,
+                vendorFound: Boolean(vendor),
+                vendorConfidence: Number(analysis.vendorConfidence || contextVendorMeta.confidence || 0) || 0,
+                amount
+            },
+            draft: {
+                routeKind,
+                codeType: 'budget',
+                codeValue: String(extraMeta?.codeValue || '').trim(),
+                vendor,
+                amount,
+                ...sharedMeta
+            }
+        };
+    } finally {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => { });
     }
 };
 
@@ -2755,22 +3028,19 @@ export const routeSharefilePdf = async ({
         });
 
         const effectiveVendor = routed.apVendor || preferredVendor;
-        const output = {
+        const output = buildSharefileRoutingOutput({
             targetDir: resolvedRoot,
             files: [routed.file],
-            routing: {
-                routeKind: normalizedRouteKind,
-                vendor: effectiveVendor,
-                amount: apAmount,
-                vendorFound: Boolean(effectiveVendor),
-                noteText,
-                source: 'manual-pdf',
-                sourceFileName: String(originalFilename || basename(sourcePdfPath || '') || '').trim(),
-                canonicalPublishedCount: canonicalSync.published,
-                canonicalFailedCount: canonicalSync.failed,
-                canonicalLastError: canonicalSync.lastError || ''
-            }
-        };
+            routeKind: normalizedRouteKind,
+            noteText,
+            vendor: effectiveVendor,
+            amount: apAmount,
+            approvedAt: extraMeta?.clientTs || '',
+            extraMeta,
+            canonicalSync,
+            source: 'manual-pdf',
+            sourceFileName: String(originalFilename || basename(sourcePdfPath || '') || '').trim()
+        });
         const job = saveOrUpdateSharefileJob({
             existingJobId: '',
             messageId,

@@ -2,6 +2,7 @@ export const ROLE_DEFINITIONS = [
     { key: 'celebrant', label: 'Celebrant', tags: ['clergy'] },
     { key: 'preacher', label: 'Preacher', tags: ['clergy'] },
     { key: 'officiant', label: 'Officiant', tags: ['clergy'] },
+    { key: 'lector8', label: '8am Lector', tags: ['reader', 'volunteer'] },
     { key: 'lector', label: 'Lector', tags: ['reader', 'volunteer'] },
     { key: 'lem', label: 'LEM', tags: ['lay eucharistic minister', 'volunteer'] },
     { key: 'acolyte', label: 'Acolyte', tags: ['altar server', 'volunteer'] },

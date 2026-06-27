@@ -97,13 +97,8 @@ function mergeWithUrl(ctx) {
 
 function parseThreadFromGmailUrl(href) {
   try {
-    const hash = (href.split("#")[1] || "").trim();
-    if (!hash) return { threadId: null };
-
-    const parts = hash.split("/").filter(Boolean);
-    const maybeId = parts.at(-1) || "";
-    if (/^[0-9a-f]{10,}$/i.test(maybeId)) return { threadId: maybeId };
-    return { threadId: null };
+    const parsed = parseIdsFromAnyHref(href);
+    return { threadId: parsed.threadId || null };
   } catch {
     return { threadId: null };
   }
@@ -117,17 +112,8 @@ function findIdsInDom(startNode) {
 
   let hops = 0;
   while (el && hops++ < 30) {
-    const messageId =
-      el.getAttribute?.("data-message-id") ||
-      el.getAttribute?.("data-legacy-message-id") ||
-      el.getAttribute?.("data-msg-id") ||
-      null;
-
-    const threadId =
-      el.getAttribute?.("data-thread-id") ||
-      el.getAttribute?.("data-legacy-thread-id") ||
-      el.getAttribute?.("data-thr-id") ||
-      null;
+    const messageId = readMessageIdFromElement(el);
+    const threadId = readThreadIdFromElement(el);
 
     if (messageId || threadId) return { messageId, threadId };
     el = el.parentElement;
@@ -137,31 +123,161 @@ function findIdsInDom(startNode) {
 
 function findIdsInDocument() {
   try {
-    const messageEls = document.querySelectorAll(
-      "[data-message-id],[data-legacy-message-id],[data-msg-id]"
-    );
-    const threadEls = document.querySelectorAll(
-      "[data-thread-id],[data-legacy-thread-id],[data-thr-id]"
-    );
+    const selectors = [
+      "[data-message-id]",
+      "[data-legacy-message-id]",
+      "[data-legacy-last-message-id]",
+      "[data-msg-id]",
+      "[data-thread-id]",
+      "[data-legacy-thread-id]",
+      "[data-thread-perm-id]",
+      "[data-thr-id]",
+      "a[href*='permmsgid=']",
+      "a[href*='th=']"
+    ].join(",");
+    const candidates = Array.from(document.querySelectorAll(selectors)).reverse();
+    for (const candidate of candidates) {
+      const messageId = readMessageIdFromElement(candidate);
+      const threadId = readThreadIdFromElement(candidate);
+      if (messageId || threadId) {
+        return { messageId, threadId };
+      }
+    }
 
-    const lastMessageEl = messageEls.length ? messageEls[messageEls.length - 1] : null;
-    const lastThreadEl = threadEls.length ? threadEls[threadEls.length - 1] : null;
+    const fromPage = parseIdsFromAnyHref(location.href || "");
+    if (fromPage.messageId || fromPage.threadId) {
+      return fromPage;
+    }
 
-    const messageId =
-      lastMessageEl?.getAttribute?.("data-message-id") ||
-      lastMessageEl?.getAttribute?.("data-legacy-message-id") ||
-      lastMessageEl?.getAttribute?.("data-msg-id") ||
-      null;
-
-    const threadId =
-      lastThreadEl?.getAttribute?.("data-thread-id") ||
-      lastThreadEl?.getAttribute?.("data-legacy-thread-id") ||
-      lastThreadEl?.getAttribute?.("data-thr-id") ||
-      null;
-
-    return { messageId, threadId };
+    return parseIdsFromAnchorHrefs();
   } catch {
     return { messageId: null, threadId: null };
+  }
+}
+
+function readAttributeValue(el, names) {
+  for (const name of names) {
+    const value = String(el?.getAttribute?.(name) || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function normalizeIdToken(value) {
+  return String(value || "").trim().replace(/^#/, "");
+}
+
+function parseIdsFromAnyHref(href) {
+  const raw = String(href || "").trim();
+  if (!raw) return { messageId: null, threadId: null };
+
+  const result = { messageId: null, threadId: null };
+  const tryAssign = (key, value, matcher = null) => {
+    const normalized = normalizeIdToken(value);
+    if (!normalized) return;
+    if (matcher && !matcher.test(normalized)) return;
+    if (!result[key]) result[key] = normalized;
+  };
+
+  const legacyMessageMatcher = /^(?:msg|email)-f:\d+$/i;
+  const apiThreadMatcher = /^[0-9a-f]{10,}$/i;
+  const directPairs = [
+    raw.match(/[?&]permmsgid=([^&#]+)/i),
+    raw.match(/[?&]message_id=([^&#]+)/i),
+    raw.match(/[?&]th=([^&#]+)/i),
+    raw.match(/[?&]thread_id=([^&#]+)/i),
+    raw.match(/[?&]permthid=([^&#]+)/i)
+  ];
+  for (const match of directPairs) {
+    if (!match?.[1]) continue;
+    const value = decodeURIComponentSafe(match[1]);
+    if (/^(?:msg|email)-f:\d+$/i.test(value)) {
+      tryAssign("messageId", value, legacyMessageMatcher);
+      continue;
+    }
+    if (/^[0-9a-f]{10,}$/i.test(value)) {
+      tryAssign("threadId", value, apiThreadMatcher);
+    }
+  }
+
+  const hash = (raw.split("#")[1] || "").trim();
+  if (hash) {
+    const parts = hash.split("/").filter(Boolean);
+    const maybeId = normalizeIdToken(parts.at(-1) || "");
+    if (apiThreadMatcher.test(maybeId)) {
+      tryAssign("threadId", maybeId, apiThreadMatcher);
+    }
+    const hashTh = hash.match(/(?:^|[?&/])th=([0-9a-f]{10,})(?:$|[&#/])/i);
+    if (hashTh?.[1]) {
+      tryAssign("threadId", hashTh[1], apiThreadMatcher);
+    }
+    const hashMsg = hash.match(/(?:^|[?&/])permmsgid=((?:msg|email)-f:\d+)(?:$|[&#/])/i);
+    if (hashMsg?.[1]) {
+      tryAssign("messageId", hashMsg[1], legacyMessageMatcher);
+    }
+  }
+
+  return result;
+}
+
+function parseIdsFromAnchorHrefs() {
+  const anchors = Array.from(document.querySelectorAll("a[href]")).reverse();
+  for (const anchor of anchors) {
+    const parsed = parseIdsFromAnyHref(anchor.href || anchor.getAttribute("href") || "");
+    if (parsed.messageId || parsed.threadId) {
+      return parsed;
+    }
+  }
+  return { messageId: null, threadId: null };
+}
+
+function readMessageIdFromElement(el) {
+  const direct = readAttributeValue(el, [
+    "data-message-id",
+    "data-legacy-message-id",
+    "data-legacy-last-message-id",
+    "data-msg-id"
+  ]);
+  if (direct) return normalizeIdToken(direct);
+
+  const parsed = parseIdsFromAnyHref(
+    readAttributeValue(el, ["href", "data-href", "data-perm-id"])
+  );
+  if (parsed.messageId) return parsed.messageId;
+
+  const anchor = el?.querySelector?.("a[href*='permmsgid='],a[href*='message_id=']");
+  if (anchor) {
+    return parseIdsFromAnyHref(anchor.href || anchor.getAttribute("href") || "").messageId;
+  }
+  return null;
+}
+
+function readThreadIdFromElement(el) {
+  const direct = readAttributeValue(el, [
+    "data-thread-id",
+    "data-legacy-thread-id",
+    "data-thread-perm-id",
+    "data-thr-id"
+  ]);
+  if (direct) return normalizeIdToken(direct);
+
+  const parsed = parseIdsFromAnyHref(
+    readAttributeValue(el, ["href", "data-href", "data-thread-perm-id"])
+  );
+  if (parsed.threadId) return parsed.threadId;
+
+  const anchor = el?.querySelector?.("a[href*='th='],a[href*='thread_id=']");
+  if (anchor) {
+    return parseIdsFromAnyHref(anchor.href || anchor.getAttribute("href") || "").threadId;
+  }
+  return null;
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
   }
 }
 

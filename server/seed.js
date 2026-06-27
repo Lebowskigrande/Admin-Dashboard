@@ -12,6 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const liturgicalPath = path.join(__dirname, '../src/data/liturgical_calendar_2026.json');
+const liturgicalWorkbookPath = path.join(__dirname, '../episcopal_liturgical_2026_database.xlsx');
 const schedulePath = path.join(__dirname, '../src/data/service_schedule.json');
 const peopleWorkbookPath = path.join(__dirname, '../dashboard people data.xlsx');
 const powerchurchWorkbookPaths = [
@@ -77,6 +78,73 @@ const buildDisplayName = (firstName, lastName) => {
 };
 
 const findExistingWorkbook = (paths) => paths.find((p) => fs.existsSync(p));
+
+const isSundayDate = (date) => {
+    if (!date) return false;
+    return new Date(`${date}T12:00:00`).getDay() === 0;
+};
+
+const isLiturgicalColorLine = (value) => /^(green|white|red|purple|blue|purple or blue|rose|black|gold|silver)$/i.test(normalizeText(value));
+
+const extractWorkbookReadings = (rawDescription) => {
+    const lines = normalizeText(rawDescription)
+        .split(/\r?\n/)
+        .map((line) => normalizeText(line))
+        .filter(Boolean);
+    if (!lines.length) return '';
+
+    const colorIndex = lines.findIndex((line, index) => index > 0 && isLiturgicalColorLine(line));
+    const readingLines = colorIndex >= 0 ? lines.slice(colorIndex + 1) : lines.slice(2);
+    return readingLines.join('; ');
+};
+
+const scoreSundaySummary = (summary) => {
+    const value = normalizeText(summary);
+    if (!value) return 0;
+    if (/(sunday|proper|ordinary time|advent|epiphany|lent|easter|pentecost|trinity)/i.test(value)) return 3;
+    return 1;
+};
+
+const loadLiturgicalSeedData = () => {
+    const baseDays = fs.existsSync(liturgicalPath)
+        ? JSON.parse(fs.readFileSync(liturgicalPath, 'utf8'))
+        : [];
+
+    if (!fs.existsSync(liturgicalWorkbookPath)) {
+        return baseDays;
+    }
+
+    const workbook = XLSX.readFile(liturgicalWorkbookPath);
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+    const workbookSundaysByDate = new Map();
+
+    rows
+        .filter((row) => row.categories === 'TEC' && isSundayDate(row.date))
+        .forEach((row) => {
+            const readings = extractWorkbookReadings(row.description_raw);
+            if (!readings) return;
+
+            const candidate = {
+                date: normalizeText(row.date),
+                feast: normalizeText(row.summary),
+                color: normalizeText(row.color),
+                readings
+            };
+
+            const existing = workbookSundaysByDate.get(candidate.date);
+            if (!existing || scoreSundaySummary(candidate.feast) > scoreSundaySummary(existing.feast)) {
+                workbookSundaysByDate.set(candidate.date, candidate);
+            }
+        });
+
+    const mergedByDate = new Map(baseDays.map((day) => [day.date, day]));
+    workbookSundaysByDate.forEach((day, date) => {
+        mergedByDate.set(date, day);
+    });
+
+    return Array.from(mergedByDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+};
 
 const loadPeopleFromWorkbook = () => {
     if (!fs.existsSync(peopleWorkbookPath)) return [];
@@ -174,22 +242,30 @@ export const seedDatabase = () => {
     };
     if (hasTable('liturgical_days')) {
         const liturgicalCount = db.prepare('SELECT count(*) as count FROM liturgical_days').get().count;
+        const liturgicalMaxDate = db.prepare('SELECT max(date) as maxDate FROM liturgical_days').get().maxDate || '';
+        const liturgicalData = loadLiturgicalSeedData();
+        const seedMaxDate = liturgicalData[liturgicalData.length - 1]?.date || '';
 
-        if (liturgicalCount === 0) {
-            console.log('Seeding liturgical data...');
-            const liturgicalData = JSON.parse(fs.readFileSync(liturgicalPath, 'utf8'));
+        if (liturgicalCount === 0 || (seedMaxDate && liturgicalMaxDate < seedMaxDate)) {
+            const action = liturgicalCount === 0 ? 'Seeding' : 'Backfilling';
+            console.log(`${action} liturgical data...`);
 
-            const insert = db.prepare(`
-                INSERT INTO liturgical_days (date, feast, color, readings)
-                VALUES (@date, @feast, @color, @readings)
-            `);
+            const insert = liturgicalCount === 0
+                ? db.prepare(`
+                    INSERT INTO liturgical_days (date, feast, color, readings)
+                    VALUES (@date, @feast, @color, @readings)
+                `)
+                : db.prepare(`
+                    INSERT OR IGNORE INTO liturgical_days (date, feast, color, readings)
+                    VALUES (@date, @feast, @color, @readings)
+                `);
 
             const insertMany = db.transaction((days) => {
                 for (const day of days) insert.run(day);
             });
 
             insertMany(liturgicalData);
-            console.log(`Inserted ${liturgicalData.length} liturgical days.`);
+            console.log(`${liturgicalCount === 0 ? 'Inserted' : 'Backfilled'} ${liturgicalData.length} liturgical days through ${seedMaxDate}.`);
         }
     }
 

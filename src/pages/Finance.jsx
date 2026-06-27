@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FaEdit, FaTrash } from 'react-icons/fa';
+import { useSearchParams } from 'react-router-dom';
 import Card from '../components/Card';
 import DataPill from '../components/DataPill';
 import PdfRoutingPanel from '../components/finance/PdfRoutingPanel';
@@ -23,6 +24,72 @@ const normalizeAmountInput = (value) => {
     if (!Number.isFinite(numeric)) return '';
     return numeric.toFixed(2);
 };
+
+const normalizePercentInput = (value) => {
+    const raw = String(value ?? '').replace(/%/g, '').trim();
+    if (!raw) return '';
+    const numeric = Number.parseFloat(raw);
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 100) return '';
+    return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(2).replace(/\.?0+$/, '');
+};
+
+const formatPercentLabel = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '0';
+    return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(2).replace(/\.?0+$/, '');
+};
+
+const buildSharedAllocationText = ({ shared, churchAllocationPercent, schoolAllocationPercent }) => {
+    if (!shared) return 'Not shared';
+    const churchShare = Number(churchAllocationPercent);
+    const schoolShare = Number(schoolAllocationPercent);
+    if (!Number.isFinite(churchShare) || !Number.isFinite(schoolShare)) return 'SHARED';
+    if (Math.abs(churchShare - 50) <= 0.01 && Math.abs(schoolShare - 50) <= 0.01) {
+        return 'SHARED';
+    }
+    return `SHARED - ${formatPercentLabel(churchShare)}% Church, ${formatPercentLabel(schoolShare)}% School`;
+};
+
+const validateSharedAllocationDraft = ({ shared, churchAllocationPercent, schoolAllocationPercent }) => {
+    if (!shared) {
+        return {
+            ok: true,
+            shared: false,
+            churchAllocationPercent: '50',
+            schoolAllocationPercent: '50'
+        };
+    }
+    const churchShare = Number.parseFloat(String(churchAllocationPercent ?? '').trim());
+    const schoolShare = Number.parseFloat(String(schoolAllocationPercent ?? '').trim());
+    if (!Number.isFinite(churchShare) || !Number.isFinite(schoolShare)) {
+        return { ok: false, error: 'Enter both Church and School allocation percentages.' };
+    }
+    if (churchShare < 0 || churchShare > 100 || schoolShare < 0 || schoolShare > 100) {
+        return { ok: false, error: 'Allocation percentages must stay between 0 and 100.' };
+    }
+    if (Math.abs((churchShare + schoolShare) - 100) > 0.01) {
+        return { ok: false, error: 'Church and School allocations must total 100%.' };
+    }
+    return {
+        ok: true,
+        shared: true,
+        churchAllocationPercent: normalizePercentInput(churchShare),
+        schoolAllocationPercent: normalizePercentInput(schoolShare)
+    };
+};
+
+const buildEmptyApEditDraft = () => ({
+    codeValue: '',
+    vendor: '',
+    routeKind: 'BILL',
+    amount: '',
+    shared: false,
+    churchAllocationPercent: '50',
+    schoolAllocationPercent: '50',
+    files: {},
+    filePaths: {},
+    deleted: {}
+});
 
 const normalizeApRouteKind = (value) => {
     const upper = String(value || '').trim().toUpperCase();
@@ -76,20 +143,28 @@ const formatLogTime = (isoValue) => {
     });
 };
 
+const DASHBOARD_HANDOFF_STATUS = {
+    completed: 'completed',
+    dismissed: 'dismissed'
+};
+
 const Finance = () => {
+    const [searchParams, setSearchParams] = useSearchParams();
     const [apDate, setApDate] = useState(() => formatDateKey(new Date()));
     const [arDate, setArDate] = useState(() => formatDateKey(new Date()));
     const [apLog, setApLog] = useState({ loading: false, error: '', notice: '', entries: [], revealBusyKey: '', designationBusyKey: '', attachBusyKey: '' });
     const [arLog, setArLog] = useState({ loading: false, error: '', notice: '', entries: [], revealBusyKey: '', designationBusyKey: '' });
     const [apEditingKey, setApEditingKey] = useState('');
-    const [apEditDraft, setApEditDraft] = useState({ codeValue: '', vendor: '', routeKind: 'BILL', amount: '', files: {}, filePaths: {}, deleted: {} });
+    const [apEditDraft, setApEditDraft] = useState(buildEmptyApEditDraft);
     const [arEditingKey, setArEditingKey] = useState('');
     const [arEditDraft, setArEditDraft] = useState({ codeValue: '', designation: '', files: {}, filePaths: {}, deleted: {} });
+    const [emailRoutingIntent, setEmailRoutingIntent] = useState(null);
     const apAttachInputRef = useRef(null);
     const [apAttachTarget, setApAttachTarget] = useState(null);
     const apDateRef = useRef(apDate);
     const arDateRef = useRef(arDate);
     const routingLogLoadRequestRef = useRef({ ap: 0, ar: 0 });
+    const emailRoutingIntentRef = useRef(null);
 
     useEffect(() => {
         apDateRef.current = apDate;
@@ -98,6 +173,65 @@ const Finance = () => {
     useEffect(() => {
         arDateRef.current = arDate;
     }, [arDate]);
+
+    useEffect(() => {
+        const enabled = String(searchParams.get('emailRouting') || '').trim().toLowerCase();
+        if (enabled !== '1' && enabled !== 'true') {
+            setEmailRoutingIntent(null);
+            emailRoutingIntentRef.current = null;
+            return;
+        }
+        const messageId = String(searchParams.get('messageId') || '').trim();
+        const threadId = String(searchParams.get('threadId') || '').trim();
+        if (!messageId && !threadId) {
+            setEmailRoutingIntent(null);
+            emailRoutingIntentRef.current = null;
+            return;
+        }
+        const nextIntent = {
+            handoffId: String(searchParams.get('handoffId') || '').trim(),
+            messageId,
+            threadId,
+            routeKind: normalizeApRouteKind(searchParams.get('routeKind') || 'BILL'),
+            codeValue: String(searchParams.get('codeValue') || '').trim(),
+            vendor: String(searchParams.get('vendor') || '').trim(),
+            amount: normalizeAmountInput(searchParams.get('amount') || '')
+        };
+        emailRoutingIntentRef.current = nextIntent;
+        setEmailRoutingIntent(nextIntent);
+    }, [searchParams]);
+
+    const updateDashboardHandoffStatus = useCallback(async (handoffId, status) => {
+        const normalizedId = String(handoffId || '').trim();
+        const normalizedStatus = String(status || '').trim().toLowerCase();
+        if (!normalizedId || !normalizedStatus) return;
+        try {
+            await fetch(`${API_URL}/sharefile/dashboard-handoffs/${encodeURIComponent(normalizedId)}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: normalizedStatus })
+            });
+        } catch (error) {
+            console.error('Dashboard handoff status update error:', error);
+        }
+    }, []);
+
+    const clearEmailRoutingIntent = useCallback((status = '') => {
+        const currentIntent = emailRoutingIntentRef.current;
+        const handoffId = String(currentIntent?.handoffId || '').trim();
+        const normalizedStatus = String(status || '').trim().toLowerCase();
+        if (handoffId && normalizedStatus) {
+            void updateDashboardHandoffStatus(handoffId, normalizedStatus);
+        }
+
+        const nextParams = new URLSearchParams(window.location.search);
+        ['emailRouting', 'handoffId', 'messageId', 'threadId', 'routeKind', 'codeValue', 'vendor', 'amount'].forEach((key) => {
+            nextParams.delete(key);
+        });
+        emailRoutingIntentRef.current = null;
+        setSearchParams(nextParams, { replace: true });
+        setEmailRoutingIntent(null);
+    }, [setSearchParams, updateDashboardHandoffStatus]);
 
     const getRoutingDateForType = (logType) => (logType === 'ap' ? apDateRef.current : arDateRef.current);
     const isCurrentRoutingDate = (logType, dateKey) => getRoutingDateForType(logType) === dateKey;
@@ -197,6 +331,9 @@ const Finance = () => {
             vendor: String(entry.vendor || ''),
             routeKind: normalizeApRouteKind(entry.routeKind || ''),
             amount: normalizeAmountInput(entry.amount || ''),
+            shared: Boolean(entry.shared),
+            churchAllocationPercent: normalizePercentInput(entry.churchAllocationPercent ?? 50) || '50',
+            schoolAllocationPercent: normalizePercentInput(entry.schoolAllocationPercent ?? 50) || '50',
             files: filesDraft,
             filePaths: (Array.isArray(entry.files) ? entry.files : []).reduce((acc, file) => {
                 acc[String(file.fileIndex)] = String(file.path || '');
@@ -208,7 +345,7 @@ const Finance = () => {
 
     const cancelApInlineEdit = () => {
         setApEditingKey('');
-        setApEditDraft({ codeValue: '', vendor: '', routeKind: 'BILL', amount: '', files: {}, filePaths: {}, deleted: {} });
+        setApEditDraft(buildEmptyApEditDraft());
     };
 
     const startArInlineEdit = (entry) => {
@@ -346,8 +483,13 @@ const Finance = () => {
         const vendor = String(apEditDraft.vendor || '').trim();
         const routeKind = normalizeApRouteKind(apEditDraft.routeKind || '');
         const amount = normalizeAmountInput(apEditDraft.amount || '');
+        const sharedMeta = validateSharedAllocationDraft(apEditDraft);
         if (!codeValue) {
             setApLog((prev) => ({ ...prev, error: 'Code cannot be empty.', notice: '' }));
+            return;
+        }
+        if (!sharedMeta.ok) {
+            setApLog((prev) => ({ ...prev, error: sharedMeta.error || 'Shared allocation is invalid.', notice: '' }));
             return;
         }
         setApLog((prev) => ({ ...prev, designationBusyKey: key, error: '', notice: '' }));
@@ -367,6 +509,9 @@ const Finance = () => {
                     vendor,
                     routeKind,
                     amount,
+                    shared: sharedMeta.shared,
+                    churchAllocationPercent: sharedMeta.churchAllocationPercent,
+                    schoolAllocationPercent: sharedMeta.schoolAllocationPercent,
                     files: filesPayload
                 })
             });
@@ -393,6 +538,9 @@ const Finance = () => {
                         vendor: String(payload.vendor || vendor),
                         routeKind: normalizeApRouteKind(payload.routeKind || routeKind),
                         amount: normalizeAmountInput(payload.amount || amount),
+                        shared: Boolean(payload.shared),
+                        churchAllocationPercent: normalizePercentInput(payload.churchAllocationPercent ?? 50) || '50',
+                        schoolAllocationPercent: normalizePercentInput(payload.schoolAllocationPercent ?? 50) || '50',
                         vendorMissing: !String(payload.vendor || vendor).trim(),
                         files: Array.isArray(payload.files) ? payload.files : row.files
                     };
@@ -501,6 +649,13 @@ const Finance = () => {
         return () => window.clearInterval(timer);
     }, [arDate, loadRoutingLog]);
 
+    const handlePdfRoutingComplete = useCallback((_payload, meta = {}) => {
+        loadRoutingLog('ap', apDateRef.current, setApLog);
+        if (meta?.sourceMode === 'email') {
+            clearEmailRoutingIntent(DASHBOARD_HANDOFF_STATUS.completed);
+        }
+    }, [clearEmailRoutingIntent, loadRoutingLog]);
+
     return (
         <div className="page-finance">
             <input
@@ -517,7 +672,11 @@ const Finance = () => {
                 </div>
             </header>
 
-            <PdfRoutingPanel onRouted={() => loadRoutingLog('ap', apDateRef.current, setApLog)} />
+            <PdfRoutingPanel
+                emailRoutingIntent={emailRoutingIntent}
+                onDismissEmailIntent={() => clearEmailRoutingIntent(DASHBOARD_HANDOFF_STATUS.dismissed)}
+                onRouted={handlePdfRoutingComplete}
+            />
 
             <div className="routing-log-grid">
                 <Card className="routing-log-card">
@@ -566,7 +725,7 @@ const Finance = () => {
                                                 onClick={() => startApInlineEdit(entry)}
                                                 disabled={apLog.designationBusyKey === String(entry.jobId || entry.id || '').trim()}
                                                 aria-label="Edit AP entry"
-                                                title="Edit code, type, vendor, amount, and filenames"
+                                                title="Edit code, type, vendor, amount, shared allocation, and filenames"
                                             >
                                                 <FaEdit />
                                             </button>
@@ -584,6 +743,10 @@ const Finance = () => {
                                 <div className="routing-log-designation-row">
                                     <span className="routing-log-designation-label">Amount:</span>
                                     <strong>{entry.amount ? formatCurrency(Number(entry.amount)) : 'Not set'}</strong>
+                                </div>
+                                <div className="routing-log-designation-row">
+                                    <span className="routing-log-designation-label">Shared:</span>
+                                    <strong>{buildSharedAllocationText(entry)}</strong>
                                 </div>
                                 {apEditingKey === String(entry.jobId || entry.id || '').trim() && (
                                     <div className="routing-log-inline-editor">
@@ -625,6 +788,49 @@ const Finance = () => {
                                                 placeholder="Optional"
                                             />
                                         </label>
+                                        <label className="routing-log-inline-checkbox">
+                                            <span>Shared</span>
+                                            <input
+                                                type="checkbox"
+                                                checked={apEditDraft.shared}
+                                                onChange={(event) => setApEditDraft((prev) => ({
+                                                    ...prev,
+                                                    shared: event.target.checked,
+                                                    churchAllocationPercent: event.target.checked ? (prev.churchAllocationPercent || '50') : '50',
+                                                    schoolAllocationPercent: event.target.checked ? (prev.schoolAllocationPercent || '50') : '50'
+                                                }))}
+                                            />
+                                        </label>
+                                        {apEditDraft.shared && (
+                                            <>
+                                                <label>
+                                                    Church %
+                                                    <input
+                                                        type="text"
+                                                        inputMode="decimal"
+                                                        value={apEditDraft.churchAllocationPercent}
+                                                        onChange={(event) => setApEditDraft((prev) => ({ ...prev, churchAllocationPercent: event.target.value }))}
+                                                        onBlur={(event) => setApEditDraft((prev) => ({
+                                                            ...prev,
+                                                            churchAllocationPercent: normalizePercentInput(event.target.value) || prev.churchAllocationPercent
+                                                        }))}
+                                                    />
+                                                </label>
+                                                <label>
+                                                    School %
+                                                    <input
+                                                        type="text"
+                                                        inputMode="decimal"
+                                                        value={apEditDraft.schoolAllocationPercent}
+                                                        onChange={(event) => setApEditDraft((prev) => ({ ...prev, schoolAllocationPercent: event.target.value }))}
+                                                        onBlur={(event) => setApEditDraft((prev) => ({
+                                                            ...prev,
+                                                            schoolAllocationPercent: normalizePercentInput(event.target.value) || prev.schoolAllocationPercent
+                                                        }))}
+                                                    />
+                                                </label>
+                                            </>
+                                        )}
                                     </div>
                                 )}
                                 {entry.status === 'failure' && (

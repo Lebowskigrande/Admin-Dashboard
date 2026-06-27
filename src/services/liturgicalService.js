@@ -30,7 +30,8 @@ const buildServiceEntries = (entries = []) => {
             roles: {
                 celebrant: entry.celebrant || '',
                 preacher: entry.preacher || '',
-                lector: entry.lector || '',
+                lector8: time === SERVICE_TIME_SLOTS[0] ? (entry.lector || '') : '',
+                lector: time === SERVICE_TIME_SLOTS[0] ? '' : (entry.lector || ''),
                 organist: entry.organist || '',
                 usher: entry.usher || '',
                 acolyte: entry.acolyte || '',

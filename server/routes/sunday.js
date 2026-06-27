@@ -10,11 +10,12 @@ import {
 import {
     TEN_AM_ROLE_KEYS,
     EIGHT_AM_ROLE_KEYS,
+    EIGHT_AM_LECTOR_ROLE_KEY,
     ROLE_KEYS,
     DEFAULT_LOCATION_BY_TIME,
     applyRotationForDate,
     ensureSundayOccurrence,
-    replaceAssignmentsForRole,
+    replaceAssignmentsForServiceRole,
     syncLinkedSundayAliasOccurrences,
     isSundayDate,
     buildUpcomingSundaySchedule,
@@ -38,6 +39,13 @@ const parseDateKeyLocal = (dateKey) => {
     const day = Number(match[3]);
     return new Date(year, month - 1, day, 12, 0, 0, 0);
 };
+
+const getServiceRoleKeys = (time = '') => (
+    String(time || '').startsWith('08')
+        ? EIGHT_AM_ROLE_KEYS
+        : TEN_AM_ROLE_KEYS
+);
+
 router.get('/sunday/livestream', (req, res) => {
     const { date } = req.query;
     if (!date) {
@@ -358,10 +366,13 @@ router.get('/sunday/roles/:date', (req, res) => {
 
         result[occ.start_time] = {};
         assignments.forEach((asgn) => {
-            if (!result[occ.start_time][asgn.role_key]) {
-                result[occ.start_time][asgn.role_key] = [];
+            const roleKey = occ.start_time === '08:00' && asgn.role_key === 'lector'
+                ? EIGHT_AM_LECTOR_ROLE_KEY
+                : asgn.role_key;
+            if (!result[occ.start_time][roleKey]) {
+                result[occ.start_time][roleKey] = [];
             }
-            result[occ.start_time][asgn.role_key].push(asgn.person_id);
+            result[occ.start_time][roleKey].push(asgn.person_id);
         });
     });
 
@@ -383,6 +394,7 @@ router.put('/sunday/roles/:date', (req, res) => {
             Object.entries(payload).forEach(([time, roles]) => {
                 const occId = occMap.get(time) || ensureSundayOccurrence(date, time);
                 if (!occId) return;
+                const validRoleKeys = new Set(getServiceRoleKeys(time));
 
                 const location = roles?.location || roles?.building_id;
                 if (location) {
@@ -395,13 +407,13 @@ router.put('/sunday/roles/:date', (req, res) => {
 
                 Object.entries(roles || {}).forEach(([roleKey, personIds]) => {
                     if (roleKey === 'location' || roleKey === 'building_id' || roleKey === 'rite') return;
-                    if (!ROLE_KEYS.includes(roleKey)) return;
-                    replaceAssignmentsForRole(occId, roleKey, personIds);
+                    if (!ROLE_KEYS.includes(roleKey) || !validRoleKeys.has(roleKey)) return;
+                    replaceAssignmentsForServiceRole(occId, time, roleKey, personIds);
                 });
 
                 const normalizedRoles = Object.entries(roles || {}).reduce((acc, [roleKey, personIds]) => {
                     if (roleKey === 'location' || roleKey === 'building_id' || roleKey === 'rite') return acc;
-                    if (!ROLE_KEYS.includes(roleKey)) return acc;
+                    if (!ROLE_KEYS.includes(roleKey) || !validRoleKeys.has(roleKey)) return acc;
                     acc[roleKey] = Array.isArray(personIds) ? personIds : (personIds ? [personIds] : []);
                     return acc;
                 }, {});
@@ -475,6 +487,7 @@ router.post('/liturgical-schedule/pdf', async (req, res) => {
             celebrant: 'Celebrant',
             preacher: 'Preacher',
             organist: 'Organist',
+            lector8: '8am Lector',
             lector: 'Lector',
             usher: 'Usher',
             acolyte: 'Acolyte',

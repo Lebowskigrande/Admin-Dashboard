@@ -1,5 +1,7 @@
 import Card from '../../components/Card';
 
+const EIGHT_AM_LECTOR_ROLE_KEY = 'lector8';
+
 const SundayRosterPanel = ({
     services,
     buildings,
@@ -57,7 +59,12 @@ const SundayRosterPanel = ({
                     const selectValue = isMulti
                         ? (Array.isArray(selectedValue) ? selectedValue : (selectedValue ? [selectedValue] : []))
                         : (Array.isArray(selectedValue) ? (selectedValue[0] || '') : (selectedValue || ''));
-                    const eligiblePeople = people.filter((person) => (person.roles || []).includes(role.key));
+                    const eligiblePeople = people.filter((person) => {
+                        const roles = person?.roles || [];
+                        if (roles.includes(role.key)) return true;
+                        if (role.key === EIGHT_AM_LECTOR_ROLE_KEY) return roles.includes('lector');
+                        return false;
+                    });
                     const teamMap = getTeamMap(role.key, eligiblePeople);
                     const teamEntries = Array.from(teamMap.entries()).sort((a, b) => a[0] - b[0]);
                     const selectedPeople = (Array.isArray(selectValue) ? selectValue : [selectValue])

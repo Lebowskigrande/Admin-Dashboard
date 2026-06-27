@@ -19,10 +19,12 @@ const REGULAR_SUNDAY_SERVICE_SLUGS = new Set(['weekly-service', 'rite-i-service'
 
 const serializeDate = (date) => date.toISOString().slice(0, 10);
 const toDateKey = (date) => (date ? date.toISOString().slice(0, 10) : '');
+const EIGHT_AM_LECTOR_ROLE_KEY = 'lector8';
 
 const apiRoleKeys = new Set([
     'celebrant',
     'preacher',
+    EIGHT_AM_LECTOR_ROLE_KEY,
     'lector',
     'organist',
     'lem',
@@ -33,12 +35,18 @@ const apiRoleKeys = new Set([
     'childcare'
 ]);
 
-const EIGHT_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist'];
+const EIGHT_AM_ROLE_KEYS = ['celebrant', 'preacher', EIGHT_AM_LECTOR_ROLE_KEY, 'organist'];
 const TEN_AM_ROLE_KEYS = ['celebrant', 'preacher', 'lector', 'organist', 'lem', 'acolyte', 'usher', 'sound', 'coffeeHour', 'childcare'];
 const MULTI_ASSIGNMENT_ROLES = new Set(['lector', 'lem', 'acolyte', 'usher', 'sound', 'coffeeHour', 'childcare']);
 const isEightAmService = (time = '') => /^0?8:/.test(time.trim());
 const getServiceRoleKeys = (service) => (isEightAmService(service?.time || '') ? EIGHT_AM_ROLE_KEYS : TEN_AM_ROLE_KEYS);
 const roleAllowsMultiple = (serviceTime, roleKey) => !isEightAmService(serviceTime || '') && MULTI_ASSIGNMENT_ROLES.has(roleKey);
+const personMatchesRole = (person, roleKey) => {
+    const roles = person?.roles || [];
+    if (roles.includes(roleKey)) return true;
+    if (roleKey === EIGHT_AM_LECTOR_ROLE_KEY) return roles.includes('lector');
+    return false;
+};
 const formatServiceTime = (time) => {
     const trimmed = (time || '').trim();
     if (trimmed.startsWith('08')) return '8:00 AM';
@@ -204,7 +212,7 @@ const Sunday = () => {
                         .filter(Boolean);
                     const eligibleIds = resolvedIds.filter((id) => {
                         const person = peopleById.get(id);
-                        return person && (person.roles || []).includes(roleKey);
+                        return person && personMatchesRole(person, roleKey);
                     });
 
                     roleValues[roleKey] = roleAllowsMultiple(service.time, roleKey)

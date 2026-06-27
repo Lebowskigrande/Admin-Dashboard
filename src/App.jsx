@@ -9,6 +9,7 @@ const PAGE_COMPONENTS = {
   sunday: lazy(() => import('./pages/Sunday.jsx')),
   calendar: lazy(() => import('./pages/Calendar.jsx')),
   liturgical: lazy(() => import('./pages/LiturgicalSchedule.jsx')),
+  liturgicalTest: lazy(() => import('./pages/LiturgicalScheduleTest.jsx')),
   finance: lazy(() => import('./pages/Finance.jsx')),
   codeLookup: lazy(() => import('./pages/CodeLookup.jsx')),
   vestry: lazy(() => import('./pages/Vestry.jsx')),
