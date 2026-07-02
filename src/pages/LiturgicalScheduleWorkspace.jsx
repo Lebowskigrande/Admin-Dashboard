@@ -177,6 +177,10 @@ const LiturgicalScheduleWorkspace = ({ mode = 'test' }) => {
     const [people, setPeople] = useState([]);
     const [loading, setLoading] = useState(true);
     const [savingKey, setSavingKey] = useState('');
+    const [exportingMonths, setExportingMonths] = useState(false);
+    const [exportDialogOpen, setExportDialogOpen] = useState(false);
+    const [exportSelection, setExportSelection] = useState([]);
+    const [exportFormat, setExportFormat] = useState('pdf');
     const [monthSchedulingKey, setMonthSchedulingKey] = useState('');
     const [weekSchedulingKey, setWeekSchedulingKey] = useState('');
     const [selectedMonth, setSelectedMonth] = useState('');
@@ -252,6 +256,8 @@ const LiturgicalScheduleWorkspace = ({ mode = 'test' }) => {
         const defaultMonth = monthOptions.find((option) => option.value === todayKey)?.value || monthOptions[0].value;
         setSelectedMonth(defaultMonth);
     }, [monthOptions, selectedMonth]);
+
+    const exportMonthOptions = useMemo(() => monthOptions, [monthOptions]);
 
     const peopleById = useMemo(() => new Map(people.map((person) => [person.id, person])), [people]);
 
@@ -536,6 +542,65 @@ const LiturgicalScheduleWorkspace = ({ mode = 'test' }) => {
         }
     };
 
+    const openExportDialog = () => {
+        const defaultSelection = selectedMonth && selectedMonth !== 'all'
+            ? [selectedMonth]
+            : exportMonthOptions.map((option) => option.value);
+        setExportSelection(defaultSelection);
+        setExportFormat('pdf');
+        setExportDialogOpen(true);
+    };
+
+    const toggleExportMonth = (value) => {
+        setExportSelection((prev) => (
+            prev.includes(value)
+                ? prev.filter((item) => item !== value)
+                : [...prev, value].sort()
+        ));
+    };
+
+    const handleExportMonths = async () => {
+        if (exportingMonths) return;
+        const months = exportSelection.filter((value) => /^\d{4}-\d{2}$/.test(value));
+        if (months.length === 0) {
+            window.alert('Please select at least one month to export.');
+            return;
+        }
+
+        setExportingMonths(true);
+        setError('');
+        try {
+            const endpoint = exportFormat === 'xlsx'
+                ? `${API_URL}/liturgical-schedule/xlsx-months`
+                : `${API_URL}/liturgical-schedule/pdf-months`;
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ months })
+            });
+            if (!response.ok) throw new Error('Failed to export liturgical schedule');
+
+            const blob = await response.blob();
+            const fileName = exportFormat === 'xlsx'
+                ? `liturgical-schedule-${months.join('-')}.xlsx`
+                : `liturgical-schedule-table-${months.join('-')}.pdf`;
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+            setExportDialogOpen(false);
+        } catch (exportError) {
+            console.error(exportError);
+            setError(`Unable to export liturgical schedule ${exportFormat === 'xlsx' ? 'spreadsheet' : 'PDF'}.`);
+        } finally {
+            setExportingMonths(false);
+        }
+    };
+
     const renderPersonPills = (roleKey, ids) => (
         <span className="liturgical-test-pill-list">
             {ids.map((id) => {
@@ -622,6 +687,14 @@ const LiturgicalScheduleWorkspace = ({ mode = 'test' }) => {
                     <p className="page-header-subtitle">PDF-style month view with direct role editing on the live Sunday schedule data.</p>
                 </div>
                 <div className="page-header-actions">
+                    <button
+                        className="btn-secondary"
+                        type="button"
+                        onClick={openExportDialog}
+                        disabled={loading || exportingMonths || exportMonthOptions.length === 0}
+                    >
+                        {exportingMonths ? 'Exporting...' : 'Export'}
+                    </button>
                     <button className="btn-secondary" onClick={loadData} disabled={loading}>
                         {loading ? 'Refreshing...' : 'Refresh'}
                     </button>
@@ -855,6 +928,64 @@ const LiturgicalScheduleWorkspace = ({ mode = 'test' }) => {
                         </div>
                     </div>
                 ) : null}
+            </Modal>
+
+            <Modal
+                isOpen={exportDialogOpen}
+                onClose={() => setExportDialogOpen(false)}
+                title="Export Liturgical Schedule"
+                className="modal-large"
+            >
+                <div className="liturgical-test-export">
+                    <div className="liturgical-test-export__intro">Select one or more months to include in the export.</div>
+                    <div className="liturgical-test-export__format">
+                        <label>
+                            <input
+                                type="radio"
+                                name="exportFormat"
+                                value="pdf"
+                                checked={exportFormat === 'pdf'}
+                                onChange={() => setExportFormat('pdf')}
+                            />
+                            <span>PDF</span>
+                        </label>
+                        <label>
+                            <input
+                                type="radio"
+                                name="exportFormat"
+                                value="xlsx"
+                                checked={exportFormat === 'xlsx'}
+                                onChange={() => setExportFormat('xlsx')}
+                            />
+                            <span>Spreadsheet</span>
+                        </label>
+                    </div>
+                    <div className="liturgical-test-export__grid">
+                        {exportMonthOptions.map((option) => (
+                            <label key={option.value} className="liturgical-test-export__item">
+                                <input
+                                    type="checkbox"
+                                    checked={exportSelection.includes(option.value)}
+                                    onChange={() => toggleExportMonth(option.value)}
+                                />
+                                <span>{option.label}</span>
+                            </label>
+                        ))}
+                    </div>
+                    <div className="liturgical-test-export__actions">
+                        <button className="btn-secondary" type="button" onClick={() => setExportDialogOpen(false)}>
+                            Cancel
+                        </button>
+                        <button
+                            className="btn-primary"
+                            type="button"
+                            onClick={handleExportMonths}
+                            disabled={exportingMonths || exportSelection.length === 0}
+                        >
+                            {exportingMonths ? 'Exporting...' : 'Export'}
+                        </button>
+                    </div>
+                </div>
             </Modal>
 
             {pillTooltip?.person ? (

@@ -38,6 +38,61 @@
     color: var(--color-text-main);
 }
 
+.liturgical-test-export {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.liturgical-test-export__intro {
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+}
+
+.liturgical-test-export__format {
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    font-weight: 600;
+    color: var(--color-text-main);
+}
+
+.liturgical-test-export__format label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.liturgical-test-export__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+}
+
+.liturgical-test-export__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid rgba(15, 23, 42, 0.1);
+    border-radius: 10px;
+    background: #f8fafc;
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--color-text-main);
+}
+
+.liturgical-test-export__item input {
+    accent-color: var(--color-primary);
+}
+
+.liturgical-test-export__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
 .liturgical-test-month {
     display: flex;
     flex-direction: column;
